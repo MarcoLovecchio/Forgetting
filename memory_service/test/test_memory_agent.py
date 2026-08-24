@@ -335,6 +335,47 @@ class RetrieveMemoryToolTest(MemoryServiceTestCase):
             retrieve_memory.invoke({"query": "anything"}), "No relevant active memories found.")
 
 
+class LastOperationsTest(MemoryServiceTestCase):
+    """What the ROS response publishes: the operations of THIS call only."""
+
+    def test_operations_of_the_last_run_are_reported(self):
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({"InsertCoreMemories": {"memories": [
+            {"fact": "Bianca is vegetarian", "operation": "new"},
+            {"fact": "Bianca is allergic to peanuts", "operation": "new"},
+        ]}})
+
+        self.agent.run_memory_agent("insert")
+
+        self.assertEqual([entry.op_type for entry in self.agent.last_operations()],
+                         ["create", "create"])
+
+    def test_a_later_run_does_not_report_the_previous_operations(self):
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({"InsertCoreMemories": {"memories": [
+            {"fact": "Bianca is vegetarian", "operation": "new"}]}})
+        self.agent.run_memory_agent("insert")
+
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({"InsertCoreMemories": {"memories": [
+            {"fact": "Bianca lives in Palermo", "operation": "new"}]}})
+        state = self.agent.run_memory_agent("insert")
+
+        operations = self.agent.last_operations()
+        self.assertEqual([entry.content for entry in operations], ["Bianca lives in Palermo"])
+        self.assertEqual(len(state["operation_log"]), 2, "il log completo li tiene entrambi")
+
+    def test_a_run_that_changes_nothing_reports_no_operation(self):
+        self.agent.state["messages"] = self.conversation(2)  # sotto il limite
+
+        self.agent.run_memory_agent("insert")
+
+        self.assertEqual(self.agent.last_operations(), [])
+
+    def test_no_operations_before_the_first_run(self):
+        self.assertEqual(self.agent.last_operations(), [])
+
+
 class MessagesToStrTest(unittest.TestCase):
     def test_messages_are_prefixed_by_their_role(self):
         rendered = messages_to_str([HumanMessage(content="hi"), AIMessage(content="hello")])

@@ -16,7 +16,9 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from memory_service.consolidation import CoreMemoryItem
+import json
+
+from memory_service.consolidation import CoreMemoryItem, OperationLogEntry
 
 try:
     import rclpy
@@ -39,11 +41,15 @@ class StubMessage:
 class StubAgent:
     """Agent double recording what the callbacks asked for."""
 
-    def __init__(self, state=None, raises=None):
+    def __init__(self, state=None, raises=None, operations=None):
         self.state = state if state is not None else {"core_memory": [], "messages": []}
         self.raises = raises
+        self.operations = operations or []
         self.appended = []
         self.runs = []
+
+    def last_operations(self):
+        return self.operations
 
     def append_message(self, message, sender):
         if self.raises:
@@ -90,6 +96,7 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
         self.assertEqual(agent.appended, [("hello", "user"), ("hi there", "assistant")])
         self.assertEqual(agent.runs, ["insert"])
         self.assertEqual(list(response.memory_list), ["Bianca is vegetarian"])
+        self.assertEqual(list(response.memory_ids), [agent.state["core_memory"][0].id])
 
     def test_only_the_active_memories_are_published(self):
         # Superseded and deleted items are history: the service must not expose them.
@@ -105,6 +112,7 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
         response = server.update_memory_callback(request, UpdateMemory.Response())
 
         self.assertEqual(list(response.memory_list), ["active fact"])
+        self.assertEqual(len(response.memory_ids), 1, "gli id seguono lo stesso filtro")
 
     def test_missing_core_memory_key_is_tolerated(self):
         server = self.build_server(StubAgent({}))
@@ -116,6 +124,40 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
 
         self.assertEqual(list(response.memory_list), [])
 
+    def test_operations_of_this_call_are_published_as_json(self):
+        item = CoreMemoryItem(content="Bianca is vegetarian")
+        older = CoreMemoryItem(content="Bianca lives in Palermo")
+        agent = StubAgent(
+            {"core_memory": [item], "messages": []},
+            operations=[
+                OperationLogEntry(op_type="contradict", item_id=item.id,
+                                  related_item_id=older.id, content=item.content),
+            ],
+        )
+        server = self.build_server(agent)
+
+        request = UpdateMemory.Request()
+        request.user_input = "a"
+        request.explanation = "b"
+        response = server.update_memory_callback(request, UpdateMemory.Response())
+
+        self.assertEqual(len(response.operation_log), 1)
+        operation = json.loads(response.operation_log[0])
+        self.assertEqual(operation["op_type"], "contradict")
+        self.assertEqual(operation["item_id"], item.id)
+        self.assertEqual(operation["related_item_id"], older.id)
+        self.assertIn("timestamp", operation)
+
+    def test_no_operation_means_an_empty_log(self):
+        server = self.build_server(StubAgent({"core_memory": [], "messages": []}))
+
+        request = UpdateMemory.Request()
+        request.user_input = "a"
+        request.explanation = "b"
+        response = server.update_memory_callback(request, UpdateMemory.Response())
+
+        self.assertEqual(list(response.operation_log), [])
+
     def test_agent_failure_returns_an_empty_response(self):
         server = self.build_server(StubAgent(raises=RuntimeError("boom")))
 
@@ -125,6 +167,8 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
         response = server.update_memory_callback(request, UpdateMemory.Response())
 
         self.assertEqual(list(response.memory_list), [])
+        self.assertEqual(list(response.memory_ids), [])
+        self.assertEqual(list(response.operation_log), [])
 
 
 class GetMemoryCallbackTest(MemoryServerTestCase):
@@ -141,7 +185,9 @@ class GetMemoryCallbackTest(MemoryServerTestCase):
 
         self.assertEqual(agent.runs, ["retrieve"])
         self.assertEqual(list(response.memory_list), ["Bianca is vegetarian"])
+        self.assertEqual(list(response.memory_ids), [agent.state["core_memory"][0].id])
         self.assertEqual(list(response.last_messages), ["hello", "hi there"])
+        self.assertEqual(list(response.operation_log), [], "una retrieve non consolida")
 
     def test_non_string_message_content_is_coerced(self):
         # Assigning a non-string to a ROS string[] field would raise: this is
@@ -159,7 +205,9 @@ class GetMemoryCallbackTest(MemoryServerTestCase):
         response = server.get_memory_callback(GetMemory.Request(), GetMemory.Response())
 
         self.assertEqual(list(response.memory_list), [])
+        self.assertEqual(list(response.memory_ids), [])
         self.assertEqual(list(response.last_messages), [])
+        self.assertEqual(list(response.operation_log), [])
 
 
 @unittest.skipUnless(ROS_AVAILABLE, "rclpy and memory_service_interfaces are required")

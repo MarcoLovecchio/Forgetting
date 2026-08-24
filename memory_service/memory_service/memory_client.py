@@ -1,3 +1,5 @@
+import json
+
 import rclpy
 from rclpy.node import Node
 
@@ -32,6 +34,27 @@ class MemoryClient(Node):
         return future.result()
 
 
+def print_memory(title, memory_list, memory_ids):
+    """Core memories with their identifier, since the two arrays are aligned."""
+    print(f'{title} ({len(memory_list)} memorie attive):')
+    if not memory_list:
+        print('  (core memory vuota)')
+    for content, item_id in zip(memory_list, memory_ids):
+        print(f'  - [{item_id}] {content}')
+
+
+def print_operations(operation_log):
+    """What the consolidation did during the call, one JSON entry per line."""
+    print(f'Operazioni di consolidamento ({len(operation_log)}):')
+    if not operation_log:
+        print('  (nessuna operazione)')
+    for entry in operation_log:
+        operation = json.loads(entry)
+        related = operation.get('related_item_id') or '-'
+        print(f"  - {operation['op_type']:<10} | item: {operation['item_id']}"
+              f" | related: {related} | {operation.get('content')}")
+
+
 def main(args=None):
     rclpy.init(args=args)
     client = MemoryClient()
@@ -43,10 +66,14 @@ def main(args=None):
         queries=['q1', 'q2'],
         results='result1, result2',
     )
-    print('Updated list:', update_response.memory_list)
+    print_memory('Dopo update', update_response.memory_list, update_response.memory_ids)
+    print_operations(update_response.operation_log)
 
     get_response = client.send_get_request()
-    print('Current Memory:', get_response.memory_list)
+    print()
+    print_memory('Memoria corrente', get_response.memory_list, get_response.memory_ids)
+    print('Ultimi messaggi:', list(get_response.last_messages))
+    print_operations(get_response.operation_log)
 
     client.destroy_node()
     rclpy.shutdown()

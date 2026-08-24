@@ -156,6 +156,15 @@ def serialize_core_memory_for_prompt(items: Iterable[CoreMemoryItem]) -> List[st
     return [item.content for item in get_active_items(items)]
 
 
+def serialize_core_memory_ids(items: Iterable[CoreMemoryItem]) -> List[str]:
+    """Ids of the active core memories.
+
+    Same order as :func:`serialize_core_memory_for_prompt`, so the two lists can
+    be zipped: that is how the ROS response keeps contents and ids aligned.
+    """
+    return [item.id for item in get_active_items(items)]
+
+
 def serialize_core_memory_with_ids(items: Iterable[CoreMemoryItem]) -> Dict[str, str]:
     """Core memory as `id: content` pairs, the form the classifier reasons on."""
     return {item.id: item.content for item in get_active_items(items)}

@@ -1,3 +1,13 @@
+# Empty request: the service returns the current state of the memory
 ---
+# Content of the active core memories
 string[] memory_list
+# Identifier of each core memory, same order as memory_list (the two arrays can
+# be zipped): it is what lets a client refer to a specific memory later on
+string[] memory_ids
+# Messages still inside the conversation window
 string[] last_messages
+# Consolidation operations performed by THIS call, one JSON object per entry:
+# {op_type, item_id, related_item_id, content, timestamp}.
+# A retrieve usually performs none, so this is normally empty.
+string[] operation_log

@@ -49,6 +49,18 @@ def get_vector_store():
     """Vector store holding the archival memories."""
     return backends.get_vector_store()
 
+def _describe_tool_response(response) -> str:
+    """One-line summary of an LLM tool-call response, for logging.
+
+    The full AIMessage repr (id, additional_kwargs, response_metadata, ...) is
+    mostly noise: what matters for tracing is which tool was picked and with
+    which arguments.
+    """
+    tool_calls = getattr(response, "tool_calls", None) or []
+    if not tool_calls:
+        return f"no tool call, content={response.content!r}"
+    return "; ".join(f"{call['name']}(args={call['args']})" for call in tool_calls)
+
 def messages_to_str(messages) -> str:
     """Convert a list of messages to a single string for prompt input."""
     if isinstance(messages, list):
@@ -259,8 +271,8 @@ def summarize_memories_node(state: AgentState):
 
     keep = max(1, state['maximum_historical_messages'])
     exceeding_messages = state['messages'][:-keep]
+    print(f"\tSummarizing {len(exceeding_messages)} exceeding messages")
     exceeding_messages = messages_to_str(exceeding_messages)
-    print(f"\tSummarizing {exceeding_messages}")
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a tool that extracts new facts from the messages and classifies
@@ -283,14 +295,14 @@ Focus on preferences, opinions, or personal facts mentioned by the user.""")
     # The classifier can point at core memories and at related archival ones.
     core_memories = build_candidate_memories(state["core_memory"], exceeding_messages)
     response = chain.invoke({"exceeding_messages": exceeding_messages, "core_memory": core_memories})
-    print(f"\tSummarization result: {response}")
+    print(f"\tSummarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response], "messages": state["messages"][-keep:]}  # Keep only the last N messages
 
 def summarize_core_memories_node(state: AgentState):
 
     active_items = get_active_items(state["core_memory"])
     core_memory_display = "\n".join(f"{item.id}: {item.content}" for item in active_items)
-    print(f"\tSummarizing core memories: {core_memory_display}")
+    print(f"\tSummarizing {len(active_items)} core memories for the core/archival split")
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a tool that decides what to keep in the core memories and what to move to archival memory.
@@ -307,7 +319,7 @@ def summarize_core_memories_node(state: AgentState):
     response = chain.invoke({"core_memory": core_memory_display,
                              "core_memory_length": core_memory_length(state["core_memory"]),
                              "core_memory_limit": state["core_memory_limit"]})
-    print(f"\tCore memory summarization result: {response}")
+    print(f"\tCore memory summarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response]}
 
 
@@ -365,6 +377,8 @@ class MemoryAgent():
                 "tool_calls": []
             }
             self.up_to_date = False
+            # Where the operation log stood before the last run, see last_operations()
+            self._log_offset = 0
 
     @classmethod
     def reset_instance(cls):
@@ -375,8 +389,19 @@ class MemoryAgent():
         """
         cls._instance = None
 
+    def last_operations(self):
+        """Consolidation operations produced by the most recent run.
+
+        The full log lives in state["operation_log"] and grows for the whole life
+        of the node; what a caller usually wants is what changed just now.
+        """
+        return self.state["operation_log"][self._log_offset:]
+
     # Function to run the agent
     def run_memory_agent(self, interaction_mode="retrieve"):
+        # Anything logged from here on belongs to this run.
+        self._log_offset = len(self.state["operation_log"])
+
         if interaction_mode == "retrieve":
             if self.up_to_date:
                 return self.state
@@ -387,15 +412,14 @@ class MemoryAgent():
             self.up_to_date = False
 
         self.state["current_interaction"] = interaction_mode
-        print(f"Initial state: {self.state}")
 
         if self.state["messages"] == []:
             print("No messages to process.")
             return self.state
 
+        print(f"\t[{interaction_mode}] running with {len(self.state['messages'])} messages, "
+              f"{len(get_active_items(self.state['core_memory']))} active core memories")
         self.state = memory_agent.invoke(self.state)
-        for key, value in self.state.items():
-            print(f"{key}: {value}")
         self.state["tool_calls"] = []
 
         return self.state

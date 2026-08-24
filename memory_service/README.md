@@ -16,6 +16,41 @@ davvero. Questo permette di testarlo seriamente, senza chiavi API e senza rete.
 | `memory_server.py` | nodo ROS con i due servizi | `rclpy`, `memory_service_interfaces` |
 | `memory_client.py` | client ROS di esempio | `rclpy`, `memory_service_interfaces` |
 
+## Interfaccia ROS
+
+I due servizi (`memory_service_interfaces`) espongono la memoria consolidata:
+
+**`GetMemory`** — request vuota
+
+| campo | contenuto |
+| --- | --- |
+| `memory_list` | contenuto delle core memory **attive** (superseded e deleted restano fuori) |
+| `memory_ids` | id di ciascuna, stesso ordine di `memory_list`: le due liste si zippano |
+| `last_messages` | messaggi ancora nella finestra di conversazione |
+| `operation_log` | operazioni di consolidamento di **questa** chiamata, un JSON per riga |
+
+**`UpdateMemory`** — request `user_input`, `queries`, `results`, `explanation`; la
+response ha `memory_list`, `memory_ids` e `operation_log` con la stessa semantica.
+
+Ogni entry di `operation_log` è il JSON di un `OperationLogEntry`:
+
+```json
+{"op_type": "contradict", "item_id": "c8f90d30-...", "related_item_id": "7ca3ad4f-...",
+ "content": "L'utente mangia pesce", "timestamp": "2026-08-24T18:23:39.059368"}
+```
+
+`op_type` è uno fra `create`, `redundant`, `update`, `contradict`, `delete`, `archive`.
+
+Il log riporta **solo le operazioni della chiamata corrente**, non tutto lo
+storico: `state["operation_log"]` cresce per tutta la vita del nodo e `get_memory`
+viene invocato di frequente, quindi spedire l'intera storia a ogni chiamata
+costerebbe sempre di più. Lo storico completo resta disponibile in-process via
+`MemoryAgent.state["operation_log"]`.
+
+`memory_list` e `last_messages` mantengono nome e semantica di prima, quindi i
+pacchetti che li leggono continuano a funzionare: serve solo un `colcon build`
+per rigenerare le interfacce.
+
 ## Test
 
 ```bash

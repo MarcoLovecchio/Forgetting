@@ -4,7 +4,11 @@ from rclpy.node import Node
 from memory_service_interfaces.srv import UpdateMemory, GetMemory
 
 from memory_service.memory_manager_llm import MemoryAgent
-from memory_service.consolidation import serialize_core_memory_for_prompt
+from memory_service.consolidation import (
+    serialize_core_memory_for_prompt,
+    serialize_core_memory_ids,
+    serialize_operation_log_for_response,
+)
 
 
 def to_string_list(values):
@@ -32,6 +36,30 @@ class MemoryServer(Node):
         self.get_service = self.create_service(
             GetMemory, 'get_memory', self.get_memory_callback)
 
+    def _fill_core_memory(self, response, state):
+        """Publish the active core memories as two aligned arrays.
+
+        memory_list carries the contents, memory_ids the identifiers: same
+        filtering and same order, so a client can zip them and refer to a
+        specific memory afterwards.
+        """
+        core_memory = state.get("core_memory", [])
+        response.memory_list = to_string_list(serialize_core_memory_for_prompt(core_memory))
+        response.memory_ids = to_string_list(serialize_core_memory_ids(core_memory))
+
+    def _fill_operation_log(self, response):
+        """Publish what the consolidation did during this call.
+
+        Only the operations of this run: the full log grows for the whole life of
+        the node, and get_memory is called often enough that sending the entire
+        history every time would cost more with every interaction.
+        """
+        operations = []
+        if hasattr(self.memory_agent, "last_operations"):
+            operations = self.memory_agent.last_operations()
+        response.operation_log = to_string_list(
+            serialize_operation_log_for_response(operations))
+
     def update_memory_callback(self, request, response):
         self.get_logger().info(
             f"UpdateMemory request: user_input={request.user_input}, "
@@ -45,11 +73,13 @@ class MemoryServer(Node):
             # Run the agent and get the state dict
             state = self.memory_agent.run_memory_agent(interaction_mode='insert')
 
-            # Extract core_memory and populate the response object
-            response.memory_list = to_string_list(
-                serialize_core_memory_for_prompt(state.get("core_memory", [])))
+            # Populate the response object
+            self._fill_core_memory(response, state)
+            self._fill_operation_log(response)
 
             self.get_logger().info(f"Core memory: {response.memory_list}")
+            self.get_logger().info(
+                f"Operations performed: {len(response.operation_log)}")
 
             # Return the response object
             return response
@@ -57,6 +87,8 @@ class MemoryServer(Node):
         except Exception as e:
             self.get_logger().error(f"UpdateMemory error: {e}")
             response.memory_list = []
+            response.memory_ids = []
+            response.operation_log = []
             return response
 
     def get_memory_callback(self, request, response):
@@ -66,9 +98,9 @@ class MemoryServer(Node):
             # Run the agent in retrieve mode
             state = self.memory_agent.run_memory_agent(interaction_mode='retrieve')
 
-            # Extract core memory and last messages and populate the response object
-            response.memory_list = to_string_list(
-                serialize_core_memory_for_prompt(state.get("core_memory", [])))
+            # Populate the response object
+            self._fill_core_memory(response, state)
+            self._fill_operation_log(response)
             response.last_messages = to_string_list(
                 [message.content for message in state.get("messages", [])])
 
@@ -80,7 +112,9 @@ class MemoryServer(Node):
         except Exception as e:
             self.get_logger().error(f"GetMemory error: {e}")
             response.memory_list = []
+            response.memory_ids = []
             response.last_messages = []
+            response.operation_log = []
             return response
 
 
