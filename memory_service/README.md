@@ -11,6 +11,7 @@ davvero. Questo permette di testarlo seriamente, senza chiavi API e senza rete.
 | --- | --- | --- |
 | `config.py` | configurazione (limiti, path Chroma, `LLM_CONFIG`) | solo `python-dotenv` |
 | `backends.py` | costruzione **pigra** di chat model e vector store, sostituibili | importa Chroma/Mistral/langchain solo se usati |
+| `consolidation.py` | modello dati della memoria e operazioni di consolidamento | `pydantic`, `langchain-core` |
 | `memory_manager_llm.py` | grafo LangGraph e `MemoryAgent` | `langgraph`, `langchain-core` |
 | `memory_server.py` | nodo ROS con i due servizi | `rclpy`, `memory_service_interfaces` |
 | `memory_client.py` | client ROS di esempio | `rclpy`, `memory_service_interfaces` |
@@ -21,10 +22,15 @@ davvero. Questo permette di testarlo seriamente, senza chiavi API e senza rete.
 python memory_service/run_tests.py -v
 ```
 
-44 test. Quelli dell'agente eseguono il **grafo LangGraph reale** con backend
-simulati (`test/fakes.py`): nessuna chiamata di rete, nessuna API key, nessun
-ChromaDB. Coprono le due interazioni (`insert` / `retrieve`), i limiti di
-memoria, lo split core/archival, i tool e la configurazione.
+50 test, tutti sul **grafo LangGraph reale** con backend simulati
+(`test/fakes.py`): nessuna chiamata di rete, nessuna API key, nessun ChromaDB.
+
+`test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
+classificazione diversa (`new`, `redundant`, `update`, `contradict`, `delete`,
+archiviazione, recupero) e stampa lo stato completo della memoria - core,
+messaggi, archivio con i metadata, recupero, operation log. `test_memory_agent.py`
+tiene invece i controlli unitari (limiti, tool call malformate, cache della
+retrieve, tombstone mai recuperati) e `test_config.py` la configurazione.
 
 I test del nodo (`test/test_memory_server.py`) costruiscono `MemoryServer` con un
 agente stub e invocano le callback con request/response vere: richiedono rclpy e
@@ -40,10 +46,16 @@ colcon test --packages-select memory_service
 ```
 
 `test/test_memory_llm.py` è invece il test di **integrazione** con lo stack
-reale (Groq + Mistral + ChromaDB): viene saltato automaticamente se `LLM_CONFIG`
-non è impostata. Con `GROQ_API_KEY` e `MISTRAL_API_KEY` in `.env` gira per
-intero; `LANGSMITH_API_KEY` resta opzionale, come nel resto dell'architettura —
-se presente abilita solo il tracing.
+reale (Groq + Mistral + ChromaDB): stessa turnistica, ma la classificazione la
+decide il modello vero, quindi le assert sono larghe (invarianti strutturali) e
+il valore sta nella traccia stampata. Viene saltato automaticamente se
+`LLM_CONFIG` non è impostata. Con `GROQ_API_KEY` e `MISTRAL_API_KEY` in `.env`
+gira per intero; `LANGSMITH_API_KEY` resta opzionale, come nel resto
+dell'architettura — se presente abilita solo il tracing.
+
+```bash
+pytest memory_service/test/test_memory_llm.py -v -s
+```
 
 ## Backend sostituibili
 

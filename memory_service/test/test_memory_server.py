@@ -16,6 +16,8 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+from memory_service.consolidation import CoreMemoryItem
+
 try:
     import rclpy
 
@@ -76,7 +78,8 @@ class MemoryServerTestCase(unittest.TestCase):
 
 class UpdateMemoryCallbackTest(MemoryServerTestCase):
     def test_interaction_is_appended_and_core_memory_returned(self):
-        agent = StubAgent({"core_memory": ["Bianca is vegetarian"], "messages": []})
+        agent = StubAgent(
+            {"core_memory": [CoreMemoryItem(content="Bianca is vegetarian")], "messages": []})
         server = self.build_server(agent)
 
         request = UpdateMemory.Request()
@@ -88,15 +91,20 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
         self.assertEqual(agent.runs, ["insert"])
         self.assertEqual(list(response.memory_list), ["Bianca is vegetarian"])
 
-    def test_non_string_core_memory_is_coerced(self):
-        server = self.build_server(StubAgent({"core_memory": [1, ["block"]], "messages": []}))
+    def test_only_the_active_memories_are_published(self):
+        # Superseded and deleted items are history: the service must not expose them.
+        server = self.build_server(StubAgent({"core_memory": [
+            CoreMemoryItem(content="active fact"),
+            CoreMemoryItem(content="old fact", status="superseded"),
+            CoreMemoryItem(content="forgotten fact", status="deleted"),
+        ], "messages": []}))
 
         request = UpdateMemory.Request()
         request.user_input = "a"
         request.explanation = "b"
         response = server.update_memory_callback(request, UpdateMemory.Response())
 
-        self.assertEqual(list(response.memory_list), ["1", "['block']"])
+        self.assertEqual(list(response.memory_list), ["active fact"])
 
     def test_missing_core_memory_key_is_tolerated(self):
         server = self.build_server(StubAgent({}))
@@ -123,7 +131,7 @@ class GetMemoryCallbackTest(MemoryServerTestCase):
     def test_core_memory_and_messages_are_returned(self):
         agent = StubAgent(
             {
-                "core_memory": ["Bianca is vegetarian"],
+                "core_memory": [CoreMemoryItem(content="Bianca is vegetarian")],
                 "messages": [StubMessage("hello"), StubMessage("hi there")],
             }
         )

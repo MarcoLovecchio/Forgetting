@@ -2,9 +2,10 @@
 
 They run the real LangGraph graph with scripted backends, so they need neither
 API keys nor network access, ChromaDB, rclpy or any other package of the
-architecture. Run them with:
+architecture. The turn by turn lifecycle of the memory lives in
+test_consolidation.py; this file keeps the unit level checks.
 
-    python -m unittest discover -s memory_service/test
+    python memory_service/run_tests.py
     pytest memory_service
 """
 
@@ -23,10 +24,9 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
+from memory_service.consolidation import CoreMemoryItem  # noqa: E402
 from memory_service.memory_manager_llm import (  # noqa: E402
     MemoryAgent,
-    add_memory,
-    insert_archival_memories,
     messages_to_str,
     retrieve_memory,
 )
@@ -42,6 +42,11 @@ TEST_CONFIG = MemoryConfig(
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
 )
+
+
+def contents(state):
+    """Text of the core memories, the part assertions care about."""
+    return [item.content for item in state["core_memory"]]
 
 
 class MemoryServiceTestCase(unittest.TestCase):
@@ -90,6 +95,15 @@ class ImportIsolationTest(unittest.TestCase):
             self.assertNotIn(
                 forbidden, source, f"{forbidden} must not be imported by the agent module")
 
+    def test_consolidation_module_has_no_architecture_dependencies(self):
+        import memory_service.consolidation as module
+
+        with open(module.__file__, encoding="utf-8") as handle:
+            source = handle.read()
+        for forbidden in ("shared_utils", "db_adapters", "rclpy", "chromadb"):
+            self.assertNotIn(
+                forbidden, source, f"{forbidden} must not be imported by consolidation")
+
     def test_importing_does_not_build_backends(self):
         backends.reset()
         self.assertIsNone(backends._llm)
@@ -99,7 +113,10 @@ class ImportIsolationTest(unittest.TestCase):
 class InsertInteractionTest(MemoryServiceTestCase):
     tool_responses = {
         "InsertCoreMemories": {
-            "memories": ["Bianca is vegetarian", "Bianca is allergic to peanuts"],
+            "memories": [
+                {"fact": "Bianca is vegetarian", "operation": "new"},
+                {"fact": "Bianca is allergic to peanuts", "operation": "new"},
+            ],
         },
     }
 
@@ -118,11 +135,18 @@ class InsertInteractionTest(MemoryServiceTestCase):
         state = self.agent.run_memory_agent("insert")
 
         self.assertEqual(
-            state["core_memory"],
+            contents(state),
             ["Bianca is vegetarian", "Bianca is allergic to peanuts"],
         )
         self.assertEqual(len(state["messages"]), 5, "only the last N messages are kept")
         self.assertIn("InsertCoreMemories", self.llm.bound_tool_names())
+
+    def test_every_extracted_fact_is_logged(self):
+        self.agent.state["messages"] = self.conversation(9)
+
+        state = self.agent.run_memory_agent("insert")
+
+        self.assertEqual([entry.op_type for entry in state["operation_log"]], ["create", "create"])
 
     def test_tool_calls_are_cleared_after_the_run(self):
         self.agent.state["messages"] = self.conversation(9)
@@ -141,27 +165,43 @@ class InsertInteractionTest(MemoryServiceTestCase):
 class CoreMemoryOverflowTest(MemoryServiceTestCase):
     """Regression test for the summarize/execute cycle that never terminated."""
 
-    tool_responses = {
-        "InsertCoreMemories": {"memories": ["x" * 300]},
-        "SplitCoreAndArchivalMemory": {
-            "core_memories": ["Bianca is vegetarian"],
-            "archival_memories": ["Bianca visited Palermo in 2019"],
-        },
-    }
-
     def test_core_memory_over_the_limit_is_split_once_and_terminates(self):
+        long_item = CoreMemoryItem(content="x" * 300)
+        self.agent.state["core_memory"] = [long_item]
         self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({
+            "InsertCoreMemories": {"memories": []},
+            "SplitCoreAndArchivalMemory": {
+                "decisions": [{"item_id": long_item.id, "destination": "archive"}]},
+        })
 
         state = self.agent.run_memory_agent("insert")
 
-        self.assertEqual(state["core_memory"], ["Bianca is vegetarian"])
-        self.assertEqual(
-            list(self.vector_store.documents.values()), ["Bianca visited Palermo in 2019"])
+        self.assertEqual(state["core_memory"], [], "the item moved to the archive")
+        self.assertEqual(self.vector_store.documents[long_item.id], long_item.content)
         self.assertEqual(
             self.llm.bound_tool_names().count("SplitCoreAndArchivalMemory"),
             1,
             "the split must happen once, not loop until the recursion limit",
         )
+
+    def test_archived_item_keeps_the_core_memory_item_fields(self):
+        item = CoreMemoryItem(content="y" * 300, supersedes="an-older-item")
+        self.agent.state["core_memory"] = [item]
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({
+            "InsertCoreMemories": {"memories": []},
+            "SplitCoreAndArchivalMemory": {
+                "decisions": [{"item_id": item.id, "destination": "archive"}]},
+        })
+
+        self.agent.run_memory_agent("insert")
+
+        metadata = self.vector_store.metadatas[item.id]
+        self.assertEqual(metadata["status"], "active")
+        self.assertEqual(metadata["supersedes"], "an-older-item")
+        self.assertEqual(metadata["created_at"], item.created_at.isoformat())
+        self.assertEqual(metadata["updated_at"], item.updated_at.isoformat())
 
 
 class MalformedToolCallTest(MemoryServiceTestCase):
@@ -173,13 +213,27 @@ class MalformedToolCallTest(MemoryServiceTestCase):
     }
 
     def test_missing_arguments_do_not_crash_the_graph(self):
-        self.agent.state["core_memory"] = ["kept fact"]
+        kept = CoreMemoryItem(content="kept fact")
+        self.agent.state["core_memory"] = [kept]
         self.agent.state["messages"] = self.conversation(9)
 
         state = self.agent.run_memory_agent("insert")
 
-        self.assertEqual(state["core_memory"], ["kept fact"])
+        self.assertEqual(contents(state), ["kept fact"])
         self.assertEqual(self.vector_store.documents, {})
+
+    def test_malformed_operations_are_skipped(self):
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({"InsertCoreMemories": {"memories": [
+            "not a dict",
+            {"fact": "", "operation": "new"},
+            {"fact": "a fact", "operation": "nonsense"},
+            {"fact": "a good fact", "operation": "new"},
+        ]}})
+
+        state = self.agent.run_memory_agent("insert")
+
+        self.assertEqual(contents(state), ["a good fact"], "only the valid one survives")
 
 
 class RetrieveInteractionTest(MemoryServiceTestCase):
@@ -187,7 +241,7 @@ class RetrieveInteractionTest(MemoryServiceTestCase):
     default_content = "Yes, you are vegetarian."
 
     def test_sufficient_information_answers_without_retrieval(self):
-        self.agent.state["core_memory"] = ["Bianca is vegetarian"]
+        self.agent.state["core_memory"] = [CoreMemoryItem(content="Bianca is vegetarian")]
         self.agent.state["messages"] = [HumanMessage(content="What are my dietary preferences?")]
 
         state = self.agent.run_memory_agent("retrieve")
@@ -218,6 +272,7 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         self.vector_store.add_texts(
             texts=["User likes black tea in the afternoon", "User prefers coffee in the morning"],
             ids=["memory_a", "memory_b"],
+            metadatas=[{"status": "active"}, {"status": "active"}],
         )
         self.agent.state["messages"] = [HumanMessage(content="What can I drink in the afternoon?")]
 
@@ -247,41 +302,37 @@ class AppendMessageTest(MemoryServiceTestCase):
         self.assertIsNot(MemoryAgent(config=TEST_CONFIG), self.agent)
 
 
-class ToolsTest(MemoryServiceTestCase):
-    def test_archival_ids_are_unique(self):
-        insert_archival_memories.invoke({"memories": ["fact one", "fact two"]})
-        insert_archival_memories.invoke({"memories": ["fact one", "fact two"]})
-
-        self.assertEqual(
-            len(self.vector_store.documents), 4, "ids must not collide and overwrite")
-
-    def test_empty_archival_insert_is_a_no_op(self):
-        result = insert_archival_memories.invoke({"memories": []})
-
-        self.assertEqual(self.vector_store.documents, {})
-        self.assertIn("No memories", result)
-
-    def test_blank_archival_memories_are_dropped(self):
-        insert_archival_memories.invoke({"memories": ["   ", "real fact"]})
-
-        self.assertEqual(list(self.vector_store.documents.values()), ["real fact"])
-
-    def test_add_memory_does_not_overwrite_previous_entries(self):
-        add_memory.invoke({"memory_content": "same content"})
-        add_memory.invoke({"memory_content": "same content"})
-
-        self.assertEqual(len(self.vector_store.documents), 2)
-
-    def test_retrieve_memory_accepts_a_string_k(self):
-        self.vector_store.add_texts(texts=["a fact about tea"], ids=["memory_a"])
+class RetrieveMemoryToolTest(MemoryServiceTestCase):
+    def test_string_k_is_accepted(self):
+        self.vector_store.add_texts(
+            texts=["a fact about tea"], ids=["memory_a"], metadatas=[{"status": "active"}])
 
         result = retrieve_memory.invoke({"query": "tea", "k": "1"})
 
         self.assertIn("a fact about tea", result)
 
-    def test_retrieve_memory_without_results(self):
+    def test_tombstones_are_never_returned(self):
+        self.vector_store.add_texts(
+            texts=["a deleted fact", "a superseded fact", "a live fact"],
+            ids=["memory_a", "memory_b", "memory_c"],
+            metadatas=[{"status": "deleted"}, {"status": "superseded"}, {"status": "active"}],
+        )
+
+        result = retrieve_memory.invoke({"query": "fact", "k": 10})
+
+        self.assertIn("a live fact", result)
+        self.assertNotIn("a deleted fact", result)
+        self.assertNotIn("a superseded fact", result)
+
+    def test_entries_without_a_status_are_treated_as_active(self):
+        # Whatever was written before consolidation existed must stay readable.
+        self.vector_store.add_texts(texts=["a legacy fact"], ids=["memory_legacy"])
+
+        self.assertIn("a legacy fact", retrieve_memory.invoke({"query": "legacy"}))
+
+    def test_no_results(self):
         self.assertEqual(
-            retrieve_memory.invoke({"query": "anything"}), "No relevant memories found.")
+            retrieve_memory.invoke({"query": "anything"}), "No relevant active memories found.")
 
 
 class MessagesToStrTest(unittest.TestCase):

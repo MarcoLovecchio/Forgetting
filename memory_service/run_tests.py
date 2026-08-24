@@ -25,6 +25,7 @@ for path in (PACKAGE_ROOT, TEST_ROOT):
 
 TEST_MODULES = (
     "test_memory_agent",
+    "test_consolidation",
     "test_config",
     "test_memory_server",  # skipped when rclpy is not available
 )

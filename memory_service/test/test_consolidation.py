@@ -1,0 +1,300 @@
+"""Ciclo di vita della memoria, un turno per operazione, senza chiavi API.
+
+Ogni turno l'utente dice qualcosa, il classificatore (qui scriptato) restituisce
+una classificazione diversa, e dopo ogni turno viene stampato lo stato completo
+della memoria: core, finestra dei messaggi, archivio vettoriale con i metadata,
+ultimo recupero e operation log.
+
+I turni sono in sequenza e ognuno parte dallo stato lasciato dal precedente:
+
+    1. new         tre fatti nuovi entrano in core memory
+    2. redundant   lo stesso fatto ripetuto rinforza l'item esistente
+    3. update      un fatto viene raffinato: il vecchio diventa superseded
+    4. contradict  un fatto viene smentito: stessa meccanica, op diversa
+    5. delete      l'utente chiede di dimenticare: l'item diventa deleted
+    6. archive     core memory oltre il limite: un item passa all'archivio
+    7. retrieve    la risposta pesca dall'archivio, i tombstone restano fuori
+
+Esecuzione: python memory_service/run_tests.py -v
+"""
+
+import os
+import sys
+import time
+import unittest
+
+PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+from langchain_core.messages import HumanMessage  # noqa: E402
+
+from memory_service import backends  # noqa: E402
+from memory_service.config import MemoryConfig  # noqa: E402
+from memory_service.consolidation import get_active_items  # noqa: E402
+from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
+
+from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
+from snapshot import print_memory_snapshot, print_turn_header  # noqa: E402
+
+
+# Un solo messaggio di storico: cosi' ogni turno fa scattare il consolidamento.
+# Il limite di caratteri e' alto, il turno 6 lo abbassa apposta per lo split.
+LIFECYCLE_CONFIG = MemoryConfig(
+    node_name="memory_agent",
+    maximum_historical_messages=1,
+    core_memory_limit=2000,
+    chroma_path="/tmp/not-used",
+    collection_name="test_archive",
+    llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
+)
+
+
+def find_item(items, needle):
+    """Item attivo il cui contenuto contiene `needle`."""
+    for item in items:
+        if needle.lower() in item.content.lower():
+            return item
+    raise AssertionError(f"nessun item contiene {needle!r}: {[i.content for i in items]}")
+
+
+class ConsolidationLifecycleTest(unittest.TestCase):
+    """Un unico scenario: i turni si susseguono e costruiscono lo stato."""
+
+    def setUp(self):
+        self.llm = ScriptedChatModel(tool_responses={}, default_content="ok")
+        self.store = FakeVectorStore()
+        backends.reset()
+        backends.configure(llm=self.llm, vector_store=self.store, config=LIFECYCLE_CONFIG)
+        MemoryAgent.reset_instance()
+        self.agent = MemoryAgent(config=LIFECYCLE_CONFIG)
+
+    def tearDown(self):
+        MemoryAgent.reset_instance()
+        backends.reset()
+
+    # -- un turno ---------------------------------------------------------- #
+
+    def consolidate(self, turn, operation, description, user_message, memories,
+                    assistant_message="Va bene."):
+        """L'utente dice qualcosa, il classificatore risponde `memories`."""
+        print_turn_header(turn, operation, description)
+        self.llm.script({"InsertCoreMemories": {"memories": memories}})
+        self.agent.append_message(user_message, "user")
+        self.agent.append_message(assistant_message, "assistant")
+
+        state = self.agent.run_memory_agent("insert")
+
+        print_memory_snapshot(f"turno {turn} - {operation}", state, self.store)
+        return state
+
+    def active(self, state):
+        return get_active_items(state["core_memory"])
+
+    # -- lo scenario -------------------------------------------------------- #
+
+    def test_memory_lifecycle_turn_by_turn(self):
+        # --- TURNO 1: new ------------------------------------------------- #
+        state = self.consolidate(
+            1, "new", "tre fatti mai visti prima entrano in core memory",
+            "Mi chiamo Bianca, sono vegetariana e punto a 2000 calorie al giorno.",
+            [
+                {"fact": "L'utente si chiama Bianca", "operation": "new"},
+                {"fact": "L'utente e' vegetariana", "operation": "new"},
+                {"fact": "L'obiettivo giornaliero e' 2000 calorie", "operation": "new"},
+            ],
+        )
+
+        items = self.active(state)
+        self.assertEqual(len(items), 3, "i tre fatti diventano tre item distinti")
+        self.assertEqual([entry.op_type for entry in state["operation_log"]], ["create"] * 3)
+        self.assertEqual(self.store.documents, {}, "niente finisce in archivio")
+
+        name_item = find_item(items, "Bianca")
+        veg_item = find_item(items, "vegetariana")
+        goal_item = find_item(items, "2000 calorie")
+
+        # --- TURNO 2: redundant ------------------------------------------- #
+        updated_at_before = name_item.updated_at
+        time.sleep(0.02)  # updated_at deve risultare piu' recente
+
+        state = self.consolidate(
+            2, "redundant", "l'utente ripete un fatto gia' noto: si rinforza, non si duplica",
+            "Ti ricordo che mi chiamo Bianca.",
+            [{"fact": "L'utente si chiama Bianca", "operation": "redundant",
+              "target_item_id": name_item.id}],
+        )
+
+        items = self.active(state)
+        self.assertEqual(len(items), 3, "nessun item aggiunto")
+        reinforced = find_item(items, "Bianca")
+        self.assertEqual(reinforced.id, name_item.id, "e' lo stesso item di prima")
+        self.assertGreater(reinforced.updated_at, updated_at_before, "updated_at rinfrescato")
+        self.assertEqual(state["operation_log"][-1].op_type, "redundant")
+        self.assertEqual(self.store.documents, {}, "un rinforzo non tocca l'archivio")
+
+        # --- TURNO 3: update ---------------------------------------------- #
+        state = self.consolidate(
+            3, "update", "un fatto viene raffinato: il vecchio diventa superseded",
+            "Ho alzato l'obiettivo a 2200 calorie al giorno.",
+            [{"fact": "L'obiettivo giornaliero e' 2200 calorie", "operation": "update",
+              "target_item_id": goal_item.id}],
+        )
+
+        items = self.active(state)
+        self.assertEqual(len(items), 3, "il vecchio esce, il nuovo entra")
+        updated = find_item(items, "2200 calorie")
+        self.assertEqual(updated.supersedes, goal_item.id, "il nuovo punta al vecchio")
+        self.assertNotIn(goal_item.id, [item.id for item in items], "il vecchio esce da core")
+        self.assertEqual(self.store.status_of(goal_item.id), "superseded")
+        self.assertEqual(self.store.documents[goal_item.id], goal_item.content,
+                         "in archivio resta il contenuto originale")
+        last = state["operation_log"][-1]
+        self.assertEqual((last.op_type, last.related_item_id), ("update", goal_item.id))
+
+        # --- TURNO 4: contradict ------------------------------------------ #
+        state = self.consolidate(
+            4, "contradict", "un fatto viene smentito: stessa meccanica dell'update",
+            "In realta' non sono piu' vegetariana, ora mangio pesce.",
+            [{"fact": "L'utente mangia pesce, non e' piu' vegetariana",
+              "operation": "contradict", "target_item_id": veg_item.id}],
+        )
+
+        items = self.active(state)
+        self.assertEqual(len(items), 3)
+        contradicted = find_item(items, "pesce")
+        self.assertEqual(contradicted.supersedes, veg_item.id)
+        self.assertEqual(self.store.status_of(veg_item.id), "superseded")
+        last = state["operation_log"][-1]
+        self.assertEqual((last.op_type, last.related_item_id), ("contradict", veg_item.id))
+
+        # --- TURNO 5: delete ---------------------------------------------- #
+        state = self.consolidate(
+            5, "delete", "l'utente chiede esplicitamente di dimenticare un fatto",
+            "Dimentica il mio nome, non voglio che lo memorizzi.",
+            [{"fact": "L'utente si chiama Bianca", "operation": "delete",
+              "target_item_id": name_item.id}],
+        )
+
+        items = self.active(state)
+        self.assertEqual(len(items), 2, "l'item cancellato esce da core memory")
+        self.assertNotIn(name_item.id, [item.id for item in items])
+        self.assertEqual(self.store.status_of(name_item.id), "deleted",
+                         "resta in archivio come tombstone")
+        self.assertEqual(state["operation_log"][-1].op_type, "delete")
+
+        # --- TURNO 6: archive (split core -> archivio) --------------------- #
+        survivor = find_item(items, "pesce")
+        moved = find_item(items, "2200 calorie")
+
+        print_turn_header(6, "archive", "core memory oltre il limite: un item passa all'archivio")
+        self.agent.state["core_memory_limit"] = 40  # forza lo split al prossimo giro
+        self.llm.script({
+            "InsertCoreMemories": {"memories": []},
+            "SplitCoreAndArchivalMemory": {
+                "decisions": [
+                    {"item_id": moved.id, "destination": "archive"},
+                    {"item_id": survivor.id, "destination": "core"},
+                ]
+            },
+        })
+        self.agent.append_message("Parliamo d'altro.", "user")
+        self.agent.append_message("Certo.", "assistant")
+
+        state = self.agent.run_memory_agent("insert")
+        print_memory_snapshot("turno 6 - archive", state, self.store)
+
+        items = self.active(state)
+        self.assertEqual([item.id for item in items], [survivor.id], "in core resta un item solo")
+        self.assertEqual(self.store.documents[moved.id], moved.content)
+        self.assertEqual(self.store.status_of(moved.id), "active",
+                         "archiviato ma ancora valido, non e' un tombstone")
+        archived_metadata = self.store.metadatas[moved.id]
+        self.assertEqual(archived_metadata["supersedes"], moved.supersedes,
+                         "i campi del CoreMemoryItem sopravvivono all'archiviazione")
+        for field in ("status", "supersedes", "created_at", "updated_at"):
+            self.assertIn(field, archived_metadata)
+        self.assertEqual(state["operation_log"][-1].op_type, "archive")
+
+        # --- TURNO 7: retrieve --------------------------------------------- #
+        print_turn_header(
+            7, "retrieve", "la risposta pesca dall'archivio, i tombstone restano fuori")
+        self.llm.script(
+            {
+                "InformationSufficiency": {"is_sufficient": False},
+                "retrieve_memory": {"query": "calorie obiettivo", "k": 10},
+            },
+            default_content="Il tuo obiettivo e' 2200 calorie al giorno.",
+        )
+        self.agent.state["messages"] = [
+            HumanMessage(content="Qual e' il mio obiettivo calorico?")]
+        self.agent.state["retrieved_memory"] = ""
+
+        state = self.agent.run_memory_agent("retrieve")
+        print_memory_snapshot("turno 7 - retrieve", state, self.store)
+
+        retrieved = state["retrieved_memory"]
+        self.assertIn("2200 calorie", retrieved, "l'item archiviato attivo viene recuperato")
+        self.assertNotIn(name_item.content, retrieved, "il fatto cancellato non torna")
+        self.assertNotIn(veg_item.content, retrieved, "il fatto smentito non torna")
+        self.assertEqual(state["messages"][-1].content,
+                         "Il tuo obiettivo e' 2200 calorie al giorno.")
+
+
+class TargetResolutionTest(unittest.TestCase):
+    """Cosa succede quando il classificatore non da' un target_item_id valido.
+
+    Sono i casi che nella pratica si vedono piu' spesso: il modello dimentica
+    l'id, oppure se lo inventa.
+    """
+
+    def setUp(self):
+        self.llm = ScriptedChatModel(tool_responses={}, default_content="ok")
+        self.store = FakeVectorStore()
+        backends.reset()
+        backends.configure(llm=self.llm, vector_store=self.store, config=LIFECYCLE_CONFIG)
+        MemoryAgent.reset_instance()
+        self.agent = MemoryAgent(config=LIFECYCLE_CONFIG)
+
+    def tearDown(self):
+        MemoryAgent.reset_instance()
+        backends.reset()
+
+    def consolidate(self, memories):
+        self.llm.script({"InsertCoreMemories": {"memories": memories}})
+        self.agent.append_message("un messaggio qualsiasi", "user")
+        self.agent.append_message("ok", "assistant")
+        return self.agent.run_memory_agent("insert")
+
+    def test_redundant_without_id_is_matched_by_content(self):
+        state = self.consolidate([{"fact": "L'utente si chiama Bianca", "operation": "new"}])
+        existing = state["core_memory"][0]
+
+        state = self.consolidate(
+            [{"fact": "L'utente si chiama Bianca", "operation": "redundant"}])
+
+        self.assertEqual([item.id for item in state["core_memory"]], [existing.id],
+                         "riconosciuto come lo stesso fatto, nessun duplicato")
+        self.assertEqual(state["operation_log"][-1].op_type, "redundant")
+
+    def test_update_on_an_unknown_id_is_kept_as_a_new_fact(self):
+        state = self.consolidate(
+            [{"fact": "L'utente vive a Palermo", "operation": "update",
+              "target_item_id": "id-inventato-dal-modello"}])
+
+        self.assertEqual([item.content for item in state["core_memory"]],
+                         ["L'utente vive a Palermo"])
+        self.assertEqual(state["operation_log"][-1].op_type, "create",
+                         "meglio salvarlo come nuovo che perdere l'informazione")
+
+    def test_delete_without_a_target_is_ignored(self):
+        state = self.consolidate(
+            [{"fact": "qualcosa che non e' in memoria", "operation": "delete"}])
+
+        self.assertEqual(state["core_memory"], [], "non si cancella nulla a caso")
+        self.assertEqual(state["operation_log"], [], "e non si registra nessuna operazione")
+
+
+if __name__ == "__main__":
+    unittest.main()

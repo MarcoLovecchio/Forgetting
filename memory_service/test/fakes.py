@@ -79,6 +79,20 @@ class ScriptedChatModel(BaseChatModel):
         return self.bind(tools=list(tools), **kwargs)
 
     # -- helpers used by the tests --------------------------------------------
+    def script(
+        self,
+        tool_responses: Optional[Dict[str, Dict[str, Any]]] = None,
+        default_content: Optional[str] = None,
+    ) -> None:
+        """Decide what the model will "want" to do from the next call on.
+
+        Turn based tests call this before every turn, so each turn exercises a
+        different classification.
+        """
+        self.tool_responses = dict(tool_responses or {})
+        if default_content is not None:
+            self.default_content = default_content
+
     def reset(self) -> None:
         self.invocations.clear()
 
@@ -87,7 +101,12 @@ class ScriptedChatModel(BaseChatModel):
 
 
 class FakeVectorStore:
-    """In-memory stand-in for the Chroma archival store."""
+    """In-memory stand-in for the Chroma archival store.
+
+    Mirrors the slice of the langchain Chroma API the service uses: ``add_texts``
+    (which upserts by id), ``get`` and ``similarity_search``. Metadata is stored
+    and returned, because consolidation reads the item status from there.
+    """
 
     def __init__(self):
         self.documents: Dict[str, str] = {}
@@ -104,8 +123,20 @@ class FakeVectorStore:
             raise ValueError("texts, ids and metadatas must have the same length")
         for doc_id, text, metadata in zip(ids, texts, metadatas):
             self.documents[doc_id] = text
-            self.metadatas[doc_id] = metadata
+            self.metadatas[doc_id] = dict(metadata or {})
         return ids
+
+    def get(self, ids=None, **kwargs):
+        """Same contract as Chroma.get: no ids means the whole collection."""
+        if ids is None:
+            selected = list(self.documents)
+        else:
+            selected = [doc_id for doc_id in ids if doc_id in self.documents]
+        return {
+            "ids": selected,
+            "documents": [self.documents[doc_id] for doc_id in selected],
+            "metadatas": [self.metadatas.get(doc_id, {}) for doc_id in selected],
+        }
 
     def similarity_search(self, query, k=3, **kwargs):
         if not isinstance(k, int):
@@ -117,4 +148,14 @@ class FakeVectorStore:
             return len(words & {word.lower() for word in text.split()})
 
         ranked = sorted(self.documents.items(), key=lambda item: score(item[1]), reverse=True)
-        return [Document(id=doc_id, page_content=text) for doc_id, text in ranked[:k]]
+        return [
+            Document(id=doc_id, page_content=text, metadata=self.metadatas.get(doc_id, {}))
+            for doc_id, text in ranked[:k]
+        ]
+
+    # -- helpers used by the tests --------------------------------------------
+    def status_of(self, doc_id: str) -> Optional[str]:
+        """Status an archived item was stored with, None if it is not there."""
+        if doc_id not in self.documents:
+            return None
+        return self.metadatas.get(doc_id, {}).get("status")

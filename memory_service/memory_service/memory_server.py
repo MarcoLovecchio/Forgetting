@@ -4,6 +4,7 @@ from rclpy.node import Node
 from memory_service_interfaces.srv import UpdateMemory, GetMemory
 
 from memory_service.memory_manager_llm import MemoryAgent
+from memory_service.consolidation import serialize_core_memory_for_prompt
 
 
 def to_string_list(values):
@@ -45,7 +46,8 @@ class MemoryServer(Node):
             state = self.memory_agent.run_memory_agent(interaction_mode='insert')
 
             # Extract core_memory and populate the response object
-            response.memory_list = to_string_list(state.get("core_memory", []))
+            response.memory_list = to_string_list(
+                serialize_core_memory_for_prompt(state.get("core_memory", [])))
 
             self.get_logger().info(f"Core memory: {response.memory_list}")
 
@@ -65,7 +67,8 @@ class MemoryServer(Node):
             state = self.memory_agent.run_memory_agent(interaction_mode='retrieve')
 
             # Extract core memory and last messages and populate the response object
-            response.memory_list = to_string_list(state.get("core_memory", []))
+            response.memory_list = to_string_list(
+                serialize_core_memory_for_prompt(state.get("core_memory", [])))
             response.last_messages = to_string_list(
                 [message.content for message in state.get("messages", [])])
 
