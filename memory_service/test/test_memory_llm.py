@@ -5,16 +5,20 @@ import pytest
 from langchain_core.messages import HumanMessage, AIMessage
 
 
-# This test drives the real LLM/LangSmith stack, so it is only meaningful when
-# the environment is configured. Without these variables the module used to raise
-# at import time and break the whole test session.
+# This test drives the real LLM stack (Groq + Mistral + ChromaDB), so it is
+# only meaningful when the environment is configured. Without LLM_CONFIG the
+# module used to raise at import time and break the whole test session.
 pytestmark = pytest.mark.skipif(
-    not os.getenv("LLM_CONFIG") or not os.getenv("LANGSMITH_API_KEY"),
-    reason="LLM_CONFIG and LANGSMITH_API_KEY are required to run the memory agent tests",
+    not os.getenv("LLM_CONFIG"),
+    reason="LLM_CONFIG is required to run the memory agent tests",
 )
 
 
 def _configure_langsmith():
+    # LangSmith tracing is optional, as in the rest of the architecture: it is
+    # only enabled when a LANGSMITH_API_KEY is actually provided.
+    if not os.getenv("LANGSMITH_API_KEY"):
+        return
     os.environ["LANGSMITH_TRACING"] = "true"
     os.environ["LANGSMITH_ENDPOINT"] = "https://api.smith.langchain.com"
     model_name = ast.literal_eval(os.getenv("LLM_CONFIG"))["memory_agent"]["model_name"]

@@ -1,19 +1,14 @@
 from pydantic import BaseModel
-import os
 import uuid
 from datetime import datetime as time
-import chromadb
-from chromadb.errors import NotFoundError
-from langchain_chroma import Chroma
-from langchain.tools import tool
+from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_mistralai import MistralAIEmbeddings
 from langgraph.graph import StateGraph, END, START
 from langchain_core.messages import HumanMessage, AIMessage
-from typing import Dict, Any, Literal, TypedDict
-from dotenv import load_dotenv
-from shared_utils.llm_helpers import LLM_Initializer
-load_dotenv()
+from typing import Dict, Any, Literal, Optional, TypedDict
+
+from memory_service import backends
+from memory_service.config import MemoryConfig
 
 # Define the agent state.
 # NOTE: TypedDict does not support default values, so every key has to be provided
@@ -41,38 +36,17 @@ class SplitCoreAndArchivalMemory(BaseModel):
     core_memories: list[str]
     archival_memories: list[str]
 
-# Initialize ChromaDB client and collection for archival memory
-chroma_db_path = os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db"))
-chroma_client = chromadb.PersistentClient(path=chroma_db_path)
-collection_name = "memory_archive"
+# The chat model and the archival vector store are built on first use, see
+# memory_service.backends. Tests (and any other application) can replace them
+# with backends.configure(llm=..., vector_store=...).
+def get_llm():
+    """Chat model used by every node of the graph."""
+    return backends.get_llm()
 
-# Create or get the collection
-try:
-    collection = chroma_client.get_collection(name=collection_name)
-except NotFoundError:
-    collection = chroma_client.create_collection(name=collection_name)
 
-# Initialize embeddings and vector store
-embeddings = MistralAIEmbeddings()
-vector_store = Chroma(
-    client=chroma_client,
-    collection_name=collection_name,
-    embedding_function=embeddings
-)
-
-class MemoryAgentLLM(LLM_Initializer):
-
-    def __init__(self, node_name:str):
-        super().__init__(node_name)
-
-    # Redefine abstractmethod from the parent class with more parameters (must be Noneable by default)
-    def get_LLM_response(self, prompt):
-        return self._llm.invoke(prompt)
-
-    def get_LLM(self):
-        return self._llm
-    
-memoryAgentLLM = MemoryAgentLLM('memory_agent')
+def get_vector_store():
+    """Vector store holding the archival memories."""
+    return backends.get_vector_store()
 
 def messages_to_str(messages) -> str:
     """Convert a list of messages to a single string for prompt input."""
@@ -95,7 +69,7 @@ def insert_archival_memories(memories: list[str]):
         return "No memories to add."
     doc_ids = [f"memory_{uuid.uuid4().hex}" for _ in memories]
     print(f"\tInserting archival memories: {memories} with IDs: {doc_ids}")
-    vector_store.add_texts(texts=memories, ids=doc_ids, metadatas=[{"timestamp": str(time.now())}]*len(memories))
+    get_vector_store().add_texts(texts=memories, ids=doc_ids, metadatas=[{"timestamp": str(time.now())}]*len(memories))
     return f"Memories added with IDs: {', '.join(doc_ids)}"
 
 
@@ -135,7 +109,7 @@ Your previous interactions:
 Is the information sufficient to answer the query?""")
     ])
     
-    router_llm = memoryAgentLLM.get_LLM().bind_tools([InformationSufficiency])
+    router_llm = get_llm().bind_tools([InformationSufficiency])
     chain = prompt | router_llm
     response = chain.invoke({"user_query": user_query, "core_memory": core_memory, "previous_messages": previous_messages})
     # extract and coerce
@@ -155,7 +129,7 @@ def add_memory(memory_content: str) -> str:
     """Add a new memory to the archival vector store."""
     print(f"\tAdding memory: {memory_content}")
     doc_id = f"memory_{uuid.uuid4().hex}"
-    vector_store.add_texts(texts=[memory_content], ids=[doc_id], metadatas=[{"timestamp": str(time.now())}])
+    get_vector_store().add_texts(texts=[memory_content], ids=[doc_id], metadatas=[{"timestamp": str(time.now())}])
     return f"Memory added with ID: {doc_id}"
 
 # Tool to retrieve memories from the archive
@@ -168,7 +142,7 @@ def retrieve_memory(query: str, k: int = 3) -> str:
         k = max(1, int(k))
     except (TypeError, ValueError):
         k = 3
-    docs = vector_store.similarity_search(query, k=k)
+    docs = get_vector_store().similarity_search(query, k=k)
     print(docs)
     results = "\n".join([f"ID: {doc.id}, Content: {doc.page_content}" for doc in docs])
     return results if results else "No relevant memories found."
@@ -183,7 +157,7 @@ def retrieval_node(state: AgentState):
     ])
     
     # Bind tools to LLM
-    llm_with_tools = memoryAgentLLM.get_LLM().bind_tools([retrieve_memory])
+    llm_with_tools = get_llm().bind_tools([retrieve_memory])
     
     chain = prompt | llm_with_tools
     response = chain.invoke({"input": state["messages"][-1].content, "core_memory": state["core_memory"]})
@@ -249,7 +223,7 @@ def generate_answer(state: AgentState):
         ("human", "{input}")
     ])
     
-    chain = prompt | memoryAgentLLM.get_LLM()
+    chain = prompt | get_llm()
     
     response = chain.invoke({"input": state["messages"][-1].content, 
                              "core_memory": state["core_memory"], 
@@ -292,7 +266,7 @@ Extract any new facts about the user from these messages and rewrite the old cor
 Current core memories are: {core_memory}.
 Focus on preferences, opinions, or personal facts mentioned by the user.""")
     ])
-    summarizer_llm = memoryAgentLLM.get_LLM().bind_tools([InsertCoreMemories])
+    summarizer_llm = get_llm().bind_tools([InsertCoreMemories])
     chain = prompt | summarizer_llm
     core_memories = {i:cm for i,cm in enumerate(state["core_memory"])}
     response = chain.invoke({"exceeding_messages": exceeding_messages, "core_memory": core_memories})
@@ -312,7 +286,7 @@ def summarize_core_memories_node(state: AgentState):
         ("human", """The current core memories are: {core_memory}. 
          The length is {core_memory_length} characters out of the allowed {core_memory_limit} characters.""")])
 
-    summarizer_llm = memoryAgentLLM.get_LLM().bind_tools([SplitCoreAndArchivalMemory])
+    summarizer_llm = get_llm().bind_tools([SplitCoreAndArchivalMemory])
     chain = prompt | summarizer_llm
     core_memory = "\n".join(state["core_memory"])
     response = chain.invoke({"core_memory": core_memory, "core_memory_length": len(core_memory), "core_memory_limit": state["core_memory_limit"]})
@@ -363,17 +337,27 @@ class MemoryAgent():
             cls._instance = super(MemoryAgent, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, config: Optional[MemoryConfig] = None):
         if not hasattr(self, "state"):  # prevents re-initialization
+            self.config = config or backends.get_config()
             self.state = {
                 "core_memory": [],
                 "messages": [],
-                "maximum_historical_messages": 5,
-                "core_memory_limit": 150,
+                "maximum_historical_messages": self.config.maximum_historical_messages,
+                "core_memory_limit": self.config.core_memory_limit,
                 "retrieved_memory": "",
                 "tool_calls": []
             }
             self.up_to_date = False
+
+    @classmethod
+    def reset_instance(cls):
+        """Drop the singleton, so that a fresh agent can be built.
+
+        The singleton is convenient for the ROS node (a single memory shared by
+        every service call) but it leaks state across test cases.
+        """
+        cls._instance = None
 
     # Function to run the agent
     def run_memory_agent(self, interaction_mode="retrieve"):
