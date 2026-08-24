@@ -1,4 +1,3 @@
-import sys
 import rclpy
 from rclpy.node import Node
 
@@ -16,10 +15,12 @@ class MemoryClient(Node):
         while not self.get_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for get_memory service...')
 
-    def send_update_request(self, user_input, explanation):
+    def send_update_request(self, user_input, explanation, queries=None, results=''):
         req = UpdateMemory.Request()
-        req.user_input = user_input
-        req.explanation = explanation
+        req.user_input = str(user_input)
+        req.queries = [str(q) for q in (queries or [])]
+        req.results = str(results)
+        req.explanation = str(explanation)
         future = self.update_client.call_async(req)
         rclpy.spin_until_future_complete(self, future)
         return future.result()
@@ -36,7 +37,12 @@ def main(args=None):
     client = MemoryClient()
 
     # Example usage
-    update_response = client.send_update_request('ciao voglio mangiare la nutella', ['q1', 'q2'], 'result1, result2', 'puoi mangiare la nutella')
+    update_response = client.send_update_request(
+        'ciao voglio mangiare la nutella',
+        'puoi mangiare la nutella',
+        queries=['q1', 'q2'],
+        results='result1, result2',
+    )
     print('Updated list:', update_response.memory_list)
 
     get_response = client.send_get_request()

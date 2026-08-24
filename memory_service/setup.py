@@ -22,7 +22,6 @@ setup(
         'console_scripts': [
             'memory_server = memory_service.memory_server:main',
             'memory_client = memory_service.memory_client:main',
-            'memory_manage_llm = memory_service.memory_manage_llm:main',
         ],
     },
 )

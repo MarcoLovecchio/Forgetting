@@ -1,31 +1,31 @@
 from pydantic import BaseModel
 import os
+import uuid
 from datetime import datetime as time
 import chromadb
 from chromadb.errors import NotFoundError
 from langchain_chroma import Chroma
 from langchain.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 from langchain_mistralai import MistralAIEmbeddings
-from langgraph.graph import MessagesState, StateGraph, END, START
+from langgraph.graph import StateGraph, END, START
 from langchain_core.messages import HumanMessage, AIMessage
 from typing import Dict, Any, Literal, TypedDict
-from langchain.chat_models import init_chat_model
-from typing import Literal
 from dotenv import load_dotenv
 from shared_utils.llm_helpers import LLM_Initializer
 load_dotenv()
 
-# Define the agent state    
+# Define the agent state.
+# NOTE: TypedDict does not support default values, so every key has to be provided
+# by the caller (see MemoryAgent.__init__ for the initial values).
 class AgentState(TypedDict):
     messages: list
     tool_calls: list[Dict[str, Any]]
     core_memory: list[str]
-    retrieved_memory: str = ""
-    current_interaction: str = Literal["insert", "retrieve"]
-    maximum_historical_messages: int = 5  # Limit the number of historical messages to keep
-    core_memory_limit: int = 150  # Character limit for core memory
+    retrieved_memory: str
+    current_interaction: Literal["insert", "retrieve"]
+    maximum_historical_messages: int  # Limit the number of historical messages to keep
+    core_memory_limit: int  # Character limit for core memory
 
 
 class InsertCoreMemories(BaseModel):
@@ -42,7 +42,8 @@ class SplitCoreAndArchivalMemory(BaseModel):
     archival_memories: list[str]
 
 # Initialize ChromaDB client and collection for archival memory
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
+chroma_db_path = os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db"))
+chroma_client = chromadb.PersistentClient(path=chroma_db_path)
 collection_name = "memory_archive"
 
 # Create or get the collection
@@ -66,7 +67,7 @@ class MemoryAgentLLM(LLM_Initializer):
 
     # Redefine abstractmethod from the parent class with more parameters (must be Noneable by default)
     def get_LLM_response(self, prompt):
-        self._llm.invoke(prompt)
+        return self._llm.invoke(prompt)
 
     def get_LLM(self):
         return self._llm
@@ -88,7 +89,11 @@ def messages_to_str(messages) -> str:
 def insert_archival_memories(memories: list[str]):
     """These are the archival memories of our assistant. They should store less frequently accessed information that may be useful for long-term context.
     Given old memories from the historical interactions, you should summarize them into this other memory."""
-    doc_ids = [f"memory_{len(collection.get()['ids']) + i}" for i in range(1, len(memories) + 1)]
+    memories = [m for m in (memories or []) if str(m).strip()]
+    if not memories:
+        print("\tNo archival memories to insert.")
+        return "No memories to add."
+    doc_ids = [f"memory_{uuid.uuid4().hex}" for _ in memories]
     print(f"\tInserting archival memories: {memories} with IDs: {doc_ids}")
     vector_store.add_texts(texts=memories, ids=doc_ids, metadatas=[{"timestamp": str(time.now())}]*len(memories))
     return f"Memories added with IDs: {', '.join(doc_ids)}"
@@ -106,7 +111,7 @@ class InformationSufficiency(BaseModel):
 def interaction_type_node(state: AgentState) -> str:
     return state["current_interaction"]
 
-def empty_node(state: AgentState) -> bool:
+def empty_node(state: AgentState) -> AgentState:
     return state
 
 def check_information_sufficiency(state: AgentState) -> bool:
@@ -149,8 +154,8 @@ Is the information sufficient to answer the query?""")
 def add_memory(memory_content: str) -> str:
     """Add a new memory to the archival vector store."""
     print(f"\tAdding memory: {memory_content}")
-    doc_id = f"memory_{len(collection.get()['ids']) + 1}"
-    vector_store.add_texts(texts=[memory_content], ids=[doc_id])
+    doc_id = f"memory_{uuid.uuid4().hex}"
+    vector_store.add_texts(texts=[memory_content], ids=[doc_id], metadatas=[{"timestamp": str(time.now())}])
     return f"Memory added with ID: {doc_id}"
 
 # Tool to retrieve memories from the archive
@@ -159,6 +164,10 @@ def retrieve_memory(query: str, k: int = 3) -> str:
     """Retrieve relevant memories from the archival vector store based on a query.
     Returns up to k relevant memories.
     Think about the best value of k based on the complexity of the query."""
+    try:
+        k = max(1, int(k))
+    except (TypeError, ValueError):
+        k = 3
     docs = vector_store.similarity_search(query, k=k)
     print(docs)
     results = "\n".join([f"ID: {doc.id}, Content: {doc.page_content}" for doc in docs])
@@ -202,20 +211,22 @@ def tool_node(state: AgentState):
             result = retrieve_memory.invoke(tool_args)
         elif tool_name == "InsertCoreMemories":
             print(f"Invoking InsertCoreMemories with args: {tool_args}")
-            state["core_memory"] = tool_args["memories"]
+            state["core_memory"] = list(tool_args.get("memories", state["core_memory"]))
             result = "Core memories updated."
         elif tool_name == "insert_archival_memories":
             print(f"Invoking insert_archival_memories with args: {tool_args}")
             result = insert_archival_memories.invoke(tool_args)
         elif tool_name == "SplitCoreAndArchivalMemory":
             print(f"Invoking SplitCoreAndArchivalMemory with args: {tool_args}")
-            state["core_memory"] = tool_args["core_memories"]
-            result = insert_archival_memories.invoke({"memories": tool_args["archival_memories"]})
+            state["core_memory"] = list(tool_args.get("core_memories", state["core_memory"]))
+            result = insert_archival_memories.invoke({"memories": tool_args.get("archival_memories", [])})
         else:
             result = "Unknown tool"
         
         results.append(result)
     
+    results = [str(result) for result in results]
+
     # Update memory context with retrieval results if applicable
     if "retrieve_memory" in [tc["name"] for tc in tool_calls]:
         retrieved_memory = "\n".join(results)
@@ -242,7 +253,7 @@ def generate_answer(state: AgentState):
     
     response = chain.invoke({"input": state["messages"][-1].content, 
                              "core_memory": state["core_memory"], 
-                             "retrieved_memory": state["retrieved_memory"], 
+                             "retrieved_memory": state.get("retrieved_memory", ""), 
                              "messages": messages_to_str(state["messages"][:-1])})
 
     return {"messages": state["messages"] + [response]}
@@ -263,7 +274,8 @@ def exceed_core_memory_limit(state: AgentState) -> bool:
 
 def summarize_memories_node(state: AgentState):
 
-    exceeding_messages = state['messages'][:-state['maximum_historical_messages']]
+    keep = max(1, state['maximum_historical_messages'])
+    exceeding_messages = state['messages'][:-keep]
     exceeding_messages = messages_to_str(exceeding_messages)
     print(f"\tSummarizing {exceeding_messages}")
 
@@ -285,7 +297,7 @@ Focus on preferences, opinions, or personal facts mentioned by the user.""")
     core_memories = {i:cm for i,cm in enumerate(state["core_memory"])}
     response = chain.invoke({"exceeding_messages": exceeding_messages, "core_memory": core_memories})
     print(f"\tSummarization result: {response}")
-    return {"tool_calls": state["tool_calls"] + [response], "messages": state["messages"][-state["maximum_historical_messages"]:]}  # Keep only the last N messages
+    return {"tool_calls": state["tool_calls"] + [response], "messages": state["messages"][-keep:]}  # Keep only the last N messages
 
 def summarize_core_memories_node(state: AgentState):
     
@@ -326,9 +338,13 @@ graph.add_node("insert_memories", empty_node)
 graph.add_node("summarize_memories", summarize_memories_node)
 graph.add_node("summarize_core_memories", summarize_core_memories_node)
 graph.add_node("execute_insertion_tool", tool_node)
+# Dedicated node for the core/archival split: reusing execute_insertion_tool would
+# create a summarize_core_memories <-> execute_insertion_tool cycle that only stops
+# on the LangGraph recursion limit.
+graph.add_node("execute_core_split_tool", tool_node)
 graph.add_edge("summarize_memories",  "execute_insertion_tool")
-graph.add_edge("execute_insertion_tool", END)
-graph.add_edge("summarize_core_memories",  "execute_insertion_tool")
+graph.add_edge("summarize_core_memories",  "execute_core_split_tool")
+graph.add_edge("execute_core_split_tool", END)
 
 graph.add_conditional_edges(START, interaction_type_node, {'insert': "insert_memories", 'retrieve': "router"})
 graph.add_conditional_edges('router', check_information_sufficiency, {True: "generate_answer", False: "retrieve"})
