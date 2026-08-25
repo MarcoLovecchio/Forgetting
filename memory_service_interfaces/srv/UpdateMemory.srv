@@ -1,15 +1,8 @@
-# Interaction to consolidate into memory
 string user_input
 string[] queries
 string results
 string explanation
 ---
-# Content of the active core memories, after the consolidation
 string[] memory_list
-# Identifier of each core memory, same order as memory_list (the two arrays can
-# be zipped): it is what lets a client refer to a specific memory later on
 string[] memory_ids
-# Consolidation operations performed by THIS call, one JSON object per entry:
-# {op_type, item_id, related_item_id, content, timestamp}.
-# op_type is one of create, redundant, update, contradict, delete, archive.
 string[] operation_log

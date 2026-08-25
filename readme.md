@@ -36,7 +36,7 @@ cd ~/ros2_ws/src
 Clone this repository inside the `src` directory:
 
 ```bash
-git clone https://github.com/ValerioBelcamino/unipa_inner_speech
+git clone https://github.com/MarcoLovecchio/Forgetting
 ```
 
 ### Install Python Requirements
@@ -45,7 +45,7 @@ Go to the root of the workspace and install the required Python packages:
 
 ```bash
 cd ~/ros2_ws
-pip install -r src/unipa_inner_speech/requirements.txt
+pip install -r src/Forgetting/requirements.txt
 ```
 
 ### Build the Workspace
@@ -77,7 +77,7 @@ This setup allows you to:
 
 1. Navigate to the appropriate folder:
    ```bash
-   cd ~/ros2_ws/src/unipa_inner_speech/query_generation/query_generation
+   cd ~/ros2_ws/src/Forgetting/query_generation/query_generation
 
     Start the Neo4j container:
 
@@ -127,7 +127,7 @@ Default credentials:
 > ⚠️ Important: To use this example database within the architecture, make sure to set the following environment variables in the .env file located at:
 
 ```bash
-~/ros2_ws/src/unipa_inner_speech/.env
+~/ros2_ws/src/Forgetting/.env
 ```
 
 Example content:
@@ -219,7 +219,7 @@ This approach helps isolate issues and gives more control during integration and
 To run the architecture, you must define a `.env` file containing environment variables used throughout the system. This file should be located in:
 
 ```bash
-~/ros2_ws/src/unipa_inner_speech/.env
+~/ros2_ws/src/Forgetting/.env
 ```
 
 ### 📄 `.env` Template
@@ -231,7 +231,7 @@ NEO4J_USERNAME="your_username"
 NEO4J_URI="neo4j+s://{uri}.databases.neo4j.io"
 
 # ROS2 workspace path
-ROS2_WORKSPACE="/home/{path}/src/unipa_inner_speech"
+ROS2_WORKSPACE="/home/{path}/src/Forgetting"
 
 # API key for Groq (LLM provider)
 GROQ_API_KEY="your_api_key"
@@ -321,7 +321,7 @@ Each module includes a **test folder** that contains the Python scripts for runn
 1. **Locate the Test Folder**: Each module’s tests can be found in its respective `test/` folder.
 2. **Running the Tests**: You can execute the tests using `pytest`:
    ```bash
-   python3 -m pytest ~/ros2_ws/src/unipa_inner_speech/intent_recognition/test/test_intent_LLM.py
+   python3 -m pytest ~/ros2_ws/src/Forgetting/intent_recognition/test/test_intent_LLM.py
 
 
 

@@ -57,7 +57,7 @@ per rigenerare le interfacce.
 python memory_service/run_tests.py -v
 ```
 
-50 test, tutti sul **grafo LangGraph reale** con backend simulati
+56 test, tutti sul **grafo LangGraph reale** con backend simulati
 (`test/fakes.py`): nessuna chiamata di rete, nessuna API key, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
@@ -90,6 +90,29 @@ dell'architettura — se presente abilita solo il tracing.
 
 ```bash
 pytest memory_service/test/test_memory_llm.py -v -s
+```
+
+`test/test_long_term_interaction.py` e' invece la simulazione di una **sessione
+lunga**: 100 messaggi dell'utente iniettati uno alla volta, mescolati come
+capiterebbero davvero (fatti nuovi, ripetizioni, raffinamenti, contraddizioni,
+richieste di cancellazione, chiacchiere che riempiono la core memory). Durante
+l'esecuzione stampa solo una riga di avanzamento ogni 10 messaggi; alla fine
+stampa il resoconto: operation log completo, core memory e archivio. Le assert
+sono strutturali (ogni item uscito dalla core memory deve trovarsi in archivio,
+core memory con soli item attivi, id unici).
+
+Sono ~100 chiamate reali al modello, quindi diversi minuti. L'archivio finisce in
+una cartella temporanea nuova, cosi' il `chroma_db` di produzione non viene
+toccato.
+
+```bash
+pytest memory_service/test/test_long_term_interaction.py -v -s
+
+# versione ridotta, per una prova veloce
+MEMORY_LONGRUN_MESSAGES=20 pytest memory_service/test/test_long_term_interaction.py -v -s
+
+# con una pausa fra i messaggi, se il provider impone rate limit
+MEMORY_LONGRUN_DELAY=1 pytest memory_service/test/test_long_term_interaction.py -v -s
 ```
 
 ## Backend sostituibili
