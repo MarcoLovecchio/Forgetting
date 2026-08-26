@@ -95,8 +95,11 @@ class MemoryServer(Node):
         self.get_logger().info("GetMemory request")
 
         try:
-            # Run the agent in retrieve mode
-            state = self.memory_agent.run_memory_agent(interaction_mode='retrieve')
+            # Run the agent in retrieve mode, on the message the user just sent:
+            # senza, il recupero cercherebbe in archivio partendo dall'ultimo
+            # messaggio gia' in memoria invece che dalla domanda corrente.
+            state = self.memory_agent.run_memory_agent(
+                interaction_mode='retrieve', query=request.user_input)
 
             # Populate the response object
             self._fill_core_memory(response, state)

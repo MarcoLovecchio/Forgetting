@@ -116,10 +116,22 @@ class MemorySplitDecision(BaseModel):
 
 
 class SplitCoreAndArchivalMemory(BaseModel):
-    """This tool decides, for each active core memory given as an `id: content` pair,
-    whether it stays in core memory or moves to archival (long term, less frequently
-    accessed) memory. Core memory has a strict character limit, so keep in core only what
-    is most important and most likely to be needed in future interactions."""
+    """This tool decides, for each active core memory, whether it stays in core memory or
+    moves to archival (long term, less frequently accessed) memory.
+
+    The core memory character limit is a HARD constraint, not a suggestion: after your
+    decision, the memories you keep in core MUST fit within it. Exceeding it is never an
+    acceptable answer, and neither is keeping everything in core.
+
+    Archiving is not deleting. An archived memory keeps all its content and stays
+    searchable: it is retrieved and brought back into the conversation whenever it becomes
+    relevant again. The only thing it loses is the seat in the always-on context. So when
+    you are unsure about a memory, archive it - the cost of archiving something useful is
+    far lower than the cost of breaking the limit.
+
+    Every memory you are given comes as `id: content (N characters)`. Add up the lengths of
+    the ones you decide to keep in core and check the total against the limit BEFORE
+    answering. Return one decision for every memory in the list, referring to it by id."""
 
     decisions: List[MemorySplitDecision]
 

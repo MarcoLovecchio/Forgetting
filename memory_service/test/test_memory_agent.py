@@ -9,6 +9,8 @@ test_consolidation.py; this file keeps the unit level checks.
     pytest memory_service
 """
 
+import contextlib
+import io
 import os
 import sys
 import unittest
@@ -204,6 +206,66 @@ class CoreMemoryOverflowTest(MemoryServiceTestCase):
         self.assertEqual(metadata["updated_at"], item.updated_at.isoformat())
 
 
+class SplitPromptTest(MemoryServiceTestCase):
+    """Il limite e' una richiesta al modello: il prompt deve dargli i numeri.
+
+    Non c'e' nessuna eviction deterministica dietro, quindi se il prompt non
+    mette il modello in condizione di contare, il limite non viene rispettato.
+    """
+
+    def _run_split(self, items, limit=150):
+        self.agent.state["core_memory"] = list(items)
+        self.agent.state["core_memory_limit"] = limit
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({
+            "InsertCoreMemories": {"memories": []},
+            "SplitCoreAndArchivalMemory": {"decisions": []},
+        })
+        self.agent.run_memory_agent("insert")
+        return "\n".join(
+            invocation["prompt"] for invocation in self.llm.invocations
+            if "SplitCoreAndArchivalMemory" in invocation["tools"])
+
+    def test_the_prompt_carries_the_numbers(self):
+        prompt = self._run_split([CoreMemoryItem(content="x" * 200)], limit=150)
+
+        self.assertIn("200", prompt, "la lunghezza attuale deve essere nel prompt")
+        self.assertIn("150", prompt, "il limite deve essere nel prompt")
+        self.assertIn("50", prompt, "quanto liberare deve essere nel prompt")
+
+    def test_every_memory_carries_its_own_length(self):
+        prompt = self._run_split(
+            [CoreMemoryItem(content="a" * 90), CoreMemoryItem(content="b" * 80)], limit=100)
+
+        self.assertIn("(90 characters)", prompt)
+        self.assertIn("(80 characters)", prompt)
+
+    def test_the_prompt_states_the_limit_is_hard(self):
+        prompt = self._run_split([CoreMemoryItem(content="x" * 200)], limit=150)
+
+        self.assertIn("HARD constraint", prompt)
+        self.assertIn("Archiving is not deleting", prompt)
+
+    def test_ignoring_the_limit_is_reported_but_not_forced(self):
+        # Il modello decide di non archiviare nulla: la scelta viene rispettata,
+        # ma non deve passare in silenzio.
+        item = CoreMemoryItem(content="x" * 200)
+        self.agent.state["core_memory"] = [item]
+        self.agent.state["core_memory_limit"] = 150
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({
+            "InsertCoreMemories": {"memories": []},
+            "SplitCoreAndArchivalMemory": {"decisions": []},
+        })
+
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            state = self.agent.run_memory_agent("insert")
+
+        self.assertEqual([i.id for i in state["core_memory"]], [item.id],
+                         "la decisione del modello viene rispettata, non corretta")
+        self.assertIn("still over the limit", captured.getvalue())
+
+
 class MalformedToolCallTest(MemoryServiceTestCase):
     """The graph must survive an LLM that omits arguments."""
 
@@ -282,6 +344,83 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         self.assertEqual(self.vector_store.searches[0]["k"], 2, "k must be coerced to int")
         self.assertIn("black tea", state["retrieved_memory"])
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
+
+
+class CurrentQueryTest(MemoryServiceTestCase):
+    """Il recupero deve partire dalla domanda corrente, non dall'ultimo messaggio.
+
+    Senza la query, l'unico appiglio era state["messages"][-1] - che al momento
+    della get_memory e' la risposta del giro precedente, non quello che l'utente
+    sta chiedendo adesso.
+    """
+
+    tool_responses = {
+        "InformationSufficiency": {"is_sufficient": False},
+        "retrieve_memory": {"query": "irrilevante", "k": 3},
+    }
+    default_content = "risposta"
+
+    def test_the_passed_query_is_what_reaches_the_prompts(self):
+        self.agent.state["messages"] = [
+            HumanMessage(content="di cosa parlavamo prima?"),
+            AIMessage(content="parlavamo del tuo cane"),
+        ]
+
+        self.agent.run_memory_agent("retrieve", query="quante calorie devo assumere?")
+
+        prompts = "\n".join(invocation["prompt"] for invocation in self.llm.invocations)
+        self.assertIn("quante calorie devo assumere?", prompts)
+
+    def test_without_a_query_it_falls_back_to_the_last_message(self):
+        self.agent.state["messages"] = [HumanMessage(content="e il mio cane?")]
+
+        self.agent.run_memory_agent("retrieve")
+
+        prompts = "\n".join(invocation["prompt"] for invocation in self.llm.invocations)
+        self.assertIn("e il mio cane?", prompts)
+
+    def test_a_new_question_is_not_served_from_the_cache(self):
+        self.agent.state["messages"] = [HumanMessage(content="un messaggio")]
+
+        self.agent.run_memory_agent("retrieve", query="prima domanda?")
+        after_first = len(self.llm.invocations)
+        self.agent.run_memory_agent("retrieve", query="seconda domanda?")
+
+        self.assertGreater(len(self.llm.invocations), after_first,
+                           "una domanda diversa deve far rigirare il grafo")
+        prompts = "\n".join(invocation["prompt"] for invocation in self.llm.invocations)
+        self.assertIn("seconda domanda?", prompts)
+
+    def test_the_same_question_is_still_cached(self):
+        self.agent.state["messages"] = [HumanMessage(content="un messaggio")]
+
+        self.agent.run_memory_agent("retrieve", query="stessa domanda?")
+        after_first = len(self.llm.invocations)
+        self.agent.run_memory_agent("retrieve", query="stessa domanda?")
+
+        self.assertEqual(len(self.llm.invocations), after_first)
+
+    def test_a_question_is_answered_even_with_an_empty_conversation(self):
+        # L'archivio puo' contenere roba di sessioni precedenti: una domanda a
+        # freddo deve comunque poterlo interrogare.
+        self.vector_store.add_texts(
+            texts=["L'utente e' allergico alle arachidi"], ids=["memory_a"],
+            metadatas=[{"status": "active"}])
+
+        state = self.agent.run_memory_agent("retrieve", query="a cosa sono allergico?")
+
+        self.assertTrue(self.llm.invocations, "il grafo deve girare, non uscire subito")
+        self.assertIn("arachidi", state["retrieved_memory"])
+
+    def test_an_insert_clears_the_query(self):
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({"InsertCoreMemories": {"memories": []}})
+
+        self.agent.run_memory_agent("retrieve", query="una domanda?")
+        state = self.agent.run_memory_agent("insert")
+
+        self.assertEqual(state["current_query"], "",
+                         "la domanda vale per il retrieve che l'ha ricevuta")
 
 
 class AppendMessageTest(MemoryServiceTestCase):

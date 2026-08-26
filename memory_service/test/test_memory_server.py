@@ -47,6 +47,7 @@ class StubAgent:
         self.operations = operations or []
         self.appended = []
         self.runs = []
+        self.queries = []
 
     def last_operations(self):
         return self.operations
@@ -56,10 +57,11 @@ class StubAgent:
             raise self.raises
         self.appended.append((message, sender))
 
-    def run_memory_agent(self, interaction_mode="retrieve"):
+    def run_memory_agent(self, interaction_mode="retrieve", query=None):
         if self.raises:
             raise self.raises
         self.runs.append(interaction_mode)
+        self.queries.append(query)
         return self.state
 
 
@@ -188,6 +190,26 @@ class GetMemoryCallbackTest(MemoryServerTestCase):
         self.assertEqual(list(response.memory_ids), [agent.state["core_memory"][0].id])
         self.assertEqual(list(response.last_messages), ["hello", "hi there"])
         self.assertEqual(list(response.operation_log), [], "una retrieve non consolida")
+
+    def test_the_user_input_reaches_the_agent_as_the_query(self):
+        # Senza questo, il recupero cercherebbe in archivio partendo dall'ultimo
+        # messaggio gia' in memoria invece che dalla domanda appena arrivata.
+        agent = StubAgent({"core_memory": [], "messages": []})
+        server = self.build_server(agent)
+
+        request = GetMemory.Request()
+        request.user_input = "a cosa sono allergico?"
+        server.get_memory_callback(request, GetMemory.Response())
+
+        self.assertEqual(agent.queries, ["a cosa sono allergico?"])
+
+    def test_an_empty_user_input_is_still_accepted(self):
+        agent = StubAgent({"core_memory": [], "messages": []})
+        server = self.build_server(agent)
+
+        server.get_memory_callback(GetMemory.Request(), GetMemory.Response())
+
+        self.assertEqual(agent.queries, [""])
 
     def test_non_string_message_content_is_coerced(self):
         # Assigning a non-string to a ROS string[] field would raise: this is

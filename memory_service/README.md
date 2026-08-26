@@ -20,9 +20,13 @@ davvero. Questo permette di testarlo seriamente, senza chiavi API e senza rete.
 
 I due servizi (`memory_service_interfaces`) espongono la memoria consolidata:
 
-**`GetMemory`** — request vuota
+**`GetMemory`** — request: `user_input`, il messaggio a cui la memoria deve
+rispondere. Passarlo e' quello che permette al ramo di recupero di cercare in
+archivio in base a cosa l'utente sta chiedendo **adesso**; lasciandolo vuoto il
+servizio ripiega sull'ultimo messaggio gia' in memoria, che e' la risposta del
+giro precedente.
 
-| campo | contenuto |
+| campo (response) | contenuto |
 | --- | --- |
 | `memory_list` | contenuto delle core memory **attive** (superseded e deleted restano fuori) |
 | `memory_ids` | id di ciascuna, stesso ordine di `memory_list`: le due liste si zippano |
@@ -51,13 +55,22 @@ costerebbe sempre di più. Lo storico completo resta disponibile in-process via
 pacchetti che li leggono continuano a funzionare: serve solo un `colcon build`
 per rigenerare le interfacce.
 
+Per sfruttare `user_input` serve una riga in `intent_recognition.listener_callback`:
+
+```python
+self.get_response = self.memory_client.send_get_request(msg.data.strip())
+```
+
+Senza, tutto continua a funzionare come prima (il campo resta vuoto e vale il
+fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
+
 ## Test
 
 ```bash
 python memory_service/run_tests.py -v
 ```
 
-56 test, tutti sul **grafo LangGraph reale** con backend simulati
+68 test, tutti sul **grafo LangGraph reale** con backend simulati
 (`test/fakes.py`): nessuna chiamata di rete, nessuna API key, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
@@ -93,17 +106,27 @@ pytest memory_service/test/test_memory_llm.py -v -s
 ```
 
 `test/test_long_term_interaction.py` e' invece la simulazione di una **sessione
-lunga**: 100 messaggi dell'utente iniettati uno alla volta, mescolati come
-capiterebbero davvero (fatti nuovi, ripetizioni, raffinamenti, contraddizioni,
-richieste di cancellazione, chiacchiere che riempiono la core memory). Durante
-l'esecuzione stampa solo una riga di avanzamento ogni 10 messaggi; alla fine
-stampa il resoconto: operation log completo, core memory e archivio. Le assert
-sono strutturali (ogni item uscito dalla core memory deve trovarsi in archivio,
-core memory con soli item attivi, id unici).
+lunga**: 117 messaggi dell'utente iniettati uno alla volta — 101 fatti e 16
+domande — mescolati come capiterebbero davvero. I primi 25 sono la presentazione;
+da li' in poi fatti nuovi, ripetizioni, raffinamenti, contraddizioni, richieste
+di cancellazione e chiacchiere si alternano senza blocchi, rispettando solo la
+causalita' (un fatto viene introdotto prima di essere modificato).
 
-Sono ~100 chiamate reali al modello, quindi diversi minuti. L'archivio finisce in
-una cartella temporanea nuova, cosi' il `chroma_db` di produzione non viene
-toccato.
+I messaggi che finiscono con `?` sono **domande**: non consolidano, fanno girare
+il ramo `retrieve` e verificano cosa l'assistente sa in quel momento. Sono
+piazzate subito dopo un update, una contraddizione o una cancellazione — "sai
+dirmi dove abito?" arriva dopo "dimentica il mio indirizzo" — e quelle su fatti
+finiti in archivio costringono la retrieve a interrogarlo davvero.
+
+Durante l'esecuzione stampa solo una riga di avanzamento ogni 10 messaggi; alla
+fine stampa il resoconto: operation log completo, core memory, archivio, e ogni
+domanda con la risposta ricevuta e cosa e' arrivato dall'archivio. Le assert sono
+strutturali (ogni item uscito dalla core memory deve trovarsi in archivio, core
+memory con soli item attivi, id unici, nessuna domanda senza risposta).
+
+Sono parecchie chiamate reali al modello — le domande ne fanno due o tre a testa
+— quindi diversi minuti. L'archivio finisce in una cartella temporanea nuova,
+cosi' il `chroma_db` di produzione non viene toccato.
 
 ```bash
 pytest memory_service/test/test_long_term_interaction.py -v -s
@@ -113,6 +136,27 @@ MEMORY_LONGRUN_MESSAGES=20 pytest memory_service/test/test_long_term_interaction
 
 # con una pausa fra i messaggi, se il provider impone rate limit
 MEMORY_LONGRUN_DELAY=1 pytest memory_service/test/test_long_term_interaction.py -v -s
+```
+
+## Il limite della core memory
+
+Il limite in caratteri e' **chiesto al modello, non imposto dal codice**: non c'e'
+nessuna eviction deterministica dietro. Quando la core memory sfora, il nodo
+`summarize_core_memories` passa allo split tutto quello che serve per rispettarlo:
+
+- ogni memoria con la propria lunghezza (`id: content (N characters)`)
+- il totale attuale, il limite, e **quanti caratteri vanno liberati**
+- l'indicazione esplicita che il vincolo e' hard e che tenere tutto in core non e'
+  una risposta valida
+- il fatto che archiviare non e' cancellare: l'archivio resta consultabile, quindi
+  nel dubbio conviene archiviare
+
+Se il modello decide comunque di non archiviare abbastanza, **la sua decisione
+viene rispettata** e la core memory resta sopra il limite. Non passa pero' in
+silenzio: compare un warning nei log.
+
+```
+WARNING: core memory still over the limit after the split (500/100 characters)
 ```
 
 ## Backend sostituibili

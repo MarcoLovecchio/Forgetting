@@ -32,6 +32,7 @@ class AgentState(TypedDict):
     core_memory: list[CoreMemoryItem]  # active items only, see memory_service.consolidation
     operation_log: list[OperationLogEntry]
     retrieved_memory: str
+    current_query: str  # domanda a cui il ramo retrieve deve rispondere
     current_interaction: Literal["insert", "retrieve"]
     maximum_historical_messages: int  # Limit the number of historical messages to keep
     core_memory_limit: int  # Character limit for core memory
@@ -98,6 +99,24 @@ class InformationSufficiency(BaseModel):
     is_sufficient: bool
 
 
+def query_and_history(state: AgentState):
+    """Domanda a cui rispondere e storico che la precede.
+
+    Il ramo di recupero ha bisogno di sapere che cosa sta chiedendo l'utente.
+    Se il chiamante l'ha passata (GetMemory.user_input -> current_query) si usa
+    quella, e tutti i messaggi in memoria sono storico. Altrimenti si ripiega
+    sull'ultimo messaggio noto, che e' quello che succedeva sempre prima che il
+    servizio potesse ricevere la domanda.
+    """
+    query = str(state.get("current_query") or "").strip()
+    messages = state.get("messages") or []
+    if query:
+        return query, messages
+    if not messages:
+        return "", []
+    return messages[-1].content, messages[:-1]
+
+
 def interaction_type_node(state: AgentState) -> str:
     return state["current_interaction"]
 
@@ -107,13 +126,12 @@ def empty_node(state: AgentState) -> AgentState:
 def check_information_sufficiency(state: AgentState) -> bool:
     print("\tChecking information sufficiency")
 
-    if len(state["messages"]) == 0:
+    user_query, history = query_and_history(state)
+    if not user_query:
         return False
 
-    user_query = state["messages"][-1].content
     core_memory = serialize_core_memory_for_prompt(state["core_memory"])
-    previous_messages = state["messages"][:-1]
-    previous_messages = messages_to_str(previous_messages)
+    previous_messages = messages_to_str(history)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a tool that checks if the information provided is sufficient to answer the user's query."),
         ("human", """User query: {user_query}
@@ -173,7 +191,8 @@ def retrieval_node(state: AgentState):
     llm_with_tools = get_llm().bind_tools([retrieve_memory])
 
     chain = prompt | llm_with_tools
-    response = chain.invoke({"input": state["messages"][-1].content,
+    user_query, _ = query_and_history(state)
+    response = chain.invoke({"input": user_query,
                              "core_memory": serialize_core_memory_for_prompt(state["core_memory"])})
 
     return {"tool_calls": state["tool_calls"] + [response]}
@@ -213,6 +232,13 @@ def tool_node(state: AgentState):
             print(f"Invoking SplitCoreAndArchivalMemory with args: {tool_args}")
             state["core_memory"], result = apply_split_decisions(
                 tool_args.get("decisions", []), state["core_memory"], state["operation_log"])
+            # Il limite resta una richiesta al modello, non un vincolo imposto:
+            # se non lo rispetta non si interviene, ma non deve passare in
+            # silenzio.
+            remaining = core_memory_length(state["core_memory"])
+            if remaining > state["core_memory_limit"]:
+                print(f"\tWARNING: core memory still over the limit after the split "
+                      f"({remaining}/{state['core_memory_limit']} characters)")
         else:
             result = "Unknown tool"
 
@@ -246,10 +272,11 @@ def generate_answer(state: AgentState):
 
     chain = prompt | get_llm()
 
-    response = chain.invoke({"input": state["messages"][-1].content,
+    user_query, history = query_and_history(state)
+    response = chain.invoke({"input": user_query,
                              "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
                              "retrieved_memory": state.get("retrieved_memory", ""),
-                             "messages": messages_to_str(state["messages"][:-1])})
+                             "messages": messages_to_str(history)})
 
     return {"messages": state["messages"] + [response]}
 
@@ -301,24 +328,50 @@ Focus on preferences, opinions, or personal facts mentioned by the user.""")
 def summarize_core_memories_node(state: AgentState):
 
     active_items = get_active_items(state["core_memory"])
-    core_memory_display = "\n".join(f"{item.id}: {item.content}" for item in active_items)
-    print(f"\tSummarizing {len(active_items)} core memories for the core/archival split")
+    # La lunghezza di ogni memoria e' nel prompt apposta: senza, al modello si
+    # chiede di rispettare un limite in caratteri senza dargli modo di contarli.
+    core_memory_display = "\n".join(
+        f"{item.id}: {item.content} ({len(item.content)} characters)" for item in active_items)
+    used = core_memory_length(state["core_memory"])
+    limit = state["core_memory_limit"]
+    to_free = max(0, used - limit)
+    print(f"\tSummarizing {len(active_items)} core memories for the core/archival split "
+          f"({used}/{limit} characters, {to_free} to free)")
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a tool that decides what to keep in the core memories and what to move to archival memory.
-        The current core memories are given to you as id: content pairs, and you must refer to them by id.
-        In the core memories you should keep facts that are most important and could be accessed frequently.
-         In the archival memory you should store less frequently accessed information that may be useful for long-term context.
-         The limit of the core memory is {core_memory_limit} characters, so you should make sure to keep the core memory under this limit.
-         """),
-        ("human", """The current core memories are: {core_memory}.
-         The length is {core_memory_length} characters out of the allowed {core_memory_limit} characters.""")])
+        ("system", """You are a tool that decides what stays in core memory and what moves to
+        archival memory. The memories are given to you as `id: content (N characters)` and you
+        must refer to them by id.
+
+        The core memory limit is a HARD constraint: after your decision, the memories you keep
+        in core MUST total {core_memory_limit} characters or less. It is not a target to
+        approach, it is a ceiling that must always hold. Keeping everything in core is never a
+        valid answer when the limit is exceeded.
+
+        Archiving is not deleting: an archived memory keeps its content, stays searchable and
+        comes back whenever it is relevant again. It only gives up its seat in the always-on
+        context. When you hesitate about a memory, archive it: archiving something still useful
+        costs far less than breaking the limit.
+
+        Keep in core the facts that are most important and most likely to be needed in the next
+        few interactions - identity, constraints, active preferences. Move everything else.
+
+        Before answering, add up the lengths of the memories you decided to keep and verify the
+        total is within the limit."""),
+        ("human", """Current core memories:
+
+{core_memory}
+
+Total: {core_memory_length} characters. Limit: {core_memory_limit} characters.
+You must move to the archive at least {to_free} characters worth of memories.
+Return one decision for every memory listed above.""")])
 
     summarizer_llm = get_llm().bind_tools([SplitCoreAndArchivalMemory])
     chain = prompt | summarizer_llm
     response = chain.invoke({"core_memory": core_memory_display,
-                             "core_memory_length": core_memory_length(state["core_memory"]),
-                             "core_memory_limit": state["core_memory_limit"]})
+                             "core_memory_length": used,
+                             "core_memory_limit": limit,
+                             "to_free": to_free})
     print(f"\tCore memory summarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response]}
 
@@ -374,6 +427,7 @@ class MemoryAgent():
                 "maximum_historical_messages": self.config.maximum_historical_messages,
                 "core_memory_limit": self.config.core_memory_limit,
                 "retrieved_memory": "",
+                "current_query": "",
                 "tool_calls": []
             }
             self.up_to_date = False
@@ -398,22 +452,32 @@ class MemoryAgent():
         return self.state["operation_log"][self._log_offset:]
 
     # Function to run the agent
-    def run_memory_agent(self, interaction_mode="retrieve"):
+    def run_memory_agent(self, interaction_mode="retrieve", query=None):
+        """Esegue il grafo.
+
+        `query` e' il messaggio dell'utente a cui il ramo retrieve deve
+        rispondere. Senza, il recupero ripiega sull'ultimo messaggio in memoria -
+        che e' la risposta del giro precedente, non quello che l'utente sta
+        chiedendo adesso.
+        """
         # Anything logged from here on belongs to this run.
         self._log_offset = len(self.state["operation_log"])
+        query = str(query or "").strip()
 
         if interaction_mode == "retrieve":
-            if self.up_to_date:
+            # La cache vale solo finche' la domanda e' la stessa: due domande
+            # diverse di fila devono produrre due risposte diverse.
+            if self.up_to_date and query == self.state.get("current_query", ""):
                 return self.state
-            else:
-                self.up_to_date = True
+            self.up_to_date = True
 
         if interaction_mode == "insert":
             self.up_to_date = False
 
         self.state["current_interaction"] = interaction_mode
+        self.state["current_query"] = query if interaction_mode == "retrieve" else ""
 
-        if self.state["messages"] == []:
+        if not self.state["messages"] and not self.state["current_query"]:
             print("No messages to process.")
             return self.state
 

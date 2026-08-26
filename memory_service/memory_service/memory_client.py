@@ -27,8 +27,16 @@ class MemoryClient(Node):
         rclpy.spin_until_future_complete(self, future)
         return future.result()
 
-    def send_get_request(self):
+    def send_get_request(self, user_input=''):
+        """Chiede lo stato della memoria.
+
+        `user_input` e' il messaggio corrente dell'utente: passarlo permette al
+        ramo di recupero di cercare in archivio in base a quello che l'utente sta
+        chiedendo adesso. Lasciandolo vuoto il servizio ripiega sull'ultimo
+        messaggio gia' in memoria.
+        """
         req = GetMemory.Request()
+        req.user_input = str(user_input)
         future = self.get_client.call_async(req)
         rclpy.spin_until_future_complete(self, future)
         return future.result()
