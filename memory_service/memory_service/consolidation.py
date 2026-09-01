@@ -43,16 +43,19 @@ from memory_service import backends
 # How many archival memories are offered to the classifier as possible targets.
 ARCHIVE_CANDIDATES_K = 5
 
+# The vector store knows nothing about tombstones: it ranks by similarity alone,
+# so a superseded or deleted memory can perfectly well be among the k closest.
+# Filtering after the search would then hand back fewer than k candidates - and
+# the shortfall grows over time, because tombstones are never removed. Asking
+# for more than needed and truncating afterwards keeps k candidates for as long
+# as k active ones exist. The factor bounds the cost: the search stays cheap,
+# and an archive full of tombstones degrades gradually instead of being scanned
+# whole.
+ARCHIVE_OVERFETCH = 3
+
 MemoryStatus = Literal["active", "superseded", "deleted"]
 MemoryOperationType = Literal["new", "redundant", "update", "contradict", "delete"]
 
-
-# Length of a memory identifier, in hexadecimal characters. Short on purpose:
-# the classifier has to copy these ids verbatim from the prompt into its tool
-# call, and a full uuid is a long stretch of random hex for a small model to
-# transcribe. Eight characters are 32 bits: with a thousand items the chance of
-# a collision is around 0.01%, with ten thousand around 1.2%. What counts is the
-# lifetime total, since the archive keeps tombstones forever.
 ITEM_ID_LENGTH = 8
 
 
@@ -100,7 +103,7 @@ class InsertCoreMemories(BaseModel):
     interaction, so only important facts belong here.
 
     For each fact you find in the messages, classify it against the memories you are given
-    as `id: content` pairs (they come from both core and archival memory):
+    as `id: content` pairs:
     - new: a genuinely new fact, unrelated to any memory you were given (no target_item_id).
     - redundant: it confirms a memory that is already stored, without changing it
       (target_item_id required).
@@ -285,8 +288,11 @@ def search_archive(
     except (TypeError, ValueError):
         k = ARCHIVE_CANDIDATES_K
 
+    # Without the filter nothing can be lost to it, so ask for exactly k.
+    wanted = k * ARCHIVE_OVERFETCH if only_active else k
+
     try:
-        docs = backends.get_vector_store().similarity_search(query, k=k)
+        docs = backends.get_vector_store().similarity_search(query, k=wanted)
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
@@ -298,6 +304,13 @@ def search_archive(
         if only_active and metadata.get("status", "active") != "active":
             continue
         results.append((doc.id, doc.page_content))
+        if len(results) == k:
+            break
+
+    # When even the wider search cannot fill k - an archive that is mostly
+    # tombstones - the caller simply gets what exists, in similarity order,
+    # exactly as before. Nothing is raised: fewer candidates is a worse prompt,
+    # not a failure.
     return results
 
 

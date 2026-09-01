@@ -32,7 +32,11 @@ from langchain_core.messages import HumanMessage  # noqa: E402
 
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
-from memory_service.consolidation import get_active_items  # noqa: E402
+from memory_service.consolidation import (  # noqa: E402
+    ARCHIVE_OVERFETCH,
+    get_active_items,
+    search_archive,
+)
 from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
 
 from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
@@ -294,6 +298,88 @@ class TargetResolutionTest(unittest.TestCase):
 
         self.assertEqual(state["core_memory"], [], "non si cancella nulla a caso")
         self.assertEqual(state["operation_log"], [], "e non si registra nessuna operazione")
+
+
+class ArchiveSearchTest(unittest.TestCase):
+    """Il vettoriale ordina per somiglianza e ignora i tombstone.
+
+    Chiedere k documenti e scartarne dopo quelli non attivi ne restituisce meno
+    di k, e il divario peggiora col tempo perche' i tombstone non vengono mai
+    rimossi: nella pratica il classificatore si ritrova senza candidati proprio
+    su un archivio molto usato, senza che niente segnali il problema.
+    """
+
+    def setUp(self):
+        self.store = FakeVectorStore()
+        backends.reset()
+        backends.configure(llm=ScriptedChatModel(tool_responses={}),
+                           vector_store=self.store, config=LIFECYCLE_CONFIG)
+
+    def tearDown(self):
+        backends.reset()
+
+    def fill(self, tombstones, active):
+        """Prima i tombstone, poi le attive.
+
+        Tutti i contenuti contengono la stessa parola della query, quindi hanno
+        lo stesso punteggio: l'ordinamento e' stabile e le lapidi finiscono
+        davanti. E' il caso peggiore, ed e' quello che succede davvero quando
+        una memoria viene aggiornata piu' volte - la versione vecchia resta li',
+        somigliantissima alla nuova.
+        """
+        for index in range(tombstones):
+            self.store.add_texts(texts=[f"il gatto, versione vecchia {index}"],
+                                 ids=[f"tomb_{index}"],
+                                 metadatas=[{"status": "superseded"}])
+        for index in range(active):
+            self.store.add_texts(texts=[f"il gatto, versione buona {index}"],
+                                 ids=[f"live_{index}"],
+                                 metadatas=[{"status": "active"}])
+
+    def test_tombstones_do_not_steal_the_places(self):
+        # Con k=3 e 6 lapidi davanti, la ricerca stretta ne restituirebbe zero.
+        self.fill(tombstones=6, active=4)
+
+        results = search_archive("gatto", k=3)
+
+        self.assertEqual(len(results), 3, "i candidati attivi devono essere k")
+        self.assertTrue(all(doc_id.startswith("live_") for doc_id, _ in results))
+
+    def test_the_search_asks_for_more_than_it_needs(self):
+        self.fill(tombstones=2, active=5)
+
+        search_archive("gatto", k=3)
+
+        self.assertEqual(self.store.searches[-1]["k"], 3 * ARCHIVE_OVERFETCH)
+
+    def test_the_result_is_never_longer_than_k(self):
+        # L'over-fetch e' un dettaglio interno: chi chiama k ne vuole k.
+        self.fill(tombstones=0, active=10)
+
+        self.assertEqual(len(search_archive("gatto", k=3)), 3)
+
+    def test_without_the_filter_it_asks_for_exactly_k(self):
+        # Senza filtro non si perde niente per strada: allargare sarebbe spreco.
+        self.fill(tombstones=3, active=3)
+
+        results = search_archive("gatto", k=4, only_active=False)
+
+        self.assertEqual(self.store.searches[-1]["k"], 4)
+        self.assertEqual(len(results), 4, "qui i tombstone contano come candidati")
+
+    def test_an_archive_of_only_tombstones_returns_nothing(self):
+        # Meno candidati e' un prompt piu' povero, non un errore.
+        self.fill(tombstones=8, active=0)
+
+        self.assertEqual(search_archive("gatto", k=3), [])
+
+    def test_fewer_active_than_k_returns_what_exists(self):
+        self.fill(tombstones=5, active=2)
+
+        results = search_archive("gatto", k=3)
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(doc_id.startswith("live_") for doc_id, _ in results))
 
 
 if __name__ == "__main__":

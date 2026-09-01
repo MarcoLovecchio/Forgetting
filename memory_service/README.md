@@ -70,7 +70,7 @@ fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
 python memory_service/run_tests.py -v
 ```
 
-84 test, tutti sul **grafo LangGraph reale** con backend simulati
+90 test, tutti sul **grafo LangGraph reale** con backend simulati
 (`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
@@ -195,6 +195,31 @@ silenzio: compare un warning nei log.
 ```
 WARNING: core memory still over the limit after the split (500/100 characters)
 ```
+
+## I candidati dell'archivio
+
+Quando un fatto viene classificato, il modello lo confronta con le memorie core
+attive **piu' le prime K dell'archivio** (`ARCHIVE_CANDIDATES_K = 5`), unite in un
+solo elenco `id: contenuto` da `build_candidate_memories`. Da entrambe le fonti
+passano **solo le attive**: superseded e deleted restano fuori.
+
+Il vettoriale pero' ordina per somiglianza e delle lapidi non sa niente, quindi
+puo' benissimo metterle nei primi K posti. Filtrare dopo una ricerca stretta
+restituirebbe meno di K candidati — e il divario **peggiora con l'uso**, perche'
+i tombstone non vengono mai rimossi: proprio su un archivio molto usato il
+classificatore si ritroverebbe senza bersagli, senza che niente lo segnali.
+
+Per questo `search_archive` cerca **piu' largo di quanto serve**
+(`ARCHIVE_OVERFETCH = 3`), filtra, e solo allora tronca a K. Chi chiama non se ne
+accorge: chiede K e riceve K, finche' K memorie attive esistono. Se non esistono
+riceve quelle che ci sono, in ordine di somiglianza — meno candidati e' un prompt
+piu' povero, non un errore.
+
+Una cosa che resta com'e': la query usata per cercare nell'archivio e' **il blocco
+di messaggi in consolidamento**, non il singolo fatto estratto. I K candidati sono
+quindi scelti una volta per batch. E' il motivo per cui un `update` verso una
+memoria archiviata puo' non trovare il suo bersaglio quando nel batch si parla
+anche d'altro.
 
 ## Backend sostituibili
 

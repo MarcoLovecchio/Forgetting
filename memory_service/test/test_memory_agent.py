@@ -26,7 +26,10 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
-from memory_service.consolidation import CoreMemoryItem  # noqa: E402
+from memory_service.consolidation import (  # noqa: E402
+    ARCHIVE_OVERFETCH,
+    CoreMemoryItem,
+)
 from memory_service.memory_manager_llm import (  # noqa: E402
     MemoryAgent,
     messages_to_str,
@@ -344,7 +347,10 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         state = self.agent.run_memory_agent("retrieve")
 
         self.assertEqual(len(self.vector_store.searches), 1)
-        self.assertEqual(self.vector_store.searches[0]["k"], 2, "k must be coerced to int")
+        # Two things at once: the string "2" reached the store as an int - the
+        # fake refuses anything else - and the search was deliberately widened,
+        # because tombstones are filtered out only afterwards.
+        self.assertEqual(self.vector_store.searches[0]["k"], 2 * ARCHIVE_OVERFETCH)
         self.assertIn("black tea", state["retrieved_memory"])
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
 
