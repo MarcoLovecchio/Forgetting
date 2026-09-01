@@ -47,9 +47,18 @@ MemoryStatus = Literal["active", "superseded", "deleted"]
 MemoryOperationType = Literal["new", "redundant", "update", "contradict", "delete"]
 
 
+# Length of a memory identifier, in hexadecimal characters. Short on purpose:
+# the classifier has to copy these ids verbatim from the prompt into its tool
+# call, and a full uuid is a long stretch of random hex for a small model to
+# transcribe. Eight characters are 32 bits: with a thousand items the chance of
+# a collision is around 0.01%, with ten thousand around 1.2%. What counts is the
+# lifetime total, since the archive keeps tombstones forever.
+ITEM_ID_LENGTH = 8
+
+
 def new_item_id() -> str:
     """Identifier of a memory item, unique across core memory and archive."""
-    return str(uuid.uuid4())
+    return uuid.uuid4().hex[:ITEM_ID_LENGTH]
 
 
 class CoreMemoryItem(BaseModel):

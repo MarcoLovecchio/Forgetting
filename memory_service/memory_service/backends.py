@@ -67,6 +67,23 @@ def get_vector_store() -> Any:
     return _vector_store
 
 
+def _require_model_config(model_config: dict, variable: str, node_name: str) -> str:
+    """Validate a per-node model entry and return its provider."""
+    if not model_config:
+        raise RuntimeError(
+            f"No {variable} entry found for node '{node_name}'. "
+            f"Set {variable} in the .env/.config file, or inject the backend "
+            "with memory_service.backends.configure(...)."
+        )
+
+    missing = [key for key in ("model_name", "model_provider") if key not in model_config]
+    if missing:
+        raise RuntimeError(
+            f"{variable} entry for node '{node_name}' is missing: {', '.join(missing)}"
+        )
+    return model_config["model_provider"]
+
+
 def _build_llm(config: MemoryConfig) -> Any:
     # Imported here so that the package can be imported without langchain's
     # provider extras installed.
@@ -74,24 +91,81 @@ def _build_llm(config: MemoryConfig) -> Any:
 
     from langchain.chat_models import init_chat_model
 
-    if not config.llm_config:
-        raise RuntimeError(
-            f"No LLM configuration found for node '{config.node_name}'. "
-            "Set LLM_CONFIG in the .env/.config file, or inject a chat model "
-            "with memory_service.backends.configure(llm=...)."
-        )
+    provider = _require_model_config(config.llm_config, "LLM_CONFIG", config.node_name)
 
-    missing = [key for key in ("model_name", "model_provider") if key not in config.llm_config]
-    if missing:
-        raise RuntimeError(
-            f"LLM configuration for node '{config.node_name}' is missing: {', '.join(missing)}"
-        )
+    parameters = {
+        "model": config.llm_config["model_name"],
+        "model_provider": provider,
+        "temperature": config.llm_config.get("temperature", 0),
+    }
 
-    return init_chat_model(
-        model=config.llm_config["model_name"],
-        model_provider=config.llm_config["model_provider"],
-        temperature=config.llm_config.get("temperature", 0),
-        api_key=os.getenv(config.api_key_env),
+    # Endpoint of a locally served model. Passed only when configured, so the
+    # hosted providers keep using their own default.
+    if config.base_url:
+        parameters["base_url"] = config.base_url
+
+    # Ollama defaults to a 2048 token context and truncates longer prompts
+    # without a word: the consolidation prompt (core memories plus archival
+    # candidates) and the core/archival split both go past that. The parameter
+    # is Ollama specific, so it is only passed to Ollama.
+    if provider == "ollama":
+        parameters["num_ctx"] = config.num_ctx
+
+    # A locally served model has no API key. The default api_key_env is
+    # GROQ_API_KEY, which in this workspace *is* set - the other five nodes of
+    # the architecture still talk to Groq - so without this guard the key of a
+    # hosted provider would be handed to a local server. ChatOllama ignores the
+    # unknown field instead of raising, which makes the mistake invisible.
+    if provider != "ollama":
+        api_key = os.getenv(config.api_key_env) if config.api_key_env else None
+        if api_key:
+            parameters["api_key"] = api_key
+
+    return init_chat_model(**parameters)
+
+
+def _build_embeddings(config: MemoryConfig) -> Any:
+    """Embedding model used to index and search the archive.
+
+    Changing this model invalidates an existing archive: the stored vectors live
+    in the space of whatever model wrote them, so queries embedded by a
+    different model come back as noise. Two models can even share the same
+    dimensionality and still be incompatible, in which case nothing raises and
+    the retrieval quietly degrades.
+    """
+    import os
+
+    provider = _require_model_config(
+        config.embedding_config, "EMBEDDING_CONFIG", config.node_name)
+    model_name = config.embedding_config["model_name"]
+
+    if provider == "ollama":
+        from langchain_ollama import OllamaEmbeddings
+
+        parameters = {"model": model_name}
+        if config.embedding_base_url:
+            parameters["base_url"] = config.embedding_base_url
+        return OllamaEmbeddings(**parameters)
+
+    if provider == "mistralai":
+        from langchain_mistralai import MistralAIEmbeddings
+
+        return MistralAIEmbeddings(model=model_name)
+
+    if provider == "openai":
+        from langchain_openai import OpenAIEmbeddings
+
+        parameters = {"model": model_name}
+        if config.embedding_base_url:
+            parameters["base_url"] = config.embedding_base_url
+        api_key = os.getenv(config.api_key_env) if config.api_key_env else None
+        if api_key:
+            parameters["api_key"] = api_key
+        return OpenAIEmbeddings(**parameters)
+
+    raise RuntimeError(
+        f"Unsupported embedding provider '{provider}' for node "
+        f"'{config.node_name}'. Known providers: ollama, mistralai, openai."
     )
 
 
@@ -101,7 +175,6 @@ def _build_vector_store(config: MemoryConfig) -> Any:
     import chromadb
     from chromadb.errors import NotFoundError
     from langchain_chroma import Chroma
-    from langchain_mistralai import MistralAIEmbeddings
 
     client = chromadb.PersistentClient(path=config.chroma_path)
 
@@ -114,5 +187,5 @@ def _build_vector_store(config: MemoryConfig) -> Any:
     return Chroma(
         client=client,
         collection_name=config.collection_name,
-        embedding_function=MistralAIEmbeddings(),
+        embedding_function=_build_embeddings(config),
     )

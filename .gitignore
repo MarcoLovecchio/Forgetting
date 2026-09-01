@@ -73,3 +73,9 @@ query_generation/query_generation/db/transactions/
 *.pid
 *.sock
 *.log
+
+# Archivio vettoriale della memoria: database binario che contiene le memorie
+# dell'utente in chiaro, e il path di default e' relativo alla working directory
+# quindi puo' materializzarsi dentro il repo.
+chroma_db/
+chroma.sqlite3

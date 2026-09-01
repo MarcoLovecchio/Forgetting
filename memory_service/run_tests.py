@@ -7,9 +7,11 @@ by test doubles, and the ROS node is driven with a stub agent. Usage:
     python memory_service/run_tests.py [-v]
 
 The node tests need rclpy and the generated interfaces, so they are skipped
-outside a ROS 2 environment. The ament linters and the LangSmith integration
-test (test_memory_llm.py) are not part of this suite: they belong to the colcon
-workflow.
+outside a ROS 2 environment. Everything that talks to a real model is left out
+on purpose - the model gate (test_tool_calling_gate.py), the integration test
+(test_memory_llm.py) and the long run (test_long_term_interaction.py) - together
+with the ament linters: those belong to the colcon workflow and need a reachable
+model.
 """
 
 import os

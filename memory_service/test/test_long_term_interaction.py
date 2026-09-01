@@ -65,19 +65,27 @@ Le assert sono strutturali (invarianti che devono valere qualunque cosa decida i
 modello), non sul contenuto: con un LLM vero pretendere una classificazione
 esatta renderebbe il test inutilizzabile.
 
-Requisiti: LLM_CONFIG (.config), GROQ_API_KEY e MISTRAL_API_KEY (.env).
+Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG in .config, e i due modelli
+raggiungibili. Con Ollama: server attivo e modelli gia' scaricati, indirizzo in
+MEMORY_LLM_BASE_URL / MEMORY_EMBEDDING_BASE_URL nel .env. Se qualcosa non
+risponde il test si salta spiegando cosa.
+
 Attenzione: ogni messaggio costa 4-6 chiamate reali al modello (sufficienza,
 eventuale retrieval, risposta della retrieve, risposta dell'assistente,
 consolidamento, eventuale split). Su 117 messaggi sono diverse centinaia di
-chiamate: conviene partire con MEMORY_LONGRUN_MESSAGES basso.
+chiamate: conviene partire con MEMORY_LONGRUN_MESSAGES basso. Con un modello
+locale il limite non e' la quota ma la latenza, quindi il tempo dipende
+dall'hardware su cui gira Ollama.
 
 Esecuzione:
     pytest memory_service/test/test_long_term_interaction.py -v -s
 
 Variabili utili:
     MEMORY_LONGRUN_MESSAGES      quanti messaggi iniettare (default: tutti e 117)
-    MEMORY_LONGRUN_DELAY         secondi di pausa fra un messaggio e l'altro,
-                                 per non sbattere contro i rate limit (default 0)
+    MEMORY_LONGRUN_DELAY         secondi di pausa fra un messaggio e l'altro
+                                 (default 0). Con un modello locale non ci sono
+                                 rate limit da rispettare, ma serve se il server
+                                 e' condiviso con altri
     MEMORY_LONGRUN_CHROMA_PATH   dove tenere l'archivio (default: cartella
                                  temporanea nuova, cosi' ogni run parte pulito e
                                  non tocca il chroma_db di produzione)
@@ -107,16 +115,22 @@ from memory_service.consolidation import (  # noqa: E402
     serialize_core_memory_for_prompt,
 )
 
+from live_model import live_stack_unavailable  # noqa: E402
 from snapshot import SEPARATOR, safe_print  # noqa: E402
 
 
+# Lo skip a livello di modulo resta economico (guarda solo la configurazione):
+# la raggiungibilita' dei modelli costa una chiamata e si verifica dentro il test.
 pytestmark = pytest.mark.skipif(
     not os.getenv("LLM_CONFIG"),
     reason="LLM_CONFIG is required to run the long term interaction test",
 )
 
 PROGRESS_EVERY = 10
-ID_WIDTH = 8  # gli id vengono abbreviati nel resoconto, per leggibilita'
+# Gli id nascono gia' di ITEM_ID_LENGTH caratteri (vedi consolidation), quindi
+# qui non si tronca piu' niente. Il troncamento resta come rete di sicurezza
+# per gli item archiviati prima dell'accorciamento, che hanno un uuid intero.
+ID_WIDTH = 8
 
 
 # --------------------------------------------------------------------------- #
@@ -398,7 +412,7 @@ def _print_operation_log(log):
     if counters:
         summary = ", ".join(f"{name} {count}" for name, count in sorted(counters.items()))
         safe_print(f"Riepilogo: {summary}")
-    safe_print(f"(id abbreviati ai primi {ID_WIDTH} caratteri)\n")
+    safe_print("")
 
     if not log:
         safe_print("  (nessuna operazione registrata)")
@@ -546,6 +560,10 @@ def _assert_everything_that_left_core_is_in_the_archive(state, vector_store):
 # --------------------------------------------------------------------------- #
 
 def test_long_term_interaction():
+    reason = live_stack_unavailable()
+    if reason:
+        pytest.skip(reason)
+
     _configure_langsmith()
     agent, config = _build_agent()
     vector_store = backends.get_vector_store()
@@ -613,7 +631,7 @@ def test_long_term_interaction():
 
     assert len(failures) < len(messages) / 2, (
         f"{len(failures)} messaggi su {len(messages)} sono falliti: "
-        "probabilmente rate limit o configurazione errata")
+        "probabilmente il server non risponde o la configurazione e' sbagliata")
     assert state["operation_log"], "una sessione lunga deve aver prodotto delle operazioni"
     _assert_state_is_consistent(state)
     _assert_everything_that_left_core_is_in_the_archive(state, vector_store)

@@ -10,7 +10,7 @@ davvero. Questo permette di testarlo seriamente, senza chiavi API e senza rete.
 | Modulo | Ruolo | Dipendenze esterne |
 | --- | --- | --- |
 | `config.py` | configurazione (limiti, path Chroma, `LLM_CONFIG`) | solo `python-dotenv` |
-| `backends.py` | costruzione **pigra** di chat model e vector store, sostituibili | importa Chroma/Mistral/langchain solo se usati |
+| `backends.py` | costruzione **pigra** di chat model e vector store, sostituibili | importa il provider (Ollama, Mistral, OpenAI) e Chroma solo se usati |
 | `consolidation.py` | modello dati della memoria e operazioni di consolidamento | `pydantic`, `langchain-core` |
 | `memory_manager_llm.py` | grafo LangGraph e `MemoryAgent` | `langgraph`, `langchain-core` |
 | `memory_server.py` | nodo ROS con i due servizi | `rclpy`, `memory_service_interfaces` |
@@ -70,8 +70,8 @@ fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
 python memory_service/run_tests.py -v
 ```
 
-68 test, tutti sul **grafo LangGraph reale** con backend simulati
-(`test/fakes.py`): nessuna chiamata di rete, nessuna API key, nessun ChromaDB.
+84 test, tutti sul **grafo LangGraph reale** con backend simulati
+(`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
 classificazione diversa (`new`, `redundant`, `update`, `contradict`, `delete`,
@@ -93,13 +93,29 @@ pytest memory_service
 colcon test --packages-select memory_service
 ```
 
+`test/test_tool_calling_gate.py` è il **gate da superare prima di tutto il
+resto**: verifica che il modello configurato produca tool call valide per gli
+schemi veri (`InsertCoreMemories`, `SplitCoreAndArchivalMemory`,
+`InformationSufficiency`) e che ricopi gli id esattamente. Sono due fallimenti
+diversi e li misura separatamente, perché portano a rimedi diversi: la struttura
+sbagliata si cura con lo structured output vincolato, gli id sbagliati con
+l'aliasing dei prompt. Ogni controllo è ripetuto più volte, perché con un LLM una
+singola risposta giusta non dice niente.
+
+```bash
+pytest memory_service/test/test_tool_calling_gate.py -v -s
+
+# lettura più affidabile prima di decidere
+MEMORY_GATE_ATTEMPTS=10 pytest memory_service/test/test_tool_calling_gate.py -v -s
+```
+
 `test/test_memory_llm.py` è invece il test di **integrazione** con lo stack
-reale (Groq + Mistral + ChromaDB): stessa turnistica, ma la classificazione la
-decide il modello vero, quindi le assert sono larghe (invarianti strutturali) e
-il valore sta nella traccia stampata. Viene saltato automaticamente se
-`LLM_CONFIG` non è impostata. Con `GROQ_API_KEY` e `MISTRAL_API_KEY` in `.env`
-gira per intero; `LANGSMITH_API_KEY` resta opzionale, come nel resto
-dell'architettura — se presente abilita solo il tracing.
+reale (chat model, embedding, ChromaDB): stessa turnistica, ma la
+classificazione la decide il modello vero, quindi le assert sono larghe
+(invarianti strutturali) e il valore sta nella traccia stampata. Viene saltato se
+`LLM_CONFIG` non è impostata, e anche se i modelli non rispondono — con un
+messaggio che dice quale dei due. `LANGSMITH_API_KEY` resta opzionale, come nel
+resto dell'architettura: se presente abilita solo il tracing.
 
 ```bash
 pytest memory_service/test/test_memory_llm.py -v -s
@@ -134,9 +150,30 @@ pytest memory_service/test/test_long_term_interaction.py -v -s
 # versione ridotta, per una prova veloce
 MEMORY_LONGRUN_MESSAGES=20 pytest memory_service/test/test_long_term_interaction.py -v -s
 
-# con una pausa fra i messaggi, se il provider impone rate limit
+# con una pausa fra i messaggi, se il server Ollama e' condiviso con altri
 MEMORY_LONGRUN_DELAY=1 pytest memory_service/test/test_long_term_interaction.py -v -s
 ```
+
+## Vincoli delle versioni (Ollama)
+
+Verificato sulla documentazione e sui sorgenti di `langchain-ollama`:
+
+- `num_ctx` e `base_url` sono parametri **top-level** di `ChatOllama`, e `model` /
+  `base_url` lo sono di `OllamaEmbeddings`: si passano direttamente al
+  costruttore, non dentro un dizionario di opzioni. È come li passa `backends.py`.
+- Il pin a **0.3.3** non è arbitrario: è l'ultima versione compatibile con il
+  `langchain-core==0.3.62` di questo progetto (richiede `>=0.3.60`). La 0.3.10
+  vuole `langchain-core>=0.3.76`, le 1.x vogliono `>=1.2.21`.
+- **Il thinking di Qwen non è un problema per il tool calling.** Le tool call
+  arrivano da `response["message"]["tool_calls"]`, un campo strutturato separato
+  dal testo: i blocchi `<think>` finiscono in `content` e non corrompono
+  l'estrazione. Quello che costano è contesto e latenza, e il fatto che il testo
+  del ragionamento entra nelle risposte all'utente — quindi anche in memoria,
+  perché la risposta viene consolidata.
+- Se `content` sporco dà fastidio, la leva in 0.3.3 è **`extract_reasoning=True`**,
+  che sposta il ragionamento in `additional_kwargs["reasoning_content"]`. Non
+  `reasoning=False`: oltre a non esistere nella 0.3.3, risulta segnalato come non
+  funzionante con Qwen anche nelle versioni che ce l'hanno.
 
 ## Il limite della core memory
 
@@ -184,7 +221,11 @@ d'ambiente (lette da `.env` / `.config`):
 | Variabile | Default | Significato |
 | --- | --- | --- |
 | `LLM_CONFIG` | — | dizionario dei modelli; viene usata la voce `memory_agent` |
-| `GROQ_API_KEY` | — | chiave passata al provider (nome configurabile con `MEMORY_API_KEY_ENV`) |
+| `EMBEDDING_CONFIG` | — | dizionario dei modelli di embedding; viene usata la voce `memory_agent` |
+| `MEMORY_LLM_BASE_URL` | — | endpoint del chat model servito in locale (Ollama) |
+| `MEMORY_EMBEDDING_BASE_URL` | — | endpoint del modello di embedding |
+| `MEMORY_NUM_CTX` | `8192` | context window chiesto a Ollama, che di default userebbe 2048 |
+| `GROQ_API_KEY` | — | chiave del provider, se ne serve una (nome configurabile con `MEMORY_API_KEY_ENV`). **Non** viene inviata quando il provider è `ollama`: resta impostata per gli altri nodi dell'architettura, che parlano ancora con Groq |
 | `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `5` | messaggi mantenuti prima del riassunto |
 | `MEMORY_CORE_MEMORY_LIMIT` | `150` | caratteri massimi della core memory |

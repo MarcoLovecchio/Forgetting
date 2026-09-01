@@ -1,4 +1,4 @@
-"""Ciclo di vita della memoria sullo stack reale: Groq + Mistral + ChromaDB.
+"""Ciclo di vita della memoria sullo stack reale: chat model, embedding, ChromaDB.
 
 Stessa turnistica del test offline (test_consolidation.py), ma qui **nessuno
 scripta le risposte**: a classificare i fatti e' il modello vero. Ogni turno
@@ -18,9 +18,13 @@ valore vero e' la traccia stampata, da leggere per capire se il modello ha
 classificato come ci si aspetta. Le invarianti strutturali (core memory con soli
 item attivi, log coerente, nessun crash) sono invece verificate sul serio.
 
-Requisiti: LLM_CONFIG (in .config), GROQ_API_KEY e MISTRAL_API_KEY (in .env).
-Il test viene saltato se LLM_CONFIG non e' impostata. LANGSMITH_API_KEY resta
-opzionale e abilita solo il tracing.
+Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG in .config, e i due modelli
+raggiungibili. Con Ollama: server attivo e modelli gia' scaricati con
+`ollama pull`; l'indirizzo sta in MEMORY_LLM_BASE_URL / MEMORY_EMBEDDING_BASE_URL
+nel .env. Se qualcosa non risponde il test si salta spiegando cosa, invece di
+fallire: un server spento non e' un difetto del codice.
+
+LANGSMITH_API_KEY resta opzionale e abilita solo il tracing.
 
 Esecuzione:  pytest memory_service/test/test_memory_llm.py -v -s
 """
@@ -41,16 +45,25 @@ from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
 from memory_service.consolidation import get_active_items  # noqa: E402
 
+from live_model import live_stack_unavailable  # noqa: E402
 from snapshot import print_memory_snapshot, print_turn_header  # noqa: E402
 
 
-# This test drives the real LLM stack (Groq + Mistral + ChromaDB), so it is
-# only meaningful when the environment is configured. Without LLM_CONFIG the
-# module used to raise at import time and break the whole test session.
+# Il test parla con i modelli veri, quindi ha senso solo con l'ambiente
+# configurato. Senza LLM_CONFIG il modulo sollevava all'import e faceva saltare
+# l'intera sessione di test.
+# Lo skip a livello di modulo resta economico (guarda solo la configurazione):
+# la raggiungibilita' dei modelli costa una chiamata e si verifica dentro i test.
 pytestmark = pytest.mark.skipif(
     not os.getenv("LLM_CONFIG"),
     reason="LLM_CONFIG is required to run the memory agent tests",
 )
+
+
+def _require_live_stack():
+    reason = live_stack_unavailable()
+    if reason:
+        pytest.skip(reason)
 
 
 def _configure_langsmith():
@@ -117,6 +130,7 @@ def _op_types(state, since=0):
 
 
 def test_memory_lifecycle_with_a_real_llm():
+    _require_live_stack()
     _configure_langsmith()
     agent, config = _build_agent()
 
@@ -192,6 +206,7 @@ def test_memory_lifecycle_with_a_real_llm():
 
 def test_deleted_memories_are_never_retrieved():
     """Un fatto cancellato non deve piu' tornare fuori dall'archivio."""
+    _require_live_stack()
     _configure_langsmith()
 
     from memory_service.consolidation import (

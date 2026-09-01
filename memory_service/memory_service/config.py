@@ -93,6 +93,20 @@ class MemoryConfig:
     # Chat model, read from the LLM_CONFIG entry of this node
     llm_config: Dict[str, Any] = field(default_factory=dict)
     api_key_env: str = "GROQ_API_KEY"
+    # Endpoint of a locally served model (Ollama and any OpenAI compatible
+    # server). None means "the provider default", which is what the hosted
+    # providers use.
+    base_url: Optional[str] = None
+    # Context window to ask the local runtime for. Ollama defaults to 2048 and
+    # truncates longer prompts without saying anything: the consolidation and
+    # the core/archival split both go past that.
+    num_ctx: int = 8192
+
+    # Embedding model, read from the EMBEDDING_CONFIG entry of this node.
+    # Kept separate from llm_config because it is a different model, served
+    # possibly by a different runtime.
+    embedding_config: Dict[str, Any] = field(default_factory=dict)
+    embedding_base_url: Optional[str] = None
 
     @classmethod
     def from_environment(cls, node_name: Optional[str] = None) -> "MemoryConfig":
@@ -104,25 +118,33 @@ class MemoryConfig:
             core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", 150),
             chroma_path=os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db")),
             collection_name=os.getenv("MEMORY_COLLECTION_NAME", "memory_archive"),
-            llm_config=_read_llm_config(node_name),
+            llm_config=_read_model_config("LLM_CONFIG", node_name),
             api_key_env=os.getenv("MEMORY_API_KEY_ENV", "GROQ_API_KEY"),
+            base_url=os.getenv("MEMORY_LLM_BASE_URL") or None,
+            num_ctx=_env_int("MEMORY_NUM_CTX", 8192),
+            embedding_config=_read_model_config("EMBEDDING_CONFIG", node_name),
+            embedding_base_url=os.getenv("MEMORY_EMBEDDING_BASE_URL") or None,
         )
 
 
-def _read_llm_config(node_name: str) -> Dict[str, Any]:
-    """Parse the ``LLM_CONFIG`` environment variable for the given node.
+def _read_model_config(variable: str, node_name: str) -> Dict[str, Any]:
+    """Parse a per-node model configuration variable for the given node.
+
+    ``LLM_CONFIG`` and ``EMBEDDING_CONFIG`` have the same shape: a dict keyed by
+    node name, each entry carrying model_name, model_provider and whatever else
+    the provider needs.
 
     Returns an empty dict when the variable is missing or malformed: the error
-    is raised later, only if a chat model is actually needed, so that importing
+    is raised later, only if that model is actually needed, so that importing
     this package never requires a configured environment.
     """
-    raw = os.getenv("LLM_CONFIG")
+    raw = os.getenv(variable)
     if not raw:
         return {}
     try:
         parsed = ast.literal_eval(raw)
     except (ValueError, SyntaxError) as error:
-        print(f"\033[31mCannot parse LLM_CONFIG: {error}\033[0m")
+        print(f"\033[31mCannot parse {variable}: {error}\033[0m")
         return {}
     if not isinstance(parsed, dict):
         return {}

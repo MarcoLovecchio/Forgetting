@@ -1,6 +1,4 @@
 from pydantic import BaseModel
-# import uuid                          # DEAD CODE - used only by the commented tools below
-# from datetime import datetime as time  # DEAD CODE - idem
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END, START
@@ -73,23 +71,6 @@ def messages_to_str(messages) -> str:
     else:
         return str(messages)
 
-# DEAD CODE - no LLM binds this tool any more: the archive is written through
-# consolidation.archive_items(), which preserves every CoreMemoryItem field.
-# Writing plain strings here would create entries without status or lineage.
-# @tool
-# def insert_archival_memories(memories: list[str]):
-#     """These are the archival memories of our assistant. They should store less frequently accessed information that may be useful for long-term context.
-#     Given old memories from the historical interactions, you should summarize them into this other memory."""
-#     memories = [m for m in (memories or []) if str(m).strip()]
-#     if not memories:
-#         print("\tNo archival memories to insert.")
-#         return "No memories to add."
-#     doc_ids = [f"memory_{uuid.uuid4().hex}" for _ in memories]
-#     print(f"\tInserting archival memories: {memories} with IDs: {doc_ids}")
-#     get_vector_store().add_texts(texts=memories, ids=doc_ids, metadatas=[{"timestamp": str(time.now())}]*len(memories))
-#     return f"Memories added with IDs: {', '.join(doc_ids)}"
-
-
 
 # Tool to check if information is sufficient to answer the query
 class InformationSufficiency(BaseModel):
@@ -157,15 +138,6 @@ Is the information sufficient to answer the query?""")
 
     return bool(is_sufficient)
 
-# DEAD CODE - tool to add a new memory to the archive, never bound to any LLM
-# and superseded by the consolidation operations.
-# @tool
-# def add_memory(memory_content: str) -> str:
-#     """Add a new memory to the archival vector store."""
-#     print(f"\tAdding memory: {memory_content}")
-#     doc_id = f"memory_{uuid.uuid4().hex}"
-#     get_vector_store().add_texts(texts=[memory_content], ids=[doc_id], metadatas=[{"timestamp": str(time.now())}])
-#     return f"Memory added with ID: {doc_id}"
 
 # Tool to retrieve memories from the archive
 @tool
@@ -210,10 +182,6 @@ def tool_node(state: AgentState):
         tool_name = tool_call["name"]
         tool_args = tool_call["args"]
 
-        # DEAD CODE - see add_memory above
-        # if tool_name == "add_memory":
-        #     print(f"Invoking add_memory with args: {tool_args}")
-        #     result = add_memory.invoke(tool_args)
         if tool_name == "retrieve_memory":
             print(f"Invoking retrieve_memory with args: {tool_args}")
             result = retrieve_memory.invoke(tool_args)
@@ -224,10 +192,6 @@ def tool_node(state: AgentState):
             # deletes an existing one, in core memory or in the archive.
             state["core_memory"], result = apply_memory_operations(
                 tool_args.get("memories", []), state["core_memory"], state["operation_log"])
-        # DEAD CODE - see insert_archival_memories above
-        # elif tool_name == "insert_archival_memories":
-        #     print(f"Invoking insert_archival_memories with args: {tool_args}")
-        #     result = insert_archival_memories.invoke(tool_args)
         elif tool_name == "SplitCoreAndArchivalMemory":
             print(f"Invoking SplitCoreAndArchivalMemory with args: {tool_args}")
             state["core_memory"], result = apply_split_decisions(

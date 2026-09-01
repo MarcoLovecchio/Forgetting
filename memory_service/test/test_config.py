@@ -20,12 +20,17 @@ class EnvironmentTestCase(unittest.TestCase):
     managed_variables = (
         "MEMORY_ENV_FILE",
         "LLM_CONFIG",
+        "EMBEDDING_CONFIG",
         "MEMORY_MAX_HISTORICAL_MESSAGES",
         "MEMORY_CORE_MEMORY_LIMIT",
         "MEMORY_CHROMA_PATH",
         "MEMORY_COLLECTION_NAME",
         "MEMORY_LLM_NODE",
         "MEMORY_API_KEY_ENV",
+        "GROQ_API_KEY",
+        "MEMORY_LLM_BASE_URL",
+        "MEMORY_EMBEDDING_BASE_URL",
+        "MEMORY_NUM_CTX",
     )
 
     def setUp(self):
@@ -92,6 +97,61 @@ class ConfigTest(EnvironmentTestCase):
 
         self.assertEqual(config.llm_config["model_name"], "m1")
 
+    def test_local_model_defaults(self):
+        config = MemoryConfig.from_environment()
+
+        self.assertIsNone(config.base_url, "senza indirizzo vale il default del provider")
+        self.assertIsNone(config.embedding_base_url)
+        self.assertEqual(config.embedding_config, {})
+        self.assertEqual(config.num_ctx, 8192,
+                         "il default di Ollama e' 2048 e troncherebbe i prompt")
+
+    def test_base_urls_are_read_from_the_environment(self):
+        os.environ["MEMORY_LLM_BASE_URL"] = "http://192.168.1.50:11434"
+        os.environ["MEMORY_EMBEDDING_BASE_URL"] = "http://192.168.1.50:11434"
+
+        config = MemoryConfig.from_environment()
+
+        self.assertEqual(config.base_url, "http://192.168.1.50:11434")
+        self.assertEqual(config.embedding_base_url, "http://192.168.1.50:11434")
+
+    def test_an_empty_base_url_counts_as_absent(self):
+        os.environ["MEMORY_LLM_BASE_URL"] = ""
+
+        self.assertIsNone(MemoryConfig.from_environment().base_url)
+
+    def test_embedding_config_is_read_for_the_node(self):
+        os.environ["EMBEDDING_CONFIG"] = str({
+            "memory_agent": {"model_name": "qwen3-embedding:0.6b",
+                             "model_provider": "ollama"},
+            "other_node": {"model_name": "altro", "model_provider": "ollama"},
+        })
+
+        config = MemoryConfig.from_environment()
+
+        self.assertEqual(config.embedding_config["model_name"], "qwen3-embedding:0.6b")
+
+    def test_malformed_embedding_config_does_not_raise(self):
+        os.environ["EMBEDDING_CONFIG"] = "{ questo non e' python"
+
+        self.assertEqual(MemoryConfig.from_environment().embedding_config, {})
+
+    def test_num_ctx_is_read_from_the_environment(self):
+        os.environ["MEMORY_NUM_CTX"] = "16384"
+
+        self.assertEqual(MemoryConfig.from_environment().num_ctx, 16384)
+
+    def test_llm_and_embedding_configs_are_independent(self):
+        # Sono due modelli diversi, potenzialmente su runtime diversi: una
+        # variabile non deve leggere l'altra.
+        os.environ["LLM_CONFIG"] = str(
+            {"memory_agent": {"model_name": "qwen3.5:4b", "model_provider": "ollama"}})
+
+        config = MemoryConfig.from_environment()
+
+        self.assertEqual(config.llm_config["model_name"], "qwen3.5:4b")
+        self.assertEqual(config.embedding_config, {}, "EMBEDDING_CONFIG non e' impostata")
+
     def test_malformed_llm_config_does_not_raise(self):
         os.environ["LLM_CONFIG"] = "{ this is not python"
 
@@ -141,6 +201,127 @@ class BackendsTest(EnvironmentTestCase):
 
         self.assertIsNone(backends._llm)
         self.assertIsNone(backends._vector_store)
+
+
+class LocalModelParametersTest(EnvironmentTestCase):
+    """Che cosa arriva davvero al costruttore del chat model.
+
+    init_chat_model viene sostituito: cosi' si verificano i parametri senza che
+    Ollama debba essere raggiungibile, e senza installare il provider.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import langchain.chat_models as chat_models
+
+        self.calls = []
+        self._original = chat_models.init_chat_model
+
+        def spy(**parameters):
+            self.calls.append(parameters)
+            return object()
+
+        chat_models.init_chat_model = spy
+        self.addCleanup(setattr, chat_models, "init_chat_model", self._original)
+
+    def _build(self, llm_config, **overrides):
+        from memory_service.backends import _build_llm
+
+        config = MemoryConfig(node_name="memory_agent", llm_config=llm_config, **overrides)
+        _build_llm(config)
+        return self.calls[-1]
+
+    def test_ollama_receives_base_url_and_num_ctx(self):
+        parameters = self._build(
+            {"model_name": "qwen3.5:4b", "model_provider": "ollama", "temperature": 0.0},
+            base_url="http://192.168.1.50:11434", num_ctx=8192)
+
+        self.assertEqual(parameters["model"], "qwen3.5:4b")
+        self.assertEqual(parameters["model_provider"], "ollama")
+        self.assertEqual(parameters["base_url"], "http://192.168.1.50:11434")
+        self.assertEqual(parameters["num_ctx"], 8192,
+                         "senza, Ollama userebbe 2048 e troncherebbe i prompt")
+
+    def test_no_api_key_is_sent_when_there_is_none(self):
+        # Con un modello locale non c'e' nessuna chiave, e api_key=None non e'
+        # accettato da tutti i provider.
+        parameters = self._build(
+            {"model_name": "qwen3.5:4b", "model_provider": "ollama"})
+
+        self.assertNotIn("api_key", parameters)
+
+    def test_no_key_is_sent_to_a_local_model_even_when_one_exists(self):
+        # Il caso vero, che quello sopra non copre: GROQ_API_KEY *e'* impostata
+        # nel .env, perche' gli altri cinque nodi dell'architettura parlano
+        # ancora con Groq, e api_key_env vale GROQ_API_KEY per default. Senza
+        # guardia la chiave di un provider hosted finirebbe a un server locale.
+        # ChatOllama ignora il campo sconosciuto invece di sollevare, quindi
+        # l'errore non si vedrebbe.
+        os.environ["GROQ_API_KEY"] = "gsk_una_chiave_vera"
+
+        parameters = self._build(
+            {"model_name": "qwen3.5:4b", "model_provider": "ollama"})
+
+        self.assertNotIn("api_key", parameters)
+
+    def test_the_api_key_is_sent_when_the_variable_is_set(self):
+        os.environ["A_TEST_KEY"] = "segreto"
+        self.addCleanup(os.environ.pop, "A_TEST_KEY", None)
+
+        parameters = self._build(
+            {"model_name": "un-modello", "model_provider": "groq"},
+            api_key_env="A_TEST_KEY")
+
+        self.assertEqual(parameters["api_key"], "segreto")
+
+    def test_num_ctx_is_not_sent_to_other_providers(self):
+        # E' un parametro specifico di Ollama: mandarlo a groq sarebbe un errore.
+        parameters = self._build(
+            {"model_name": "un-modello", "model_provider": "groq"}, num_ctx=8192)
+
+        self.assertNotIn("num_ctx", parameters)
+
+    def test_base_url_is_omitted_when_not_configured(self):
+        parameters = self._build(
+            {"model_name": "un-modello", "model_provider": "groq"})
+
+        self.assertNotIn("base_url", parameters,
+                         "senza indirizzo vale il default del provider")
+
+
+class EmbeddingBackendTest(EnvironmentTestCase):
+    """Gli errori di configurazione dell'embedding, verificabili senza il server."""
+
+    def test_a_missing_embedding_config_is_reported(self):
+        from memory_service.backends import _build_embeddings
+
+        with self.assertRaises(RuntimeError) as raised:
+            _build_embeddings(MemoryConfig(node_name="memory_agent"))
+
+        self.assertIn("EMBEDDING_CONFIG", str(raised.exception))
+
+    def test_an_incomplete_embedding_config_is_reported(self):
+        from memory_service.backends import _build_embeddings
+
+        config = MemoryConfig(node_name="memory_agent",
+                              embedding_config={"model_name": "qwen3-embedding:0.6b"})
+
+        with self.assertRaises(RuntimeError) as raised:
+            _build_embeddings(config)
+
+        self.assertIn("model_provider", str(raised.exception))
+
+    def test_an_unknown_provider_is_reported(self):
+        from memory_service.backends import _build_embeddings
+
+        config = MemoryConfig(
+            node_name="memory_agent",
+            embedding_config={"model_name": "x", "model_provider": "inventato"})
+
+        with self.assertRaises(RuntimeError) as raised:
+            _build_embeddings(config)
+
+        self.assertIn("inventato", str(raised.exception))
 
 
 if __name__ == "__main__":
