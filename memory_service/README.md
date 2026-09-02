@@ -10,7 +10,7 @@ davvero. Questo permette di testarlo seriamente, senza chiavi API e senza rete.
 | Modulo | Ruolo | Dipendenze esterne |
 | --- | --- | --- |
 | `config.py` | configurazione (limiti, path Chroma, `LLM_CONFIG`) | solo `python-dotenv` |
-| `backends.py` | costruzione **pigra** di chat model e vector store, sostituibili | importa il provider (Ollama, Mistral, OpenAI) e Chroma solo se usati |
+| `backends.py` | costruzione **pigra** di chat model e vector store, sostituibili | importa il provider (OpenAI, Mistral) e Chroma solo se usati |
 | `consolidation.py` | modello dati della memoria e operazioni di consolidamento | `pydantic`, `langchain-core` |
 | `memory_manager_llm.py` | grafo LangGraph e `MemoryAgent` | `langgraph`, `langchain-core` |
 | `memory_server.py` | nodo ROS con i due servizi | `rclpy`, `memory_service_interfaces` |
@@ -70,7 +70,7 @@ fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
 python memory_service/run_tests.py -v
 ```
 
-90 test, tutti sul **grafo LangGraph reale** con backend simulati
+97 test, tutti sul **grafo LangGraph reale** con backend simulati
 (`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
@@ -150,30 +150,51 @@ pytest memory_service/test/test_long_term_interaction.py -v -s
 # versione ridotta, per una prova veloce
 MEMORY_LONGRUN_MESSAGES=20 pytest memory_service/test/test_long_term_interaction.py -v -s
 
-# con una pausa fra i messaggi, se il server Ollama e' condiviso con altri
+# con una pausa fra i messaggi, se l'endpoint e' condiviso con altri carichi
 MEMORY_LONGRUN_DELAY=1 pytest memory_service/test/test_long_term_interaction.py -v -s
 ```
 
-## Vincoli delle versioni (Ollama)
+## I modelli sul cluster
 
-Verificato sulla documentazione e sui sorgenti di `langchain-ollama`:
+I modelli girano su un cluster Kubernetes dietro un endpoint **OpenAI
+compatible**, quindi `model_provider` vale `openai` e `MEMORY_LLM_BASE_URL` porta
+all'indirizzo del servizio. Non serve nessuna dipendenza nuova: `langchain_openai`
+e `openai` erano già in `requirements.txt`.
 
-- `num_ctx` e `base_url` sono parametri **top-level** di `ChatOllama`, e `model` /
-  `base_url` lo sono di `OllamaEmbeddings`: si passano direttamente al
-  costruttore, non dentro un dizionario di opzioni. È come li passa `backends.py`.
-- Il pin a **0.3.3** non è arbitrario: è l'ultima versione compatibile con il
-  `langchain-core==0.3.62` di questo progetto (richiede `>=0.3.60`). La 0.3.10
-  vuole `langchain-core>=0.3.76`, le 1.x vogliono `>=1.2.21`.
-- **Il thinking di Qwen non è un problema per il tool calling.** Le tool call
-  arrivano da `response["message"]["tool_calls"]`, un campo strutturato separato
-  dal testo: i blocchi `<think>` finiscono in `content` e non corrompono
-  l'estrazione. Quello che costano è contesto e latenza, e il fatto che il testo
-  del ragionamento entra nelle risposte all'utente — quindi anche in memoria,
-  perché la risposta viene consolidata.
-- Se `content` sporco dà fastidio, la leva in 0.3.3 è **`extract_reasoning=True`**,
-  che sposta il ragionamento in `additional_kwargs["reasoning_content"]`. Non
-  `reasoning=False`: oltre a non esistere nella 0.3.3, risulta segnalato come non
-  funzionante con Qwen anche nelle versioni che ce l'hanno.
+Due cose da sapere, verificate sui sorgenti:
+
+- **Senza chiave il client non si costruisce nemmeno.** `openai-python` solleva
+  `OpenAIError` nel costruttore, non alla prima chiamata, se non trova nessuna
+  chiave — anche verso un server che non la controlla. Per questo `backends.py`
+  passa il segnaposto `PLACEHOLDER_API_KEY = "EMPTY"` quando `MEMORY_API_KEY_ENV`
+  non è configurata. Se un domani l'endpoint chiedesse un token vero basta
+  puntare `MEMORY_API_KEY_ENV` alla variabile che lo contiene.
+- **Gli embedding devono mandare il testo, non i token.** `OpenAIEmbeddings`
+  per default tokenizza prima di spedire, e per un modello che `tiktoken` non
+  conosce ripiega su `cl100k_base` — il vocabolario di OpenAI. Gli id di un
+  vocabolario sono parole diverse in un altro: il server incorporerebbe rumore e
+  lo restituirebbe **senza nessun errore**. Per questo `backends.py` passa
+  `check_embedding_ctx_length=False`.
+- **Niente greedy decoding.** Qwen sconsiglia `temperature=0`: *"can lead to
+  performance degradation and endless repetitions"*. `.config` porta il preset
+  consigliato per il thinking (`1.0 / 0.95 / 20`); `top_k` non e' un parametro
+  dell'API OpenAI e viaggia in `extra_body`, che vLLM onora. Tutti i valori si
+  tarano da `.config`, senza toccare il codice, e quello che ometti resta al
+  default del server.
+- **Il thinking si commuta in un punto solo:** la voce `enable_thinking` della
+  entry `memory_agent` in `.config`, subito sopra i parametri di campionamento —
+  che vanno cambiati **insieme** a quella, perché i due preset sono diversi
+  (acceso `1.0 / 0.95 / 20`, spento `0.7 / 0.8 / 20`). Qwen commuta il
+  ragionamento attraverso il chat template, non con un parametro di
+  campionamento, quindi `backends.py` lo manda come `chat_template_kwargs`
+  dentro `extra_body`. Il gate stampa in quale modalità ha girato, così due run
+  si confrontano senza andare a memoria.
+- **`api_key_env` parte vuota apposta.** Se restasse `GROQ_API_KEY` come prima,
+  quella chiave — che nel `.env` c'è, perché serve agli altri cinque nodi
+  dell'architettura — finirebbe nell'header `Authorization` verso il cluster. Con
+  un provider hosted come Groq la variabile non serve comunque: il provider fa il
+  lookup da sé, ed è il motivo per cui `backends.py` non passa mai `api_key=None`
+  esplicitamente (lo sopprimerebbe).
 
 ## Il limite della core memory
 
@@ -247,10 +268,9 @@ d'ambiente (lette da `.env` / `.config`):
 | --- | --- | --- |
 | `LLM_CONFIG` | — | dizionario dei modelli; viene usata la voce `memory_agent` |
 | `EMBEDDING_CONFIG` | — | dizionario dei modelli di embedding; viene usata la voce `memory_agent` |
-| `MEMORY_LLM_BASE_URL` | — | endpoint del chat model servito in locale (Ollama) |
+| `MEMORY_LLM_BASE_URL` | — | endpoint del chat model (per un server OpenAI compatible di norma finisce in `/v1`) |
 | `MEMORY_EMBEDDING_BASE_URL` | — | endpoint del modello di embedding |
-| `MEMORY_NUM_CTX` | `8192` | context window chiesto a Ollama, che di default userebbe 2048 |
-| `GROQ_API_KEY` | — | chiave del provider, se ne serve una (nome configurabile con `MEMORY_API_KEY_ENV`). **Non** viene inviata quando il provider è `ollama`: resta impostata per gli altri nodi dell'architettura, che parlano ancora con Groq |
+| `MEMORY_API_KEY_ENV` | *(vuota)* | nome della variabile che contiene la chiave. Vuota significa "nessuna chiave": verso un endpoint `openai` viene mandato il segnaposto `EMPTY`. **Non** vale `GROQ_API_KEY`: quella serve agli altri nodi e non deve raggiungere il cluster |
 | `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `5` | messaggi mantenuti prima del riassunto |
 | `MEMORY_CORE_MEMORY_LIMIT` | `150` | caratteri massimi della core memory |

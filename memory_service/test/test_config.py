@@ -30,7 +30,6 @@ class EnvironmentTestCase(unittest.TestCase):
         "GROQ_API_KEY",
         "MEMORY_LLM_BASE_URL",
         "MEMORY_EMBEDDING_BASE_URL",
-        "MEMORY_NUM_CTX",
     )
 
     def setUp(self):
@@ -103,8 +102,8 @@ class ConfigTest(EnvironmentTestCase):
         self.assertIsNone(config.base_url, "senza indirizzo vale il default del provider")
         self.assertIsNone(config.embedding_base_url)
         self.assertEqual(config.embedding_config, {})
-        self.assertEqual(config.num_ctx, 8192,
-                         "il default di Ollama e' 2048 e troncherebbe i prompt")
+        self.assertEqual(config.api_key_env, "",
+                         "senza variabile configurata non si legge nessuna chiave")
 
     def test_base_urls_are_read_from_the_environment(self):
         os.environ["MEMORY_LLM_BASE_URL"] = "http://192.168.1.50:11434"
@@ -122,34 +121,29 @@ class ConfigTest(EnvironmentTestCase):
 
     def test_embedding_config_is_read_for_the_node(self):
         os.environ["EMBEDDING_CONFIG"] = str({
-            "memory_agent": {"model_name": "qwen3-embedding:0.6b",
-                             "model_provider": "ollama"},
-            "other_node": {"model_name": "altro", "model_provider": "ollama"},
+            "memory_agent": {"model_name": "qwen3-embedding",
+                             "model_provider": "openai"},
+            "other_node": {"model_name": "altro", "model_provider": "openai"},
         })
 
         config = MemoryConfig.from_environment()
 
-        self.assertEqual(config.embedding_config["model_name"], "qwen3-embedding:0.6b")
+        self.assertEqual(config.embedding_config["model_name"], "qwen3-embedding")
 
     def test_malformed_embedding_config_does_not_raise(self):
         os.environ["EMBEDDING_CONFIG"] = "{ questo non e' python"
 
         self.assertEqual(MemoryConfig.from_environment().embedding_config, {})
 
-    def test_num_ctx_is_read_from_the_environment(self):
-        os.environ["MEMORY_NUM_CTX"] = "16384"
-
-        self.assertEqual(MemoryConfig.from_environment().num_ctx, 16384)
-
     def test_llm_and_embedding_configs_are_independent(self):
         # Sono due modelli diversi, potenzialmente su runtime diversi: una
         # variabile non deve leggere l'altra.
         os.environ["LLM_CONFIG"] = str(
-            {"memory_agent": {"model_name": "qwen3.5:4b", "model_provider": "ollama"}})
+            {"memory_agent": {"model_name": "qwen3.5-4b", "model_provider": "openai"}})
 
         config = MemoryConfig.from_environment()
 
-        self.assertEqual(config.llm_config["model_name"], "qwen3.5:4b")
+        self.assertEqual(config.llm_config["model_name"], "qwen3.5-4b")
         self.assertEqual(config.embedding_config, {}, "EMBEDDING_CONFIG non e' impostata")
 
     def test_malformed_llm_config_does_not_raise(self):
@@ -207,7 +201,7 @@ class LocalModelParametersTest(EnvironmentTestCase):
     """Che cosa arriva davvero al costruttore del chat model.
 
     init_chat_model viene sostituito: cosi' si verificano i parametri senza che
-    Ollama debba essere raggiungibile, e senza installare il provider.
+    l'endpoint debba essere raggiungibile, e senza installare il provider.
     """
 
     def setUp(self):
@@ -231,36 +225,91 @@ class LocalModelParametersTest(EnvironmentTestCase):
         _build_llm(config)
         return self.calls[-1]
 
-    def test_ollama_receives_base_url_and_num_ctx(self):
+    def test_the_endpoint_address_is_passed_through(self):
         parameters = self._build(
-            {"model_name": "qwen3.5:4b", "model_provider": "ollama", "temperature": 0.0},
-            base_url="http://192.168.1.50:11434", num_ctx=8192)
+            {"model_name": "qwen3.5-4b", "model_provider": "openai", "temperature": 0.0},
+            base_url="http://modelli.cluster.local:8000/v1")
 
-        self.assertEqual(parameters["model"], "qwen3.5:4b")
-        self.assertEqual(parameters["model_provider"], "ollama")
-        self.assertEqual(parameters["base_url"], "http://192.168.1.50:11434")
-        self.assertEqual(parameters["num_ctx"], 8192,
-                         "senza, Ollama userebbe 2048 e troncherebbe i prompt")
+        self.assertEqual(parameters["model"], "qwen3.5-4b")
+        self.assertEqual(parameters["model_provider"], "openai")
+        self.assertEqual(parameters["base_url"], "http://modelli.cluster.local:8000/v1")
 
-    def test_no_api_key_is_sent_when_there_is_none(self):
-        # Con un modello locale non c'e' nessuna chiave, e api_key=None non e'
-        # accettato da tutti i provider.
+    def test_the_sampling_parameters_come_from_the_configuration(self):
+        # Qwen sconsiglia il greedy decoding: "can lead to performance
+        # degradation and endless repetitions". I valori stanno in .config
+        # proprio per poter essere tarati senza toccare il codice.
+        parameters = self._build({
+            "model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai",
+            "temperature": 1.0, "top_p": 0.95, "top_k": 20})
+
+        self.assertEqual(parameters["temperature"], 1.0)
+        self.assertEqual(parameters["top_p"], 0.95)
+
+    def test_top_k_travels_in_extra_body(self):
+        # top_k non e' un parametro dell'API OpenAI: passarlo come argomento
+        # diretto non arriverebbe al server, che invece lo accetta nel corpo.
+        parameters = self._build({
+            "model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai", "top_k": 20})
+
+        self.assertEqual(parameters["extra_body"], {"top_k": 20})
+
+    def test_thinking_is_switched_through_the_chat_template(self):
+        parameters = self._build({
+            "model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai",
+            "enable_thinking": False})
+
+        self.assertEqual(parameters["extra_body"],
+                         {"chat_template_kwargs": {"enable_thinking": False}})
+
+    def test_thinking_left_alone_is_not_sent_at_all(self):
+        # None non e' False: senza indicazione decide il server, e mandare
+        # esplicitamente un valore sarebbe decidere al posto suo.
         parameters = self._build(
-            {"model_name": "qwen3.5:4b", "model_provider": "ollama"})
+            {"model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai"})
 
-        self.assertNotIn("api_key", parameters)
+        self.assertNotIn("extra_body", parameters)
 
-    def test_no_key_is_sent_to_a_local_model_even_when_one_exists(self):
-        # Il caso vero, che quello sopra non copre: GROQ_API_KEY *e'* impostata
-        # nel .env, perche' gli altri cinque nodi dell'architettura parlano
-        # ancora con Groq, e api_key_env vale GROQ_API_KEY per default. Senza
-        # guardia la chiave di un provider hosted finirebbe a un server locale.
-        # ChatOllama ignora il campo sconosciuto invece di sollevare, quindi
-        # l'errore non si vedrebbe.
+    def test_what_is_not_configured_is_left_to_the_server(self):
+        parameters = self._build(
+            {"model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai"})
+
+        for name in ("temperature", "top_p", "presence_penalty", "extra_body"):
+            self.assertNotIn(name, parameters)
+
+    def test_extra_body_is_not_sent_to_a_hosted_provider(self):
+        # E' un campo di ChatOpenAI: altrove sarebbe un argomento sconosciuto.
+        parameters = self._build(
+            {"model_name": "un-modello", "model_provider": "groq", "top_k": 20})
+
+        self.assertNotIn("extra_body", parameters)
+
+    def test_a_placeholder_key_is_sent_when_the_endpoint_wants_none(self):
+        # L'SDK di OpenAI solleva alla costruzione del client, non alla prima
+        # chiamata, se non trova nessuna chiave - anche verso un server che non
+        # la controlla. Senza segnaposto il servizio non parte proprio.
+        parameters = self._build(
+            {"model_name": "qwen3.5-4b", "model_provider": "openai"})
+
+        self.assertEqual(parameters["api_key"], "EMPTY")
+
+    def test_the_key_of_another_provider_never_leaves(self):
+        # GROQ_API_KEY *e'* impostata nel .env, perche' gli altri cinque nodi
+        # dell'architettura parlano ancora con Groq. Con un endpoint OpenAI
+        # compatible quella chiave finirebbe nell'header Authorization verso il
+        # cluster: non scartata in silenzio, proprio spedita. La protezione e'
+        # che api_key_env parte vuota e va scelta apposta.
         os.environ["GROQ_API_KEY"] = "gsk_una_chiave_vera"
 
         parameters = self._build(
-            {"model_name": "qwen3.5:4b", "model_provider": "ollama"})
+            {"model_name": "qwen3.5-4b", "model_provider": "openai"})
+
+        self.assertEqual(parameters["api_key"], "EMPTY")
+
+    def test_a_hosted_provider_keeps_looking_up_its_own_key(self):
+        # Passare api_key=None non e' neutro: sopprimerebbe il lookup che il
+        # provider fa da solo sulla propria variabile.
+        parameters = self._build(
+            {"model_name": "un-modello", "model_provider": "groq"})
 
         self.assertNotIn("api_key", parameters)
 
@@ -274,19 +323,74 @@ class LocalModelParametersTest(EnvironmentTestCase):
 
         self.assertEqual(parameters["api_key"], "segreto")
 
-    def test_num_ctx_is_not_sent_to_other_providers(self):
-        # E' un parametro specifico di Ollama: mandarlo a groq sarebbe un errore.
-        parameters = self._build(
-            {"model_name": "un-modello", "model_provider": "groq"}, num_ctx=8192)
-
-        self.assertNotIn("num_ctx", parameters)
-
     def test_base_url_is_omitted_when_not_configured(self):
         parameters = self._build(
             {"model_name": "un-modello", "model_provider": "groq"})
 
         self.assertNotIn("base_url", parameters,
                          "senza indirizzo vale il default del provider")
+
+
+class OpenAIEmbeddingParametersTest(EnvironmentTestCase):
+    """Che cosa arriva al costruttore degli embedding.
+
+    langchain_openai non e' importabile ovunque, quindi il modulo viene
+    sostituito: qui interessano i parametri, non il client vero.
+    """
+
+    def setUp(self):
+        super().setUp()
+        import sys
+        import types
+
+        self.calls = []
+
+        module = types.ModuleType("langchain_openai")
+
+        def spy(**parameters):
+            self.calls.append(parameters)
+            return object()
+
+        module.OpenAIEmbeddings = spy
+        # Non self._saved: la classe base lo usa gia' per le variabili d'ambiente.
+        self._saved_module = sys.modules.get("langchain_openai")
+        sys.modules["langchain_openai"] = module
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        import sys
+
+        if self._saved_module is None:
+            sys.modules.pop("langchain_openai", None)
+        else:
+            sys.modules["langchain_openai"] = self._saved_module
+
+    def _build(self, **overrides):
+        from memory_service.backends import _build_embeddings
+
+        config = MemoryConfig(
+            node_name="memory_agent",
+            embedding_config={"model_name": "Qwen/Qwen3-Embedding-0.6B",
+                              "model_provider": "openai"},
+            **overrides)
+        _build_embeddings(config)
+        return self.calls[-1]
+
+    def test_the_text_is_sent_not_openai_tokens(self):
+        # Con il default, OpenAIEmbeddings tokenizza prima di spedire e per un
+        # modello che tiktoken non conosce ripiega su cl100k_base, il vocabolario
+        # di OpenAI. Gli id di un vocabolario sono parole diverse in un altro:
+        # il server incorporerebbe rumore e lo restituirebbe senza protestare.
+        self.assertIs(self._build()["check_embedding_ctx_length"], False)
+
+    def test_the_endpoint_address_is_passed_through(self):
+        parameters = self._build(embedding_base_url="http://modelli.local:8000/v1")
+
+        self.assertEqual(parameters["base_url"], "http://modelli.local:8000/v1")
+        self.assertEqual(parameters["model"], "Qwen/Qwen3-Embedding-0.6B")
+
+    def test_the_placeholder_key_reaches_the_embeddings_too(self):
+        self.assertEqual(self._build()["api_key"], "EMPTY")
 
 
 class EmbeddingBackendTest(EnvironmentTestCase):

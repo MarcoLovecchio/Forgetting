@@ -23,9 +23,9 @@ primo allo structured output vincolato, il secondo all'aliasing dei prompt).
 Ogni controllo viene ripetuto piu' volte: con un LLM una singola risposta giusta
 non dice niente. Quello che conta e' il tasso.
 
-Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG configurate, e il modello raggiungibile
-(per Ollama: il server attivo e i modelli gia' scaricati con `ollama pull`).
-Se non lo e', l'intero file si salta spiegando perche'.
+Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG configurate, e il modello
+raggiungibile all'indirizzo del cluster. Se non lo e', l'intero file si salta
+spiegando perche'.
 
 Esecuzione:
     pytest memory_service/test/test_tool_calling_gate.py -v -s
@@ -147,28 +147,45 @@ class ToolCallingGateTest(ModelGateTestCase):
     def test_1b_reasoning_is_reported_not_judged(self):
         """Il modello ragiona? E' un'informazione, non un difetto.
 
-        Le tool call arrivano da response["message"]["tool_calls"], un campo
-        strutturato separato: i blocchi <think> finiscono in `content` e non
-        corrompono l'estrazione. Quello che costano e' contesto e latenza, e il
-        fatto che il testo del ragionamento entra nelle risposte all'utente -
-        quindi anche in memoria, perche' la risposta viene consolidata.
+        Le tool call arrivano da un campo strutturato separato dal testo, quindi
+        il ragionamento non corrompe l'estrazione. Quello che costa e' contesto e
+        latenza, piu' il fatto che se finisce in `content` entra nelle risposte
+        all'utente - e da li' in memoria, perche' la risposta viene consolidata.
 
-        Se da' fastidio, la leva e' `extract_reasoning=True` su ChatOllama, che
-        sposta il thinking in additional_kwargs["reasoning_content"] lasciando
-        content pulito. Non `reasoning=False`, che oltre a non esistere in
-        langchain-ollama 0.3.3 risulta non funzionare con Qwen nemmeno dove c'e'.
+        Le due righe stampate qui dicono cose diverse e vanno lette insieme:
+
+            configurato   cosa abbiamo chiesto noi, cioe' la voce
+                          enable_thinking di LLM_CONFIG nel .config
+            in content    cosa si vede davvero nel testo della risposta
+
+        Se il server gira con --reasoning-parser il ragionamento c'e' ma finisce
+        in un campo suo: "configurato: acceso" con "in content: no" non e' una
+        contraddizione, e' la situazione migliore. "spento" con "in content: si"
+        invece vuol dire che l'opzione non ha avuto effetto, ed e' un problema.
+
+        Serve anche a rendere leggibile un confronto A/B: due run del gate con
+        impostazioni diverse altrimenti si distinguono solo a memoria.
         """
+        setting = backends.get_config().llm_config.get("enable_thinking")
+        configured = {True: "acceso", False: "spento",
+                      None: "default del server"}[setting]
+
         response = self.llm.invoke("Rispondi solo con la parola: pronto.")
         content = str(response.content)
         thinking = "<think>" in content
 
-        safe_print(f"\n  ragionamento visibile in content: {'si' if thinking else 'no'}")
+        safe_print("")
+        safe_print(f"  thinking configurato: {configured}")
+        safe_print(f"  ragionamento visibile in content: {'si' if thinking else 'no'}")
         if thinking:
-            safe_print("    il testo del ragionamento entrera' nelle risposte e in memoria:")
-            safe_print("    valuta extract_reasoning=True se vuoi content pulito")
+            safe_print("    entrera' nelle risposte all'utente e da li' in memoria:")
+            safe_print("    valuta --reasoning-parser sul server, o spegnilo del tutto")
+        if setting is False and thinking:
+            safe_print("    ATTENZIONE: chiesto spento, ma il ragionamento si vede lo stesso")
         # Deliberatamente fuori da RESULTS: finirebbe nel verdetto finale come
         # "sotto soglia" e farebbe sembrare inadatto un modello che va benissimo.
-        NOTES.append(f"il modello ragiona: {'si' if thinking else 'no'}")
+        NOTES.append(f"thinking configurato: {configured}, visibile in content: "
+                     f"{'si' if thinking else 'no'}")
 
     def test_2_information_sufficiency(self):
         """Un solo campo booleano: se fallisce qui, non c'e' structured output."""

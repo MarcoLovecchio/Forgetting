@@ -43,14 +43,6 @@ from memory_service import backends
 # How many archival memories are offered to the classifier as possible targets.
 ARCHIVE_CANDIDATES_K = 5
 
-# The vector store knows nothing about tombstones: it ranks by similarity alone,
-# so a superseded or deleted memory can perfectly well be among the k closest.
-# Filtering after the search would then hand back fewer than k candidates - and
-# the shortfall grows over time, because tombstones are never removed. Asking
-# for more than needed and truncating afterwards keeps k candidates for as long
-# as k active ones exist. The factor bounds the cost: the search stays cheap,
-# and an archive full of tombstones degrades gradually instead of being scanned
-# whole.
 ARCHIVE_OVERFETCH = 3
 
 MemoryStatus = Literal["active", "superseded", "deleted"]
@@ -277,22 +269,18 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     return archived
 
 
-def search_archive(
-    query: str,
-    k: int = ARCHIVE_CANDIDATES_K,
-    only_active: bool = True,
-) -> List[Tuple[str, str]]:
-    """Archival memories related to a text, as (id, content) pairs."""
+def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str]]:
+    """The k active archival memories closest to a text, as (id, content) pairs."""
     try:
         k = max(1, int(k))
     except (TypeError, ValueError):
         k = ARCHIVE_CANDIDATES_K
 
-    # Without the filter nothing can be lost to it, so ask for exactly k.
-    wanted = k * ARCHIVE_OVERFETCH if only_active else k
-
+    # Tombstones are filtered out below, so ask for more than k to make up
+    # for the places they take.
     try:
-        docs = backends.get_vector_store().similarity_search(query, k=wanted)
+        docs = backends.get_vector_store().similarity_search(
+            query, k=k * ARCHIVE_OVERFETCH)
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
@@ -301,22 +289,18 @@ def search_archive(
     for doc in docs:
         metadata = doc.metadata or {}
         # Entries written before consolidation carry no status: treat them as active.
-        if only_active and metadata.get("status", "active") != "active":
+        if metadata.get("status", "active") != "active":
             continue
         results.append((doc.id, doc.page_content))
         if len(results) == k:
             break
 
-    # When even the wider search cannot fill k - an archive that is mostly
-    # tombstones - the caller simply gets what exists, in similarity order,
-    # exactly as before. Nothing is raised: fewer candidates is a worse prompt,
-    # not a failure.
     return results
 
 
 def retrieve_active_archival_memories(query: str, k: int = 3) -> str:
     """Archive lookup for the retrieval path, tombstones excluded."""
-    results = search_archive(query, k=k, only_active=True)
+    results = search_archive(query, k=k)
     if not results:
         return "No relevant active memories found."
     return "\n".join(f"ID: {doc_id}, Content: {content}" for doc_id, content in results)

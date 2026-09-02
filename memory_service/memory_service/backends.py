@@ -10,6 +10,7 @@ They are now created on first use and can be replaced by test doubles through
 :func:`configure`.
 """
 
+import os
 from typing import Any, Optional
 
 from memory_service.config import MemoryConfig
@@ -84,11 +85,54 @@ def _require_model_config(model_config: dict, variable: str, node_name: str) -> 
     return model_config["model_provider"]
 
 
+# The OpenAI SDK refuses to build a client without a key - it raises at
+# construction, not at the first call - even against a server that never checks
+# one. A self-hosted OpenAI compatible endpoint is exactly that case, so a
+# placeholder stands in for the key that does not exist.
+PLACEHOLDER_API_KEY = "EMPTY"
+
+
+def _api_key(config: MemoryConfig, provider: str) -> Optional[str]:
+    """Key to hand to the provider, or None when it must not receive one.
+
+    api_key_env is empty by default: the hosted providers find their own key
+    through their own variable, and passing None explicitly would suppress that
+    lookup instead of falling back to it.
+    """
+    api_key = os.getenv(config.api_key_env) if config.api_key_env else None
+    if api_key:
+        return api_key
+    return PLACEHOLDER_API_KEY if provider == "openai" else None
+
+
+# Sampling parameters the OpenAI API understands directly. They are read from
+# the LLM_CONFIG entry, so tuning them never requires touching the code; what is
+# absent is left to the server default.
+_SAMPLING_PARAMETERS = ("temperature", "top_p", "presence_penalty",
+                        "frequency_penalty", "max_tokens")
+
+
+def _extra_body(config: MemoryConfig) -> dict:
+    """Options an OpenAI compatible server accepts but the OpenAI API does not."""
+    extra: dict = {}
+    if "top_k" in config.llm_config:
+        # Not an OpenAI parameter, but vLLM and sglang honour it, and Qwen's
+        # recommended settings rely on it to cut the tail of the distribution.
+        extra["top_k"] = config.llm_config["top_k"]
+
+    # Absent means "leave it to the server": None is not False, and deciding
+    # on the server's behalf is not the same as not deciding.
+    thinking = config.llm_config.get("enable_thinking")
+    if thinking is not None:
+        # Qwen switches reasoning through its chat template, not through a
+        # sampling parameter.
+        extra["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
+    return extra
+
+
 def _build_llm(config: MemoryConfig) -> Any:
     # Imported here so that the package can be imported without langchain's
     # provider extras installed.
-    import os
-
     from langchain.chat_models import init_chat_model
 
     provider = _require_model_config(config.llm_config, "LLM_CONFIG", config.node_name)
@@ -96,30 +140,25 @@ def _build_llm(config: MemoryConfig) -> Any:
     parameters = {
         "model": config.llm_config["model_name"],
         "model_provider": provider,
-        "temperature": config.llm_config.get("temperature", 0),
     }
+    for name in _SAMPLING_PARAMETERS:
+        if name in config.llm_config:
+            parameters[name] = config.llm_config[name]
 
-    # Endpoint of a locally served model. Passed only when configured, so the
-    # hosted providers keep using their own default.
+    # extra_body exists on ChatOpenAI and would be an unknown argument elsewhere.
+    if provider == "openai":
+        extra_body = _extra_body(config)
+        if extra_body:
+            parameters["extra_body"] = extra_body
+
+    # Endpoint of the model server. Passed only when configured, so the hosted
+    # providers keep using their own default.
     if config.base_url:
         parameters["base_url"] = config.base_url
 
-    # Ollama defaults to a 2048 token context and truncates longer prompts
-    # without a word: the consolidation prompt (core memories plus archival
-    # candidates) and the core/archival split both go past that. The parameter
-    # is Ollama specific, so it is only passed to Ollama.
-    if provider == "ollama":
-        parameters["num_ctx"] = config.num_ctx
-
-    # A locally served model has no API key. The default api_key_env is
-    # GROQ_API_KEY, which in this workspace *is* set - the other five nodes of
-    # the architecture still talk to Groq - so without this guard the key of a
-    # hosted provider would be handed to a local server. ChatOllama ignores the
-    # unknown field instead of raising, which makes the mistake invisible.
-    if provider != "ollama":
-        api_key = os.getenv(config.api_key_env) if config.api_key_env else None
-        if api_key:
-            parameters["api_key"] = api_key
+    api_key = _api_key(config, provider)
+    if api_key:
+        parameters["api_key"] = api_key
 
     return init_chat_model(**parameters)
 
@@ -133,39 +172,37 @@ def _build_embeddings(config: MemoryConfig) -> Any:
     dimensionality and still be incompatible, in which case nothing raises and
     the retrieval quietly degrades.
     """
-    import os
-
     provider = _require_model_config(
         config.embedding_config, "EMBEDDING_CONFIG", config.node_name)
     model_name = config.embedding_config["model_name"]
 
-    if provider == "ollama":
-        from langchain_ollama import OllamaEmbeddings
+    if provider == "openai":
+        from langchain_openai import OpenAIEmbeddings
 
-        parameters = {"model": model_name}
+        parameters = {
+            "model": model_name,
+            "api_key": _api_key(config, provider),
+            # By default OpenAIEmbeddings does not send the text: it tokenizes
+            # it first, and for a model tiktoken does not know it silently falls
+            # back to cl100k_base - OpenAI's vocabulary. The token ids of one
+            # vocabulary read as different words in another, so the server would
+            # embed noise and return it without complaining. Sending the strings
+            # and letting the server tokenize is the only correct option outside
+            # OpenAI's own models.
+            "check_embedding_ctx_length": False,
+        }
         if config.embedding_base_url:
             parameters["base_url"] = config.embedding_base_url
-        return OllamaEmbeddings(**parameters)
+        return OpenAIEmbeddings(**parameters)
 
     if provider == "mistralai":
         from langchain_mistralai import MistralAIEmbeddings
 
         return MistralAIEmbeddings(model=model_name)
 
-    if provider == "openai":
-        from langchain_openai import OpenAIEmbeddings
-
-        parameters = {"model": model_name}
-        if config.embedding_base_url:
-            parameters["base_url"] = config.embedding_base_url
-        api_key = os.getenv(config.api_key_env) if config.api_key_env else None
-        if api_key:
-            parameters["api_key"] = api_key
-        return OpenAIEmbeddings(**parameters)
-
     raise RuntimeError(
         f"Unsupported embedding provider '{provider}' for node "
-        f"'{config.node_name}'. Known providers: ollama, mistralai, openai."
+        f"'{config.node_name}'. Known providers: openai, mistralai."
     )
 
 

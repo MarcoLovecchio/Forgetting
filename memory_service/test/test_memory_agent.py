@@ -95,10 +95,10 @@ class ImportIsolationTest(unittest.TestCase):
         with open(module.__file__, encoding="utf-8") as handle:
             source = handle.read()
         # I provider stanno solo in backends.py: il modulo dell'agente non deve
-        # sapere se dietro c'e' Ollama, Mistral o altro.
+        # sapere se dietro c'e' un endpoint OpenAI compatible, Mistral o altro.
         forbidden_imports = (
             "shared_utils", "db_adapters", "rclpy", "chromadb",
-            "langchain_mistralai", "langchain_ollama")
+            "langchain_mistralai", "langchain_openai")
         for forbidden in forbidden_imports:
             self.assertNotIn(
                 forbidden, source, f"{forbidden} must not be imported by the agent module")

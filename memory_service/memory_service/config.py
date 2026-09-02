@@ -92,15 +92,14 @@ class MemoryConfig:
 
     # Chat model, read from the LLM_CONFIG entry of this node
     llm_config: Dict[str, Any] = field(default_factory=dict)
-    api_key_env: str = "GROQ_API_KEY"
-    # Endpoint of a locally served model (Ollama and any OpenAI compatible
-    # server). None means "the provider default", which is what the hosted
-    # providers use.
+    # Environment variable holding the API key, empty when the endpoint does not
+    # want one. It is deliberately NOT defaulted to GROQ_API_KEY: the memory
+    # agent talks to the cluster, and that key belongs to the other nodes - it
+    # would travel to an endpoint that has no business seeing it.
+    api_key_env: str = ""
+    # Endpoint of the model server. None means "the provider default", which is
+    # what the hosted providers use.
     base_url: Optional[str] = None
-    # Context window to ask the local runtime for. Ollama defaults to 2048 and
-    # truncates longer prompts without saying anything: the consolidation and
-    # the core/archival split both go past that.
-    num_ctx: int = 8192
 
     # Embedding model, read from the EMBEDDING_CONFIG entry of this node.
     # Kept separate from llm_config because it is a different model, served
@@ -119,9 +118,8 @@ class MemoryConfig:
             chroma_path=os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db")),
             collection_name=os.getenv("MEMORY_COLLECTION_NAME", "memory_archive"),
             llm_config=_read_model_config("LLM_CONFIG", node_name),
-            api_key_env=os.getenv("MEMORY_API_KEY_ENV", "GROQ_API_KEY"),
+            api_key_env=os.getenv("MEMORY_API_KEY_ENV", ""),
             base_url=os.getenv("MEMORY_LLM_BASE_URL") or None,
-            num_ctx=_env_int("MEMORY_NUM_CTX", 8192),
             embedding_config=_read_model_config("EMBEDDING_CONFIG", node_name),
             embedding_base_url=os.getenv("MEMORY_EMBEDDING_BASE_URL") or None,
         )

@@ -358,15 +358,6 @@ class ArchiveSearchTest(unittest.TestCase):
 
         self.assertEqual(len(search_archive("gatto", k=3)), 3)
 
-    def test_without_the_filter_it_asks_for_exactly_k(self):
-        # Senza filtro non si perde niente per strada: allargare sarebbe spreco.
-        self.fill(tombstones=3, active=3)
-
-        results = search_archive("gatto", k=4, only_active=False)
-
-        self.assertEqual(self.store.searches[-1]["k"], 4)
-        self.assertEqual(len(results), 4, "qui i tombstone contano come candidati")
-
     def test_an_archive_of_only_tombstones_returns_nothing(self):
         # Meno candidati e' un prompt piu' povero, non un errore.
         self.fill(tombstones=8, active=0)

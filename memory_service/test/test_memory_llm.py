@@ -19,10 +19,10 @@ classificato come ci si aspetta. Le invarianti strutturali (core memory con soli
 item attivi, log coerente, nessun crash) sono invece verificate sul serio.
 
 Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG in .config, e i due modelli
-raggiungibili. Con Ollama: server attivo e modelli gia' scaricati con
-`ollama pull`; l'indirizzo sta in MEMORY_LLM_BASE_URL / MEMORY_EMBEDDING_BASE_URL
-nel .env. Se qualcosa non risponde il test si salta spiegando cosa, invece di
-fallire: un server spento non e' un difetto del codice.
+raggiungibili all'indirizzo indicato da MEMORY_LLM_BASE_URL /
+MEMORY_EMBEDDING_BASE_URL nel .env. Se qualcosa non risponde il test si salta
+spiegando cosa, invece di fallire: un endpoint irraggiungibile non e' un difetto
+del codice.
 
 LANGSMITH_API_KEY resta opzionale e abilita solo il tracing.
 

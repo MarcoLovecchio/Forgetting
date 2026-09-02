@@ -66,16 +66,16 @@ modello), non sul contenuto: con un LLM vero pretendere una classificazione
 esatta renderebbe il test inutilizzabile.
 
 Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG in .config, e i due modelli
-raggiungibili. Con Ollama: server attivo e modelli gia' scaricati, indirizzo in
-MEMORY_LLM_BASE_URL / MEMORY_EMBEDDING_BASE_URL nel .env. Se qualcosa non
-risponde il test si salta spiegando cosa.
+raggiungibili all'indirizzo indicato da MEMORY_LLM_BASE_URL /
+MEMORY_EMBEDDING_BASE_URL nel .env. Se qualcosa non risponde il test si salta
+spiegando cosa.
 
 Attenzione: ogni messaggio costa 4-6 chiamate reali al modello (sufficienza,
 eventuale retrieval, risposta della retrieve, risposta dell'assistente,
 consolidamento, eventuale split). Su 117 messaggi sono diverse centinaia di
-chiamate: conviene partire con MEMORY_LONGRUN_MESSAGES basso. Con un modello
-locale il limite non e' la quota ma la latenza, quindi il tempo dipende
-dall'hardware su cui gira Ollama.
+chiamate: conviene partire con MEMORY_LONGRUN_MESSAGES basso. Con i modelli
+sul cluster il limite non e' la quota ma la latenza, quindi il tempo dipende
+dal carico delle GPU su cui girano.
 
 Esecuzione:
     pytest memory_service/test/test_long_term_interaction.py -v -s
@@ -83,9 +83,9 @@ Esecuzione:
 Variabili utili:
     MEMORY_LONGRUN_MESSAGES      quanti messaggi iniettare (default: tutti e 117)
     MEMORY_LONGRUN_DELAY         secondi di pausa fra un messaggio e l'altro
-                                 (default 0). Con un modello locale non ci sono
-                                 rate limit da rispettare, ma serve se il server
-                                 e' condiviso con altri
+                                 (default 0). Sul cluster non ci sono rate limit
+                                 da rispettare, ma serve se l'endpoint e'
+                                 condiviso con altri carichi
     MEMORY_LONGRUN_CHROMA_PATH   dove tenere l'archivio (default: cartella
                                  temporanea nuova, cosi' ogni run parte pulito e
                                  non tocca il chroma_db di produzione)
