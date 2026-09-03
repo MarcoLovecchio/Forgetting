@@ -437,6 +437,61 @@ def _tool_name(tool):
     return getattr(tool, "__name__", None) or getattr(tool, "name", str(tool))
 
 
+class SpeakerSeparationTest(MemoryServiceTestCase):
+    """I fatti vengono dall'utente, l'assistente e' contesto in un campo suo.
+
+    Senza la separazione l'assistente rientra: le sue risposte ripetono quello
+    che gia' sa - cioe' la memoria - e il consolidamento le riestrae come fatti.
+    """
+
+    tool_responses = {"InsertCoreMemories": {"memories": []}}
+
+    ONLY_THE_ASSISTANT_SAYS_THIS = "PAROLA-DETTA-SOLO-DALL-ASSISTENTE"
+
+    def consolidate(self):
+        # Otto messaggi con una finestra di cinque: ne escono tre, cioe' almeno
+        # un turno di ciascuna voce.
+        self.agent.state["messages"] = [
+            HumanMessage(content="mi chiamo Bianca"),
+            AIMessage(content=f"piacere, {self.ONLY_THE_ASSISTANT_SAYS_THIS}"),
+            HumanMessage(content="e vivo a Palermo"),
+            AIMessage(content="bella citta'"),
+            HumanMessage(content="a domani"),
+            AIMessage(content="a domani"),
+            HumanMessage(content="ciao"),
+            AIMessage(content="ciao"),
+        ]
+        self.agent.run_memory_agent("insert")
+
+    def consolidation_prompt(self):
+        for invocation in self.llm.invocations:
+            if "InsertCoreMemories" in invocation["tools"]:
+                return invocation["prompt"]
+        raise AssertionError("il consolidamento non e' mai stato invocato")
+
+    def test_the_two_voices_end_up_in_different_places(self):
+        self.consolidate()
+        prompt = self.consolidation_prompt()
+
+        border = prompt.index("do NOT extract facts from here")
+        self.assertLess(
+            prompt.index("mi chiamo Bianca"), border,
+            "quello che dice l'utente deve stare nella parte da cui si estrae")
+        self.assertGreater(
+            prompt.index(self.ONLY_THE_ASSISTANT_SAYS_THIS), border,
+            "la risposta dell'assistente deve stare nel contesto, non fra le fonti")
+
+    def test_the_archive_is_searched_with_the_words_of_the_user(self):
+        # Cercare con la risposta dell'assistente riporterebbe a galla proprio
+        # le memorie che stava citando, e le renderebbe candidate per un
+        # redundant: il giro si chiuderebbe dal lato della ricerca.
+        self.consolidate()
+        query = self.vector_store.searches[-1]["query"]
+
+        self.assertIn("mi chiamo Bianca", query)
+        self.assertNotIn(self.ONLY_THE_ASSISTANT_SAYS_THIS, query)
+
+
 class ToolChoiceSpy:
     """Registra come vengono legati gli strumenti, senza cambiare il risultato.
 

@@ -70,7 +70,7 @@ fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
 python memory_service/run_tests.py -v
 ```
 
-99 test, tutti sul **grafo LangGraph reale** con backend simulati
+101 test, tutti sul **grafo LangGraph reale** con backend simulati
 (`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
@@ -226,6 +226,24 @@ silenzio: compare un warning nei log.
 ```
 WARNING: core memory still over the limit after the split (500/100 characters)
 ```
+
+## Chi e' fonte di fatti
+
+Il prompt di consolidamento riceve le due voci in **campi separati**: quello che
+ha detto l'utente, da cui si estrae, e quello che ha risposto l'assistente, solo
+come contesto — serve a dare senso a un "sì, quello" che da solo non significa
+niente.
+
+Non e' una sottigliezza. L'assistente costruisce le sue risposte a partire dalla
+memoria, quindi ripete fatti gia' noti: mettendo le due voci in un blocco unico,
+il consolidamento li riestrae e li classifica `redundant`. In una run lunga un
+quarto delle operazioni finiva per essere rielaborazione dell'uscita del sistema
+stesso, e ogni tanto una parafrasi derivava abbastanza da diventare una memoria
+quasi-duplicata.
+
+Per la stessa ragione **la ricerca in archivio usa solo le parole dell'utente**:
+cercare con la risposta dell'assistente riporterebbe a galla proprio le memorie
+che stava citando, offrendole come candidate.
 
 ## I candidati dell'archivio
 

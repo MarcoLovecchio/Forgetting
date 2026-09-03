@@ -127,9 +127,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 PROGRESS_EVERY = 10
-# Gli id nascono gia' di ITEM_ID_LENGTH caratteri (vedi consolidation), quindi
-# qui non si tronca piu' niente. Il troncamento resta come rete di sicurezza
-# per gli item archiviati prima dell'accorciamento, che hanno un uuid intero.
 ID_WIDTH = 8
 
 
@@ -293,8 +290,8 @@ def _build_agent():
                    or tempfile.mkdtemp(prefix="memory_longrun_"))
     config = dataclasses.replace(
         MemoryConfig.from_environment(),
-        maximum_historical_messages=1,  # ogni messaggio fa scattare il consolidamento
-        core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "1500")),
+        maximum_historical_messages=2,  # ogni messaggio fa scattare il consolidamento
+        core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "200")),
         chroma_path=chroma_path,
         collection_name=os.getenv("MEMORY_LONGRUN_COLLECTION", "longterm_test_archive"),
     )

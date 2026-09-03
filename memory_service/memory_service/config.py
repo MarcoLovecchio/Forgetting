@@ -81,7 +81,7 @@ class MemoryConfig:
     # Agent behaviour
     node_name: str = "memory_agent"
     maximum_historical_messages: int = 4
-    core_memory_limit: int = 150
+    core_memory_limit: int = 400
 
     # Archival memory (ChromaDB)
     chroma_path: str = "./chroma_db"

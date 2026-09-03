@@ -81,6 +81,13 @@ def messages_to_str(messages) -> str:
 REQUIRED = "required"
 
 
+def split_by_speaker(messages):
+    """Le due voci separate: i fatti vengono dall'utente, il resto e' contesto."""
+    said_by_user = [m for m in messages if isinstance(m, HumanMessage)]
+    said_by_assistant = [m for m in messages if not isinstance(m, HumanMessage)]
+    return messages_to_str(said_by_user), messages_to_str(said_by_assistant)
+
+
 # Tool to check if information is sufficient to answer the query
 class InformationSufficiency(BaseModel):
     """This tool checks if the information provided is sufficient to answer the user's query.
@@ -274,29 +281,43 @@ def summarize_memories_node(state: AgentState):
     keep = max(1, state['maximum_historical_messages'])
     exceeding_messages = state['messages'][:-keep]
     print(f"\tSummarizing {len(exceeding_messages)} exceeding messages")
-    exceeding_messages = messages_to_str(exceeding_messages)
+    user_messages, assistant_messages = split_by_speaker(exceeding_messages)
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a tool that extracts new facts from the messages and classifies
+        ("system", """You are a tool that extracts new facts about the user and classifies
         each one against the memories the assistant already has, given to you as id: content
         pairs coming from both core and archival memory.
+
+        Facts about the user come only from what the USER said. The assistant's replies are
+        given separately, as context to make sense of a short answer like "yes, that one",
+        and are never themselves a source of facts.
+
         For each fact decide whether it is new, redundant, an update, a contradict or - only
         when the user explicitly asked to forget something - a delete with respect to an
         existing memory, and reference that memory's id whenever the fact is not new.
         Only include facts that are relevant and likely to be referenced in future interactions."""),
-        ("human", """The messages exceeding the limit are:
+        ("human", """What the user said - this is where the facts come from:
 
-        {exceeding_messages}
+{user_messages}
 
-Extract any new facts about the user from these messages and classify each one.
+For context only, what the assistant replied - do NOT extract facts from here:
+
+{assistant_messages}
+
 Known memories (id: content) are: {core_memory}.
 Focus on preferences, opinions, or personal facts mentioned by the user.""")
     ])
     summarizer_llm = get_llm().bind_tools([InsertCoreMemories], tool_choice=REQUIRED)
     chain = prompt | summarizer_llm
-    # The classifier can point at core memories and at related archival ones.
-    core_memories = build_candidate_memories(state["core_memory"], exceeding_messages)
-    response = chain.invoke({"exceeding_messages": exceeding_messages, "core_memory": core_memories})
+    # The classifier can point at core memories and at related archival ones. The
+    # search uses the user's words only: searching with the assistant's reply would
+    # surface exactly the memories the assistant was quoting.
+    core_memories = build_candidate_memories(state["core_memory"], user_messages)
+    response = chain.invoke({
+        "user_messages": user_messages,
+        "assistant_messages": assistant_messages or "(none)",
+        "core_memory": core_memories,
+    })
     print(f"\tSummarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response], "messages": state["messages"][-keep:]}  # Keep only the last N messages
 
