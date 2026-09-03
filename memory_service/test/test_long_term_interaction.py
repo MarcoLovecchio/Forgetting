@@ -86,9 +86,9 @@ Variabili utili:
                                  (default 0). Sul cluster non ci sono rate limit
                                  da rispettare, ma serve se l'endpoint e'
                                  condiviso con altri carichi
-    MEMORY_LONGRUN_CHROMA_PATH   dove tenere l'archivio (default: cartella
-                                 temporanea nuova, cosi' ogni run parte pulito e
-                                 non tocca il chroma_db di produzione)
+    MEMORY_LONGRUN_CHROMA_PATH   dove tenere l'archivio (default: quello del
+                                 servizio, ripulibile con reset_archive.py, in
+                                 una collezione sua)
     MEMORY_CORE_MEMORY_LIMIT     limite di caratteri della core memory (1500)
 """
 
@@ -98,7 +98,6 @@ import dataclasses
 import io
 import os
 import sys
-import tempfile
 import time
 
 import pytest
@@ -278,22 +277,32 @@ def _configure_langsmith():
     os.environ["LANGSMITH_TEST_SUITE"] = "Memory Service long term"
 
 
-def _build_agent():
-    """Agente sullo stack vero, su un archivio dedicato.
+def _archived_documents(config):
+    """Quanti documenti ci sono gia' nell'archivio, o None se non e' leggibile."""
+    try:
+        return backends.get_vector_store()._collection.count()
+    except Exception:
+        return None
 
-    L'archivio finisce in una cartella temporanea nuova: ogni run parte pulito e
-    il chroma_db di produzione non viene toccato.
+
+def _build_agent():
+    """Agente sullo stack vero, sull'archivio configurato.
+
+    Usa lo stesso percorso del resto del servizio (MEMORY_CHROMA_PATH, o
+    ./chroma_db) in una collezione sua, cosi' reset_archive.py lo ripulisce
+    insieme agli altri. Il rovescio e' che le run si sommano: senza ripulire, la
+    successiva parte con le memorie della precedente e le classificazioni
+    cambiano senso. Il resoconto iniziale dice quanti documenti ha trovato.
     """
     from memory_service.memory_manager_llm import MemoryAgent
 
-    chroma_path = (os.getenv("MEMORY_LONGRUN_CHROMA_PATH")
-                   or tempfile.mkdtemp(prefix="memory_longrun_"))
+    chroma_path = os.getenv("MEMORY_LONGRUN_CHROMA_PATH")
     config = dataclasses.replace(
         MemoryConfig.from_environment(),
         maximum_historical_messages=2,  # ogni messaggio fa scattare il consolidamento
         core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "200")),
-        chroma_path=chroma_path,
         collection_name=os.getenv("MEMORY_LONGRUN_COLLECTION", "longterm_test_archive"),
+        **({"chroma_path": os.path.abspath(chroma_path)} if chroma_path else {}),
     )
 
     backends.reset()
@@ -490,7 +499,8 @@ def _print_questions(answers):
         safe_print("")
 
 
-def _print_final_report(state, vector_store, config, injected, failures, elapsed, answers):
+def _print_final_report(state, vector_store, config, injected, failures, elapsed,
+                       answers, inherited=0):
     safe_print("\n" + SEPARATOR)
     safe_print("=== RESOCONTO FINALE - LONG TERM INTERACTION ===")
     safe_print(SEPARATOR)
@@ -500,6 +510,10 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
     safe_print(f"Durata: {elapsed:.1f}s")
     safe_print(f"Modello: {config.llm_config.get('model_name')}")
     safe_print(f"Archivio: {config.chroma_path} / {config.collection_name}")
+    if inherited:
+        safe_print(f"\033[33mATTENZIONE: l'archivio conteneva gia' {inherited} documenti "
+                   f"all'avvio. Le classificazioni di questa run sono state fatte anche "
+                   f"contro quelli: lancia reset_archive.py prima di rilanciare.\033[0m")
 
     if failures:
         safe_print(f"\n--- MESSAGGI FALLITI ({len(failures)}) ---")
@@ -563,6 +577,9 @@ def test_long_term_interaction():
 
     _configure_langsmith()
     agent, config = _build_agent()
+    # Contato prima di iniettare: dopo non si distinguerebbe piu' quello che
+    # ha scritto questa run da quello che ha trovato.
+    inherited = _archived_documents(config) or 0
     vector_store = backends.get_vector_store()
 
     messages = CONVERSATION[:_message_limit()]
@@ -624,7 +641,8 @@ def test_long_term_interaction():
     elapsed = time.time() - started
     state = agent.state
 
-    _print_final_report(state, vector_store, config, len(messages), failures, elapsed, answers)
+    _print_final_report(state, vector_store, config, len(messages), failures, elapsed,
+                        answers, inherited)
 
     assert len(failures) < len(messages) / 2, (
         f"{len(failures)} messaggi su {len(messages)} sono falliti: "

@@ -78,7 +78,9 @@ def main():
     path = config.chroma_path
 
     print(f"Archivio    : {path}")
-    print(f"Collezione  : {config.collection_name}")
+    # La cancellazione porta via l'intera cartella, quindi TUTTE le collezioni:
+    # quella di produzione e quella del test lungo, che ci convivono.
+    print(f"Collezione  : {config.collection_name} (e ogni altra nella stessa cartella)")
 
     if not os.path.exists(path):
         print("Stato       : non esiste, niente da cancellare.")
