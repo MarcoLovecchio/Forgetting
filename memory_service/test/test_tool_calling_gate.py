@@ -194,7 +194,8 @@ class ToolCallingGateTest(ModelGateTestCase):
             ("human", "Domanda: come mi chiamo?\nFatti noti: l'utente si chiama Bianca.\n"
                       "Le informazioni sono sufficienti?"),
         ])
-        chain = prompt | self.llm.bind_tools([InformationSufficiency])
+        chain = prompt | self.llm.bind_tools(
+            [InformationSufficiency], tool_choice="required")
 
         def attempt():
             call = _tool_call(chain.invoke({}), "InformationSufficiency")
@@ -269,7 +270,8 @@ class ToolCallingGateTest(ModelGateTestCase):
                       "Totale: 95 caratteri, limite: 60. Restituisci una decisione "
                       "per ogni memoria, riferendoti al suo id."),
         ])
-        chain = prompt | self.llm.bind_tools([SplitCoreAndArchivalMemory])
+        chain = prompt | self.llm.bind_tools(
+            [SplitCoreAndArchivalMemory], tool_choice="required")
 
         def attempt():
             call = _tool_call(chain.invoke({"memories": _memories_for_prompt()}),
@@ -302,7 +304,8 @@ class ToolCallingGateTest(ModelGateTestCase):
                       "Estrai i fatti e classifica ognuno.\n"
                       "Memorie note (id: contenuto):\n{memories}"),
         ])
-        return prompt | self.llm.bind_tools([InsertCoreMemories])
+        return prompt | self.llm.bind_tools(
+            [InsertCoreMemories], tool_choice="required")
 
 
 class EmbeddingGateTest(unittest.TestCase):

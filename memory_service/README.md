@@ -70,7 +70,7 @@ fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
 python memory_service/run_tests.py -v
 ```
 
-97 test, tutti sul **grafo LangGraph reale** con backend simulati
+99 test, tutti sul **grafo LangGraph reale** con backend simulati
 (`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
@@ -189,6 +189,16 @@ Due cose da sapere, verificate sui sorgenti:
   campionamento, quindi `backends.py` lo manda come `chat_template_kwargs`
   dentro `extra_body`. Il gate stampa in quale modalità ha girato, così due run
   si confrontano senza andare a memoria.
+- **Le tool call sempre attese sono forzate.** Con una temperatura
+  deliberatamente diversa da zero il modello ogni tanto risponde in prosa invece
+  di emettere la chiamata — misurato dal gate: 9 volte su 10, non 10. Dove una
+  tool call è l'unico esito sensato quella decima volta è **perdita silenziosa di
+  dati**: il nodo non salva niente e i messaggi vengono tagliati lo stesso. Per
+  questo `InsertCoreMemories`, `InformationSufficiency` e
+  `SplitCoreAndArchivalMemory` sono legate con `tool_choice="required"`. Non si
+  perde flessibilità: il modello può sempre restituire una lista vuota.
+  `retrieve_memory` **non** è forzata, perché lì decidere di non recuperare è una
+  risposta valida.
 - **`api_key_env` parte vuota apposta.** Se restasse `GROQ_API_KEY` come prima,
   quella chiave — che nel `.env` c'è, perché serve agli altri cinque nodi
   dell'architettura — finirebbe nell'header `Authorization` verso il cluster. Con

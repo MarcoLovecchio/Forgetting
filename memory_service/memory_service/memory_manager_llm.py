@@ -72,6 +72,15 @@ def messages_to_str(messages) -> str:
         return str(messages)
 
 
+# Asking for the tool is not the same as getting it: with a temperature that
+# is deliberately not zero, the model occasionally answers in prose instead of
+# emitting the call. Where a tool call is ALWAYS the expected outcome, that is
+# silent data loss - the node stores nothing and the messages are trimmed all
+# the same - so the call is required rather than hoped for. An empty result is
+# still expressible: the model can return no memories, no decisions.
+REQUIRED = "required"
+
+
 # Tool to check if information is sufficient to answer the query
 class InformationSufficiency(BaseModel):
     """This tool checks if the information provided is sufficient to answer the user's query.
@@ -124,7 +133,7 @@ Your previous interactions:
 Is the information sufficient to answer the query?""")
     ])
 
-    router_llm = get_llm().bind_tools([InformationSufficiency])
+    router_llm = get_llm().bind_tools([InformationSufficiency], tool_choice=REQUIRED)
     chain = prompt | router_llm
     response = chain.invoke({"user_query": user_query, "core_memory": core_memory, "previous_messages": previous_messages})
     # extract and coerce
@@ -160,6 +169,8 @@ def retrieval_node(state: AgentState):
     ])
 
     # Bind tools to LLM
+    # Non forzato, a differenza degli altri: qui decidere di NON recuperare e'
+    # una risposta valida, ed e' il comportamento dell'architettura originale.
     llm_with_tools = get_llm().bind_tools([retrieve_memory])
 
     chain = prompt | llm_with_tools
@@ -281,7 +292,7 @@ Extract any new facts about the user from these messages and classify each one.
 Known memories (id: content) are: {core_memory}.
 Focus on preferences, opinions, or personal facts mentioned by the user.""")
     ])
-    summarizer_llm = get_llm().bind_tools([InsertCoreMemories])
+    summarizer_llm = get_llm().bind_tools([InsertCoreMemories], tool_choice=REQUIRED)
     chain = prompt | summarizer_llm
     # The classifier can point at core memories and at related archival ones.
     core_memories = build_candidate_memories(state["core_memory"], exceeding_messages)
@@ -330,7 +341,8 @@ Total: {core_memory_length} characters. Limit: {core_memory_limit} characters.
 You must move to the archive at least {to_free} characters worth of memories.
 Return one decision for every memory listed above.""")])
 
-    summarizer_llm = get_llm().bind_tools([SplitCoreAndArchivalMemory])
+    summarizer_llm = get_llm().bind_tools(
+        [SplitCoreAndArchivalMemory], tool_choice=REQUIRED)
     chain = prompt | summarizer_llm
     response = chain.invoke({"core_memory": core_memory_display,
                              "core_memory_length": used,

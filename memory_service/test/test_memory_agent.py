@@ -432,6 +432,80 @@ class CurrentQueryTest(MemoryServiceTestCase):
                          "la domanda vale per il retrieve che l'ha ricevuta")
 
 
+def _tool_name(tool):
+    """Nome di uno strumento, sia esso un modello pydantic o un @tool."""
+    return getattr(tool, "__name__", None) or getattr(tool, "name", str(tool))
+
+
+class ToolChoiceSpy:
+    """Registra come vengono legati gli strumenti, senza cambiare il risultato.
+
+    Il doppio e' un modello pydantic e rifiuta le assegnazioni sull'istanza, per
+    cui la sostituzione avviene sulla classe e viene annullata a fine test.
+    """
+
+    def __init__(self, test_case, model):
+        self.calls = calls = {}
+        model_class = type(model)
+        original = model_class.bind_tools
+
+        def spy(model_self, tools, **kwargs):
+            for tool in tools:
+                calls[_tool_name(tool)] = kwargs.get("tool_choice")
+            return original(model_self, tools, **kwargs)
+
+        model_class.bind_tools = spy
+        test_case.addCleanup(setattr, model_class, "bind_tools", original)
+
+
+class ToolChoiceTest(MemoryServiceTestCase):
+    """Le tool call sempre attese vengono forzate, non sperate.
+
+    Con una temperatura deliberatamente diversa da zero il modello ogni tanto
+    risponde in prosa invece di emettere la chiamata. Dove una tool call e'
+    l'unico esito sensato quello e' perdita silenziosa di dati: il nodo non
+    salva niente e i messaggi vengono comunque tagliati.
+    """
+
+    tool_responses = {
+        "InsertCoreMemories": {
+            "memories": [{"fact": "L'utente si chiama Bianca", "operation": "new"}]},
+    }
+
+    def test_the_consolidation_requires_its_tool_call(self):
+        spy = ToolChoiceSpy(self, self.llm)
+
+        # Oltre la finestra, altrimenti il consolidamento non scatta affatto.
+        self.agent.state["messages"] = self.conversation(8)
+        self.agent.run_memory_agent("insert")
+
+        self.assertEqual(spy.calls.get("InsertCoreMemories"), "required")
+
+
+class RetrieveToolChoiceTest(MemoryServiceTestCase):
+    """Sul percorso di recupero solo la sufficienza e' obbligatoria."""
+
+    tool_responses = {
+        "InformationSufficiency": {"is_sufficient": False},
+        "retrieve_memory": {"query": "te nero", "k": 2},
+    }
+    default_content = "Bevi te nero il pomeriggio."
+
+    def test_sufficiency_is_required_and_retrieval_is_not(self):
+        self.vector_store.add_texts(
+            texts=["All'utente piace il te nero"], ids=["memory_a"],
+            metadatas=[{"status": "active"}])
+        self.agent.state["messages"] = [HumanMessage(content="cosa bevo il pomeriggio?")]
+
+        spy = ToolChoiceSpy(self, self.llm)
+        self.agent.run_memory_agent("retrieve")
+
+        self.assertEqual(spy.calls.get("InformationSufficiency"), "required")
+        self.assertIsNone(
+            spy.calls.get("retrieve_memory"),
+            "decidere di non recuperare e' una risposta valida, non un fallimento")
+
+
 class AppendMessageTest(MemoryServiceTestCase):
     def test_messages_are_typed_after_their_sender(self):
         self.agent.append_message("hello", "user")
