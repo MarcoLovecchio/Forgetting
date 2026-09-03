@@ -31,6 +31,7 @@ giro precedente.
 | `memory_list` | contenuto delle core memory **attive** (superseded e deleted restano fuori) |
 | `memory_ids` | id di ciascuna, stesso ordine di `memory_list`: le due liste si zippano |
 | `last_messages` | messaggi ancora nella finestra di conversazione |
+| `retrieved_memories` | memorie d'archivio recuperate per **questa** richiesta, una per riga nella forma `ID: <id>, Content: <testo>`. Vuoto quando la core memory è bastata o quando non è stato trovato nulla |
 | `operation_log` | operazioni di consolidamento di **questa** chiamata, un JSON per riga |
 
 **`UpdateMemory`** — request `user_input`, `queries`, `results`, `explanation`; la
@@ -70,7 +71,7 @@ fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
 python memory_service/run_tests.py -v
 ```
 
-101 test, tutti sul **grafo LangGraph reale** con backend simulati
+111 test, tutti sul **grafo LangGraph reale** con backend simulati
 (`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
@@ -301,7 +302,8 @@ d'ambiente (lette da `.env` / `.config`):
 | `MEMORY_API_KEY_ENV` | *(vuota)* | nome della variabile che contiene la chiave. Vuota significa "nessuna chiave": verso un endpoint `openai` viene mandato il segnaposto `EMPTY`. **Non** vale `GROQ_API_KEY`: quella serve agli altri nodi e non deve raggiungere il cluster |
 | `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `4` | messaggi mantenuti prima del riassunto. **Tenerlo pari**: con un numero dispari la coda della finestra è una risposta dell'assistente, e ogni consolidamento riceve la fine di uno scambio più l'inizio del successivo invece di una coppia (utente, assistente) intera |
-| `MEMORY_CORE_MEMORY_LIMIT` | `150` | caratteri massimi della core memory |
+| `MEMORY_CORE_MEMORY_LIMIT` | `400` | caratteri massimi della core memory |
+| `MEMORY_GENERATE_ANSWER` | `false` | se il ramo `retrieve` debba anche **comporre una risposta** all'utente. **Spenta di default**: nessun campo del servizio la restituisce — l'archivio arriva al chiamante tramite `retrieved_memories` — quindi finiva solo in `last_messages` come un turno che l'utente non ha mai letto. Tenendola spenta si risparmia una chiamata per ogni `retrieve`, resta una coppia (utente, assistente) per scambio invece di tre messaggi, e la memoria smette di citare sé stessa dentro il consolidamento. `true` la riaccende |
 | `MEMORY_CHROMA_PATH` | `./chroma_db` | cartella dell'archivio (risolta in path assoluto) |
 | `MEMORY_COLLECTION_NAME` | `memory_archive` | collezione ChromaDB |
 | `MEMORY_ENV_FILE` | — | percorso esplicito del file di ambiente |

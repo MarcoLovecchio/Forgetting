@@ -18,7 +18,11 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
 
 import json
 
-from memory_service.consolidation import CoreMemoryItem, OperationLogEntry
+from memory_service.consolidation import (
+    NO_ARCHIVAL_RESULTS,
+    CoreMemoryItem,
+    OperationLogEntry,
+)
 
 try:
     import rclpy
@@ -230,6 +234,41 @@ class GetMemoryCallbackTest(MemoryServerTestCase):
         self.assertEqual(list(response.memory_ids), [])
         self.assertEqual(list(response.last_messages), [])
         self.assertEqual(list(response.operation_log), [])
+
+
+@unittest.skipUnless(ROS_AVAILABLE, "rclpy and memory_service_interfaces are required")
+class RetrievedMemoriesFieldTest(MemoryServerTestCase):
+    """Quello che l'archivio ha restituito deve uscire dal servizio.
+
+    Senza questo campo il recupero avveniva, costava una ricerca, e restava
+    nello stato: al chiamante arrivava solo se qualcuno lo impacchettava dentro
+    una risposta generata.
+    """
+
+    def respond_to_get(self, retrieved):
+        agent = StubAgent(
+            {"core_memory": [], "messages": [], "retrieved_memory": retrieved})
+        server = self.build_server(agent)
+        return server.get_memory_callback(GetMemory.Request(), GetMemory.Response())
+
+    def test_what_the_archive_returned_is_published(self):
+        response = self.respond_to_get(
+            "ID: abc, Content: all'utente piace il te nero\n"
+            "ID: def, Content: l'utente beve caffe' la mattina")
+
+        self.assertEqual(list(response.retrieved_memories), [
+            "ID: abc, Content: all'utente piace il te nero",
+            "ID: def, Content: l'utente beve caffe' la mattina"])
+
+    def test_no_retrieval_leaves_the_field_empty(self):
+        self.assertEqual(list(self.respond_to_get("").retrieved_memories), [])
+
+    def test_the_nothing_found_sentence_is_not_a_result(self):
+        # Altrimenti il chiamante vedrebbe una riga e crederebbe di aver
+        # ricevuto una memoria.
+        response = self.respond_to_get(NO_ARCHIVAL_RESULTS)
+
+        self.assertEqual(list(response.retrieved_memories), [])
 
 
 @unittest.skipUnless(ROS_AVAILABLE, "rclpy and memory_service_interfaces are required")

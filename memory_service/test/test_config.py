@@ -23,6 +23,7 @@ class EnvironmentTestCase(unittest.TestCase):
         "EMBEDDING_CONFIG",
         "MEMORY_MAX_HISTORICAL_MESSAGES",
         "MEMORY_CORE_MEMORY_LIMIT",
+        "MEMORY_GENERATE_ANSWER",
         "MEMORY_CHROMA_PATH",
         "MEMORY_COLLECTION_NAME",
         "MEMORY_LLM_NODE",
@@ -60,25 +61,42 @@ class ConfigTest(EnvironmentTestCase):
         self.assertEqual(config.node_name, "memory_agent")
         self.assertEqual(config.maximum_historical_messages, 4,
                          "pari, per non tagliare a meta' uno scambio")
-        self.assertEqual(config.core_memory_limit, 150)
+        self.assertEqual(config.core_memory_limit, 400)
         self.assertEqual(config.collection_name, "memory_archive")
         self.assertEqual(config.llm_config, {})
 
     def test_values_are_read_from_the_environment(self):
         os.environ["MEMORY_MAX_HISTORICAL_MESSAGES"] = "9"
-        os.environ["MEMORY_CORE_MEMORY_LIMIT"] = "400"
+        # Un valore che non coincide con il default, altrimenti il test
+        # passerebbe anche se la variabile venisse ignorata.
+        os.environ["MEMORY_CORE_MEMORY_LIMIT"] = "777"
         os.environ["MEMORY_COLLECTION_NAME"] = "other_archive"
 
         config = MemoryConfig.from_environment()
 
         self.assertEqual(config.maximum_historical_messages, 9)
-        self.assertEqual(config.core_memory_limit, 400)
+        self.assertEqual(config.core_memory_limit, 777)
         self.assertEqual(config.collection_name, "other_archive")
 
     def test_invalid_numbers_fall_back_to_the_defaults(self):
         os.environ["MEMORY_MAX_HISTORICAL_MESSAGES"] = "not a number"
 
         self.assertEqual(MemoryConfig.from_environment().maximum_historical_messages, 4)
+
+    def test_the_answer_is_not_generated_unless_asked(self):
+        # Spenta di default: nessun campo del servizio la restituisce, e finiva
+        # in last_messages come un turno che l'utente non ha mai letto.
+        self.assertFalse(MemoryConfig.from_environment().generate_answer)
+
+        os.environ["MEMORY_GENERATE_ANSWER"] = "true"
+
+        self.assertTrue(MemoryConfig.from_environment().generate_answer)
+
+    def test_an_unreadable_answer_switch_keeps_the_default(self):
+        # Un typo non deve riaccendere in silenzio un pezzo del grafo.
+        os.environ["MEMORY_GENERATE_ANSWER"] = "forse"
+
+        self.assertFalse(MemoryConfig.from_environment().generate_answer)
 
     def test_chroma_path_is_absolute(self):
         os.environ["MEMORY_CHROMA_PATH"] = "./relative_db"

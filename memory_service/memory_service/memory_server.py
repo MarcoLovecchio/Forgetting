@@ -8,6 +8,7 @@ from memory_service.consolidation import (
     serialize_core_memory_for_prompt,
     serialize_core_memory_ids,
     serialize_operation_log_for_response,
+    serialize_retrieved_for_response,
 )
 
 
@@ -46,6 +47,15 @@ class MemoryServer(Node):
         core_memory = state.get("core_memory", [])
         response.memory_list = to_string_list(serialize_core_memory_for_prompt(core_memory))
         response.memory_ids = to_string_list(serialize_core_memory_ids(core_memory))
+
+    def _fill_retrieved_memories(self, response, state):
+        """Publish what the archive returned for this request.
+
+        The retrieval already happened inside the graph; without this field its
+        result would stay in the state and never leave the service.
+        """
+        response.retrieved_memories = to_string_list(
+            serialize_retrieved_for_response(state.get("retrieved_memory", "")))
 
     def _fill_operation_log(self, response):
         """Publish what the consolidation did during this call.
@@ -104,6 +114,7 @@ class MemoryServer(Node):
             # Populate the response object
             self._fill_core_memory(response, state)
             self._fill_operation_log(response)
+            self._fill_retrieved_memories(response, state)
             response.last_messages = to_string_list(
                 [message.content for message in state.get("messages", [])])
 
@@ -118,6 +129,7 @@ class MemoryServer(Node):
             response.memory_ids = []
             response.last_messages = []
             response.operation_log = []
+            response.retrieved_memories = []
             return response
 
 

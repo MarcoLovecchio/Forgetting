@@ -10,6 +10,7 @@ test_consolidation.py; this file keeps the unit level checks.
 """
 
 import contextlib
+import dataclasses
 import io
 import os
 import sys
@@ -39,8 +40,12 @@ from memory_service.memory_manager_llm import (  # noqa: E402
 from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
 
 
+# generate_answer e' acceso qui perche' molte classi esercitano il ramo
+# retrieve fino alla risposta. Il valore di default - spento - e' coperto
+# da AnswerGenerationSwitchTest, che li verifica entrambi.
 TEST_CONFIG = MemoryConfig(
     node_name="memory_agent",
+    generate_answer=True,
     maximum_historical_messages=5,
     core_memory_limit=150,
     chroma_path="/tmp/not-used",
@@ -353,6 +358,43 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         self.assertEqual(self.vector_store.searches[0]["k"], 2 * ARCHIVE_OVERFETCH)
         self.assertIn("black tea", state["retrieved_memory"])
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
+
+
+class AnswerGenerationSwitchTest(MemoryServiceTestCase):
+    """Il ramo retrieve puo' non comporre la risposta.
+
+    Quella risposta non e' restituita da nessun campo del servizio: finisce solo
+    in last_messages, dove il chiamante la vede come un turno in piu' della
+    conversazione - uno che l'utente non ha mai letto. Spegnerla toglie una
+    chiamata per retrieve e lascia una coppia (utente, assistente) per scambio
+    invece di tre messaggi.
+    """
+
+    tool_responses = {"InformationSufficiency": {"is_sufficient": True}}
+    default_content = "una risposta qualsiasi"
+
+    def run_retrieve(self, generate_answer):
+        config = dataclasses.replace(TEST_CONFIG, generate_answer=generate_answer)
+        backends.configure(config=config)
+        MemoryAgent.reset_instance()
+        agent = MemoryAgent(config=config)
+        agent.state["messages"] = [HumanMessage(content="cosa mi piace bere?")]
+
+        before = len(self.llm.invocations)
+        state = agent.run_memory_agent("retrieve")
+        return state, len(self.llm.invocations) - before
+
+    def test_by_default_the_answer_is_appended(self):
+        state, calls = self.run_retrieve(generate_answer=True)
+
+        self.assertEqual(len(state["messages"]), 2, "domanda piu' risposta")
+        self.assertEqual(calls, 2, "sufficienza piu' generazione")
+
+    def test_switched_off_it_costs_one_call_less_and_appends_nothing(self):
+        state, calls = self.run_retrieve(generate_answer=False)
+
+        self.assertEqual(len(state["messages"]), 1, "resta solo la domanda dell'utente")
+        self.assertEqual(calls, 1, "solo la sufficienza")
 
 
 class CurrentQueryTest(MemoryServiceTestCase):

@@ -1,16 +1,7 @@
-# Messaggio dell'utente a cui la memoria deve rispondere.
-# Puo' essere vuoto: in quel caso il servizio si limita a restituire lo stato
-# della memoria, e il ramo di recupero ripiega sull'ultimo messaggio noto.
 string user_input
 ---
-# Content of the active core memories
 string[] memory_list
-# Identifier of each core memory, same order as memory_list (the two arrays can
-# be zipped): it is what lets a client refer to a specific memory later on
 string[] memory_ids
-# Messages still inside the conversation window
 string[] last_messages
-# Consolidation operations performed by THIS call, one JSON object per entry:
-# {op_type, item_id, related_item_id, content, timestamp}.
-# A retrieve usually performs none, so this is normally empty.
+string[] retrieved_memories
 string[] operation_log

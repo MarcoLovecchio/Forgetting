@@ -34,8 +34,10 @@ from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
     ARCHIVE_OVERFETCH,
+    NO_ARCHIVAL_RESULTS,
     get_active_items,
     search_archive,
+    serialize_retrieved_for_response,
 )
 from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
 
@@ -47,6 +49,7 @@ from snapshot import print_memory_snapshot, print_turn_header  # noqa: E402
 # Il limite di caratteri e' alto, il turno 6 lo abbassa apposta per lo split.
 LIFECYCLE_CONFIG = MemoryConfig(
     node_name="memory_agent",
+    generate_answer=True,  # il turno 7 guarda la risposta del ramo retrieve
     maximum_historical_messages=1,
     core_memory_limit=2000,
     chroma_path="/tmp/not-used",
@@ -298,6 +301,30 @@ class TargetResolutionTest(unittest.TestCase):
 
         self.assertEqual(state["core_memory"], [], "non si cancella nulla a caso")
         self.assertEqual(state["operation_log"], [], "e non si registra nessuna operazione")
+
+
+class RetrievedSerializationTest(unittest.TestCase):
+    """Il recupero esce dal servizio come lista, non come frase.
+
+    retrieve_active_archival_memories restituisce testo perche' finisce dritto
+    in un prompt: "No relevant active memories found." e' una frase, non un
+    vuoto, e un chiamante che la ricevesse la tratterebbe come un risultato.
+    """
+
+    def test_the_lines_become_entries(self):
+        retrieved = "ID: abc, Content: uno\nID: def, Content: due"
+
+        self.assertEqual(
+            serialize_retrieved_for_response(retrieved),
+            ["ID: abc, Content: uno", "ID: def, Content: due"])
+
+    def test_the_nothing_found_sentence_becomes_an_empty_list(self):
+        self.assertEqual(serialize_retrieved_for_response(NO_ARCHIVAL_RESULTS), [])
+
+    def test_no_retrieval_at_all_becomes_an_empty_list(self):
+        for nothing in ("", "   ", None):
+            with self.subTest(nothing=nothing):
+                self.assertEqual(serialize_retrieved_for_response(nothing), [])
 
 
 class ArchiveSearchTest(unittest.TestCase):

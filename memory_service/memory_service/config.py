@@ -63,6 +63,23 @@ def load_environment(override: bool = False) -> list:
     return loaded
 
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    value = str(raw).strip().lower()
+    if value in _TRUE_VALUES:
+        return True
+    if value in _FALSE_VALUES:
+        return False
+    print(f"\033[33mInvalid value for {name}: {raw!r}, falling back to {default}\033[0m")
+    return default
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or str(raw).strip() == "":
@@ -82,6 +99,14 @@ class MemoryConfig:
     node_name: str = "memory_agent"
     maximum_historical_messages: int = 4
     core_memory_limit: int = 400
+    # Whether the retrieve branch also composes a reply to the user. Off by
+    # default: no service field returns that reply - the archive now reaches the
+    # caller through retrieved_memories - so it only landed in last_messages as
+    # one more turn of the conversation, one the user never read. Leaving it out
+    # saves a call per retrieve, keeps a (user, assistant) pair per exchange
+    # instead of three messages, and stops the memory from quoting itself back
+    # into the consolidation. MEMORY_GENERATE_ANSWER=true brings it back.
+    generate_answer: bool = False
 
     # Archival memory (ChromaDB)
     chroma_path: str = "./chroma_db"
@@ -111,7 +136,8 @@ class MemoryConfig:
         return cls(
             node_name=node_name,
             maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES", 4),
-            core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", 150),
+            core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", 400),
+            generate_answer=_env_bool("MEMORY_GENERATE_ANSWER", False),
             chroma_path=os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db")),
             collection_name=os.getenv("MEMORY_COLLECTION_NAME", "memory_archive"),
             llm_config=_read_model_config("LLM_CONFIG", node_name),

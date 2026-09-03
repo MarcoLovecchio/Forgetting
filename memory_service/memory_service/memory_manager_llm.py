@@ -34,6 +34,7 @@ class AgentState(TypedDict):
     current_interaction: Literal["insert", "retrieve"]
     maximum_historical_messages: int  # Limit the number of historical messages to keep
     core_memory_limit: int  # Character limit for core memory
+    generate_answer: bool  # see MemoryConfig.generate_answer
 
 
 # The chat model and the archival vector store are built on first use, see
@@ -239,6 +240,12 @@ def tool_node(state: AgentState):
             "operation_log": state["operation_log"]}
 
 def generate_answer(state: AgentState):
+    if not state.get("generate_answer", True):
+        # Nothing is appended: the caller keeps whatever the assistant really
+        # said, instead of a reply the user never saw.
+        print("\tAnswer generation disabled, skipping")
+        return {}
+
     print("\tAnswer agent node activated")
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a helpful agent that replies to user queries.
@@ -423,6 +430,7 @@ class MemoryAgent():
                 "messages": [],
                 "maximum_historical_messages": self.config.maximum_historical_messages,
                 "core_memory_limit": self.config.core_memory_limit,
+                "generate_answer": self.config.generate_answer,
                 "retrieved_memory": "",
                 "current_query": "",
                 "tool_calls": []

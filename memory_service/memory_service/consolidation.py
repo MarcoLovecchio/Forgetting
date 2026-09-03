@@ -298,11 +298,25 @@ def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str,
     return results
 
 
+# What the retrieval path says when it found nothing. It is a sentence because
+# it goes straight into a prompt, so callers cannot test it for emptiness:
+# serialize_retrieved_for_response turns it back into an empty list.
+NO_ARCHIVAL_RESULTS = "No relevant active memories found."
+
+
+def serialize_retrieved_for_response(retrieved) -> List[str]:
+    """Retrieved archival memories as a list, empty when nothing came back."""
+    text = str(retrieved or "").strip()
+    if not text or text == NO_ARCHIVAL_RESULTS:
+        return []
+    return [line for line in text.splitlines() if line.strip()]
+
+
 def retrieve_active_archival_memories(query: str, k: int = 3) -> str:
     """Archive lookup for the retrieval path, tombstones excluded."""
     results = search_archive(query, k=k)
     if not results:
-        return "No relevant active memories found."
+        return NO_ARCHIVAL_RESULTS
     return "\n".join(f"ID: {doc_id}, Content: {content}" for doc_id, content in results)
 
 
