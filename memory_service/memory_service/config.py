@@ -19,9 +19,6 @@ from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
-# Environment files are looked up walking the directory tree upwards, so the
-# service behaves the same whether it is launched from the workspace root, from
-# a colcon install space or from a bare test run.
 _ENV_FILE_NAMES = (".env", ".config")
 
 
@@ -83,8 +80,8 @@ class MemoryConfig:
 
     # Agent behaviour
     node_name: str = "memory_agent"
-    maximum_historical_messages: int = 4  # Limit the number of historical messages to keep
-    core_memory_limit: int = 150  # Character limit for core memory
+    maximum_historical_messages: int = 4
+    core_memory_limit: int = 150
 
     # Archival memory (ChromaDB)
     chroma_path: str = "./chroma_db"

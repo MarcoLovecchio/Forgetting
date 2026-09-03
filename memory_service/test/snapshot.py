@@ -23,10 +23,18 @@ def safe_print(line: str) -> None:
         print(line.encode(encoding, errors="replace").decode(encoding))
 
 
-def print_turn_header(number, operation: str, description: str) -> None:
-    """Announce a turn before running it."""
+def print_turn_header(number, operation: str, description: str,
+                      consolidates: str = "") -> None:
+    """Announce a turn before running it.
+
+    `consolidates` says what the turn is about to digest, which with an even
+    window is the PREVIOUS exchange: without it the trace looks wrong when it
+    is only late.
+    """
     safe_print("\n" + "#" * 78)
     safe_print(f"### TURNO {number} - operazione '{operation}': {description}")
+    if consolidates:
+        safe_print(f"###   consolida: {consolidates}")
     safe_print("#" * 78)
 
 

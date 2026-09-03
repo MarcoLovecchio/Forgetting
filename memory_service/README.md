@@ -282,7 +282,7 @@ d'ambiente (lette da `.env` / `.config`):
 | `MEMORY_EMBEDDING_BASE_URL` | — | endpoint del modello di embedding |
 | `MEMORY_API_KEY_ENV` | *(vuota)* | nome della variabile che contiene la chiave. Vuota significa "nessuna chiave": verso un endpoint `openai` viene mandato il segnaposto `EMPTY`. **Non** vale `GROQ_API_KEY`: quella serve agli altri nodi e non deve raggiungere il cluster |
 | `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
-| `MEMORY_MAX_HISTORICAL_MESSAGES` | `5` | messaggi mantenuti prima del riassunto |
+| `MEMORY_MAX_HISTORICAL_MESSAGES` | `4` | messaggi mantenuti prima del riassunto. **Tenerlo pari**: con un numero dispari la coda della finestra è una risposta dell'assistente, e ogni consolidamento riceve la fine di uno scambio più l'inizio del successivo invece di una coppia (utente, assistente) intera |
 | `MEMORY_CORE_MEMORY_LIMIT` | `150` | caratteri massimi della core memory |
 | `MEMORY_CHROMA_PATH` | `./chroma_db` | cartella dell'archivio (risolta in path assoluto) |
 | `MEMORY_COLLECTION_NAME` | `memory_archive` | collezione ChromaDB |

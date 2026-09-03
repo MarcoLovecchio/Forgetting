@@ -81,8 +81,11 @@ def _configure_langsmith():
 def _build_agent():
     """Agente sullo stack vero, con una finestra di storico corta.
 
-    maximum_historical_messages=1 fa scattare il consolidamento a ogni turno,
-    altrimenti servirebbero decine di messaggi prima di vedere qualcosa.
+    La finestra e' corta perche' altrimenti servirebbero decine di messaggi
+    prima di vedere qualcosa, ma e' PARI di proposito: cosi' ogni consolidamento
+    riceve uno scambio (Utente, Assistente) intero, invece della coda di uno e
+    della testa del successivo. Il prezzo e' il ritardo - lo scambio corrente
+    resta dentro la finestra e viene digerito al turno dopo.
     """
     from memory_service.memory_manager_llm import MemoryAgent
 
@@ -95,15 +98,22 @@ def _build_agent():
     return MemoryAgent(config=config), config
 
 
-def _turn(agent, number, operation, description, user_message, assistant_message):
-    """Un turno: l'utente parla, l'assistente risponde, la memoria consolida."""
-    print_turn_header(number, operation, description)
+def _turn(agent, number, says, description, user_message, assistant_message,
+          consolidates):
+    """Un turno: l'utente parla, l'assistente risponde, la memoria consolida.
+
+    `says` e' la classificazione che il messaggio dell'utente sollecita,
+    `consolidates` quella che ci si aspetta di vedere adesso. Con una finestra
+    pari le due non coincidono mai: stamparle entrambe evita una traccia che
+    sembra sbagliata mentre e' solo in ritardo di uno scambio.
+    """
+    print_turn_header(number, says, description, consolidates)
     agent.append_message(user_message, "user")
     agent.append_message(assistant_message, "assistant")
 
     state = agent.run_memory_agent("insert")
 
-    print_memory_snapshot(f"turno {number} - {operation}", state, backends.get_vector_store())
+    print_memory_snapshot(f"turno {number} - {says}", state, backends.get_vector_store())
     _assert_state_is_consistent(state)
     return state
 
@@ -137,24 +147,32 @@ def test_memory_lifecycle_with_a_real_llm():
     print(f"\nModello: {config.llm_config.get('model_name')} "
           f"({config.llm_config.get('model_provider')})")
     print(f"Archivio: {config.chroma_path} / {config.collection_name}")
+    print(f"Finestra: {config.maximum_historical_messages} messaggi, quindi ogni "
+          f"consolidamento riceve lo scambio precedente, intero")
 
-    # --- TURNO 1: new ----------------------------------------------------- #
+    # --- TURNO 1: new ------------------------------------------------------ #
     state = _turn(
         agent, 1, "new", "l'utente si presenta: sono tutti fatti nuovi",
         "Ciao, mi chiamo Bianca, sono vegetariana e il mio obiettivo e' 2000 calorie al giorno.",
         "Piacere Bianca, ho preso nota delle tue preferenze alimentari.",
+        consolidates="niente, lo scambio 1 e' ancora dentro la finestra",
     )
-    assert _contents(state), "dopo la presentazione la core memory non puo' essere vuota"
-    assert _op_types(state), "il consolidamento deve lasciare traccia nell'operation log"
-    seen = len(state["operation_log"])
+    assert not state["operation_log"], (
+        "con una finestra pari il primo scambio non esce ancora: un'operazione "
+        "qui vorrebbe dire che il taglio non e' allineato agli scambi")
+    seen = 0
 
-    # --- TURNO 2: redundant ----------------------------------------------- #
+    # --- TURNO 2: redundant ------------------------------------------------ #
     state = _turn(
         agent, 2, "redundant", "l'utente ripete un fatto gia' noto",
         "Ti ricordo che mi chiamo Bianca.",
         "Certo Bianca, me lo ricordo.",
+        consolidates="scambio 1, i fatti della presentazione",
     )
-    print(f"  -> operazioni di questo turno: {_op_types(state, seen)}")
+    assert _contents(state), (
+        "consolidata la presentazione, la core memory non puo' essere vuota")
+    assert _op_types(state), "il consolidamento deve lasciare traccia nell'operation log"
+    print(f"  -> operazioni dello scambio 1: {_op_types(state, seen)}")
     seen = len(state["operation_log"])
 
     # --- TURNO 3: update --------------------------------------------------- #
@@ -162,17 +180,19 @@ def test_memory_lifecycle_with_a_real_llm():
         agent, 3, "update", "l'utente raffina un fatto gia' in memoria",
         "Ho alzato il mio obiettivo giornaliero da 2000 a 2200 calorie.",
         "Aggiorno il tuo obiettivo a 2200 calorie.",
+        consolidates="scambio 2, la ripetizione del nome",
     )
-    print(f"  -> operazioni di questo turno: {_op_types(state, seen)}")
+    print(f"  -> operazioni dello scambio 2: {_op_types(state, seen)}")
     seen = len(state["operation_log"])
 
-    # --- TURNO 4: contradict ----------------------------------------------- #
+    # --- TURNO 4: contradict ------------------------------------------------ #
     state = _turn(
         agent, 4, "contradict", "l'utente smentisce un fatto gia' in memoria",
         "Non sono piu' vegetariana, da questo mese mangio pesce.",
         "Capito, non sei piu' vegetariana.",
+        consolidates="scambio 3, il nuovo obiettivo calorico",
     )
-    print(f"  -> operazioni di questo turno: {_op_types(state, seen)}")
+    print(f"  -> operazioni dello scambio 3: {_op_types(state, seen)}")
     seen = len(state["operation_log"])
 
     # --- TURNO 5: delete ---------------------------------------------------- #
@@ -180,23 +200,40 @@ def test_memory_lifecycle_with_a_real_llm():
         agent, 5, "delete", "l'utente chiede esplicitamente di dimenticare un fatto",
         "Dimentica il mio nome per favore, non voglio che tu lo memorizzi.",
         "Va bene, dimentico il tuo nome.",
+        consolidates="scambio 4, la smentita sul vegetarianismo",
     )
-    print(f"  -> operazioni di questo turno: {_op_types(state, seen)}")
+    print(f"  -> operazioni dello scambio 4: {_op_types(state, seen)}")
+    seen = len(state["operation_log"])
 
-    # Qualunque cosa il modello abbia deciso turno per turno, alla fine devono
-    # essere successe delle cose: la memoria non puo' essere rimasta ferma.
+    # --- TURNO 6: scarico --------------------------------------------------- #
+    # Uno scambio di cortesia, il cui unico scopo e' spingere fuori dalla
+    # finestra quello del delete: senza, resterebbe dentro e non verrebbe mai
+    # consolidato. Questo non sporca niente perche' tocca a lui restare dentro,
+    # e il test finisce prima che qualcuno lo digerisca.
+    state = _turn(
+        agent, 6, "nessuna", "scambio di cortesia: serve solo a far uscire il turno 5",
+        "Grazie dell'aiuto.",
+        "Di nulla, sono qui se ti serve altro.",
+        consolidates="scambio 5, la richiesta di dimenticare il nome",
+    )
+    print(f"  -> operazioni dello scambio 5: {_op_types(state, seen)}")
+
+    # Qualunque cosa il modello abbia deciso scambio per scambio, alla fine
+    # devono essere successe delle cose: la memoria non puo' essere rimasta ferma.
     all_ops = _op_types(state)
     print(f"\n  -> operation log completo: {all_ops}")
-    assert len(all_ops) > 1, "cinque turni di conversazione devono muovere la memoria"
+    assert len(all_ops) > 1, "cinque scambi di conversazione devono muovere la memoria"
 
-    # --- TURNO 6: retrieve --------------------------------------------------- #
-    print_turn_header(6, "retrieve", "l'utente fa una domanda: la risposta usa la memoria")
+    # --- TURNO 7: retrieve --------------------------------------------------- #
+    # Dopo lo scarico, mai prima: azzerare i messaggi con uno scambio ancora in
+    # attesa lo farebbe sparire senza che nessuno se ne accorga.
+    print_turn_header(7, "retrieve", "l'utente fa una domanda: la risposta usa la memoria")
     agent.state["messages"] = []
     agent.append_message("Qual e' il mio obiettivo calorico giornaliero?", "user")
     agent.state["retrieved_memory"] = ""
 
     state = agent.run_memory_agent("retrieve")
-    print_memory_snapshot("turno 6 - retrieve", state, backends.get_vector_store())
+    print_memory_snapshot("turno 7 - retrieve", state, backends.get_vector_store())
 
     answer = state["messages"][-1].content
     print(f"\n  -> risposta dell'assistente: {answer}")

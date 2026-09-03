@@ -58,7 +58,8 @@ class ConfigTest(EnvironmentTestCase):
         config = MemoryConfig.from_environment()
 
         self.assertEqual(config.node_name, "memory_agent")
-        self.assertEqual(config.maximum_historical_messages, 5)
+        self.assertEqual(config.maximum_historical_messages, 4,
+                         "pari, per non tagliare a meta' uno scambio")
         self.assertEqual(config.core_memory_limit, 150)
         self.assertEqual(config.collection_name, "memory_archive")
         self.assertEqual(config.llm_config, {})
@@ -77,7 +78,7 @@ class ConfigTest(EnvironmentTestCase):
     def test_invalid_numbers_fall_back_to_the_defaults(self):
         os.environ["MEMORY_MAX_HISTORICAL_MESSAGES"] = "not a number"
 
-        self.assertEqual(MemoryConfig.from_environment().maximum_historical_messages, 5)
+        self.assertEqual(MemoryConfig.from_environment().maximum_historical_messages, 4)
 
     def test_chroma_path_is_absolute(self):
         os.environ["MEMORY_CHROMA_PATH"] = "./relative_db"
