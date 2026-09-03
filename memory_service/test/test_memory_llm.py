@@ -88,7 +88,7 @@ def _build_agent():
 
     config = dataclasses.replace(
         MemoryConfig.from_environment(),
-        maximum_historical_messages=1,
+        maximum_historical_messages=2,
         core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "1500")),
     )
     MemoryAgent.reset_instance()

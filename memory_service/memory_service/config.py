@@ -83,7 +83,7 @@ class MemoryConfig:
 
     # Agent behaviour
     node_name: str = "memory_agent"
-    maximum_historical_messages: int = 5  # Limit the number of historical messages to keep
+    maximum_historical_messages: int = 4  # Limit the number of historical messages to keep
     core_memory_limit: int = 150  # Character limit for core memory
 
     # Archival memory (ChromaDB)
@@ -113,7 +113,7 @@ class MemoryConfig:
         node_name = node_name or os.getenv("MEMORY_LLM_NODE", "memory_agent")
         return cls(
             node_name=node_name,
-            maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES", 5),
+            maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES", 4),
             core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", 150),
             chroma_path=os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db")),
             collection_name=os.getenv("MEMORY_COLLECTION_NAME", "memory_archive"),
