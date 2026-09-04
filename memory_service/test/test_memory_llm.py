@@ -128,7 +128,6 @@ def _assert_state_is_consistent(state):
     for item in core_memory:
         assert item.content.strip(), "un item senza contenuto non ha senso"
         assert item.updated_at >= item.created_at
-        assert item.supersedes != item.id, "un item non puo' superare se stesso"
 
 
 def _contents(state):

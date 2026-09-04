@@ -15,8 +15,9 @@ new          nothing similar is in memory                   a new item is create
 redundant    the same information is already stored         the existing item is
                                                             reinforced (updated_at)
 update       it adds detail to a fact already stored        the old item becomes
-                                                            "superseded" and a new
-                                                            item supersedes it
+                                                            "superseded", a new item
+                                                            takes its place, and the
+                                                            operation log links them
 contradict   it contradicts a fact already stored           same as update
 delete       the user explicitly asked to forget a fact     the item becomes
                                                             "deleted"
@@ -43,7 +44,6 @@ from memory_service import backends
 # How many archival memories are offered to the classifier as possible targets.
 ARCHIVE_CANDIDATES_K = 5
 
-ARCHIVE_OVERFETCH = 3
 
 MemoryStatus = Literal["active", "superseded", "deleted"]
 MemoryOperationType = Literal["new", "redundant", "update", "contradict", "delete"]
@@ -62,7 +62,6 @@ class CoreMemoryItem(BaseModel):
     id: str = Field(default_factory=new_item_id)
     content: str
     status: MemoryStatus = "active"
-    supersedes: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
@@ -208,7 +207,6 @@ def archive_metadata(item: CoreMemoryItem) -> dict:
     """
     return {
         "status": item.status,
-        "supersedes": item.supersedes or "",
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -253,7 +251,11 @@ def get_archive_item(item_id: str) -> Optional[dict]:
 def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Optional[dict]:
     """Refresh updated_at of an archived item, optionally changing its status.
 
-    The item is updated in place: it is not pulled back into core memory.
+    The item is updated in place: it is not pulled back into core memory, and
+    its document is not rewritten. Passing the text through add_texts would make
+    the store recompute the embedding - a call to the embedding model, over the
+    network, to change a scalar field. Chroma only recomputes when `documents`
+    are supplied, so sending metadata alone leaves the vector where it is.
     """
     archived = get_archive_item(item_id)
     if archived is None:
@@ -264,8 +266,7 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     if status is not None:
         metadata["status"] = status
     metadata["updated_at"] = datetime.now().isoformat()
-    backends.get_vector_store().add_texts(
-        texts=[archived["content"]], ids=[item_id], metadatas=[metadata])
+    backends.get_vector_store()._collection.update(ids=[item_id], metadatas=[metadata])
     return archived
 
 
@@ -276,31 +277,16 @@ def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str,
     except (TypeError, ValueError):
         k = ARCHIVE_CANDIDATES_K
 
-    # Tombstones are filtered out below, so ask for more than k to make up
-    # for the places they take.
     try:
         docs = backends.get_vector_store().similarity_search(
-            query, k=k * ARCHIVE_OVERFETCH)
+            query, k=k, filter={"status": "active"})
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
 
-    results = []
-    for doc in docs:
-        metadata = doc.metadata or {}
-        # Entries written before consolidation carry no status: treat them as active.
-        if metadata.get("status", "active") != "active":
-            continue
-        results.append((doc.id, doc.page_content))
-        if len(results) == k:
-            break
-
-    return results
+    return [(doc.id, doc.page_content) for doc in docs]
 
 
-# What the retrieval path says when it found nothing. It is a sentence because
-# it goes straight into a prompt, so callers cannot test it for emptiness:
-# serialize_retrieved_for_response turns it back into an empty list.
 NO_ARCHIVAL_RESULTS = "No relevant active memories found."
 
 
@@ -372,7 +358,7 @@ def supersede_item(
 ) -> CoreMemoryItem:
     """Replace a core item with a newer version that points back at it."""
     _retire_item(old_item, "superseded")
-    new_item = CoreMemoryItem(content=new_content, supersedes=old_item.id)
+    new_item = CoreMemoryItem(content=new_content)
     log.append(OperationLogEntry(
         op_type=op_type, item_id=new_item.id,
         related_item_id=old_item.id, content=new_content))
@@ -417,7 +403,7 @@ def supersede_archived_item(
     """Flag an archived memory as superseded; the newer version starts in core memory."""
     if _rewrite_archive_metadata(item_id, status="superseded") is None:
         return None
-    new_item = CoreMemoryItem(content=new_content, supersedes=item_id)
+    new_item = CoreMemoryItem(content=new_content)
     log.append(OperationLogEntry(
         op_type=op_type, item_id=new_item.id,
         related_item_id=item_id, content=new_content))

@@ -68,8 +68,7 @@ def _print_core_memory(state: dict) -> None:
         safe_print("  (core memory vuota)")
     for item in active:
         safe_print(f"  - [{item.id}] (status: {item.status}) {item.content}")
-        safe_print(f"      created_at: {item.created_at} | updated_at: {item.updated_at}"
-                   f" | supersedes: {item.supersedes or '-'}")
+        safe_print(f"      created_at: {item.created_at} | updated_at: {item.updated_at}")
 
 
 def _print_messages(state: dict) -> None:
@@ -103,7 +102,7 @@ def _print_archive(vector_store) -> None:
 
     for doc_id, content, metadata in zip(ids, documents, metadatas):
         metadata = metadata or {}
-        status = metadata.get("status", "N/A")
+        status = metadata["status"]
         safe_print(f"  - [{doc_id}] (status: {status}) {content}")
         if metadata:
             safe_print(f"      metadata: {metadata}")

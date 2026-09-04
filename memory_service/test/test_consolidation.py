@@ -33,11 +33,14 @@ from langchain_core.messages import HumanMessage  # noqa: E402
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
-    ARCHIVE_OVERFETCH,
     NO_ARCHIVAL_RESULTS,
+    CoreMemoryItem,
+    archive_items,
     get_active_items,
+    reinforce_archived_item,
     search_archive,
     serialize_retrieved_for_response,
+    supersede_archived_item,
 )
 from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
 
@@ -151,8 +154,7 @@ class ConsolidationLifecycleTest(unittest.TestCase):
 
         items = self.active(state)
         self.assertEqual(len(items), 3, "il vecchio esce, il nuovo entra")
-        updated = find_item(items, "2200 calorie")
-        self.assertEqual(updated.supersedes, goal_item.id, "il nuovo punta al vecchio")
+        find_item(items, "2200 calorie")
         self.assertNotIn(goal_item.id, [item.id for item in items], "il vecchio esce da core")
         self.assertEqual(self.store.status_of(goal_item.id), "superseded")
         self.assertEqual(self.store.documents[goal_item.id], goal_item.content,
@@ -170,8 +172,7 @@ class ConsolidationLifecycleTest(unittest.TestCase):
 
         items = self.active(state)
         self.assertEqual(len(items), 3)
-        contradicted = find_item(items, "pesce")
-        self.assertEqual(contradicted.supersedes, veg_item.id)
+        find_item(items, "pesce")
         self.assertEqual(self.store.status_of(veg_item.id), "superseded")
         last = state["operation_log"][-1]
         self.assertEqual((last.op_type, last.related_item_id), ("contradict", veg_item.id))
@@ -218,10 +219,9 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         self.assertEqual(self.store.status_of(moved.id), "active",
                          "archiviato ma ancora valido, non e' un tombstone")
         archived_metadata = self.store.metadatas[moved.id]
-        self.assertEqual(archived_metadata["supersedes"], moved.supersedes,
-                         "i campi del CoreMemoryItem sopravvivono all'archiviazione")
-        for field in ("status", "supersedes", "created_at", "updated_at"):
-            self.assertIn(field, archived_metadata)
+        for field in ("status", "created_at", "updated_at"):
+            self.assertIn(field, archived_metadata,
+                          "i campi del CoreMemoryItem sopravvivono all'archiviazione")
         self.assertEqual(state["operation_log"][-1].op_type, "archive")
 
         # --- TURNO 7: retrieve --------------------------------------------- #
@@ -303,6 +303,50 @@ class TargetResolutionTest(unittest.TestCase):
         self.assertEqual(state["operation_log"], [], "e non si registra nessuna operazione")
 
 
+class MetadataRewriteTest(unittest.TestCase):
+    """Cambiare lo status di un item archiviato non deve ricalcolare il vettore.
+
+    Riscrivere il documento con add_texts farebbe ricalcolare l'embedding: una
+    chiamata di rete al modello, sul cluster, per cambiare un campo scalare. E
+    succede a ogni redundant, update, contradict o delete che colpisca un item
+    gia' in archivio.
+    """
+
+    def setUp(self):
+        self.store = FakeVectorStore()
+        backends.reset()
+        backends.configure(llm=ScriptedChatModel(tool_responses={}),
+                           vector_store=self.store, config=LIFECYCLE_CONFIG)
+        self.item = CoreMemoryItem(content="L'utente e' vegetariana")
+        archive_items([self.item])
+        self.writes_after_archiving = len(self.store.writes)
+
+    def tearDown(self):
+        backends.reset()
+
+    def test_a_status_change_does_not_rewrite_the_document(self):
+        supersede_archived_item(self.item.id, "L'utente mangia pesce", [])
+
+        self.assertEqual(len(self.store.writes), self.writes_after_archiving,
+                         "nessuna scrittura in piu': niente embedding ricalcolato")
+        self.assertIn(self.item.id, self.store._collection.updates,
+                      "il cambio passa dall'aggiornamento dei soli metadata")
+
+    def test_the_document_survives_the_status_change(self):
+        supersede_archived_item(self.item.id, "L'utente mangia pesce", [])
+
+        self.assertEqual(self.store.documents[self.item.id], "L'utente e' vegetariana")
+        self.assertEqual(self.store.status_of(self.item.id), "superseded")
+
+    def test_a_reinforcement_costs_no_embedding_either(self):
+        # E' il caso piu' sprecato dei tre: si pagava un embedding per registrare
+        # che un fatto e' stato ripetuto.
+        reinforce_archived_item(self.item.id, [])
+
+        self.assertEqual(len(self.store.writes), self.writes_after_archiving)
+        self.assertEqual(self.store.status_of(self.item.id), "active")
+
+
 class RetrievedSerializationTest(unittest.TestCase):
     """Il recupero esce dal servizio come lista, non come frase.
 
@@ -328,12 +372,12 @@ class RetrievedSerializationTest(unittest.TestCase):
 
 
 class ArchiveSearchTest(unittest.TestCase):
-    """Il vettoriale ordina per somiglianza e ignora i tombstone.
+    """Il filtro sulle attive lo fa lo store, dentro l'indice.
 
-    Chiedere k documenti e scartarne dopo quelli non attivi ne restituisce meno
+    Chiedere k documenti e scartare dopo quelli non attivi ne restituisce meno
     di k, e il divario peggiora col tempo perche' i tombstone non vengono mai
-    rimossi: nella pratica il classificatore si ritrova senza candidati proprio
-    su un archivio molto usato, senza che niente segnali il problema.
+    rimossi: il classificatore si ritroverebbe senza candidati proprio su un
+    archivio molto usato, senza che niente segnali il problema.
     """
 
     def setUp(self):
@@ -372,15 +416,17 @@ class ArchiveSearchTest(unittest.TestCase):
         self.assertEqual(len(results), 3, "i candidati attivi devono essere k")
         self.assertTrue(all(doc_id.startswith("live_") for doc_id, _ in results))
 
-    def test_the_search_asks_for_more_than_it_needs(self):
+    def test_the_search_delegates_the_filter_to_the_store(self):
         self.fill(tombstones=2, active=5)
 
         search_archive("gatto", k=3)
 
-        self.assertEqual(self.store.searches[-1]["k"], 3 * ARCHIVE_OVERFETCH)
+        search = self.store.searches[-1]
+        self.assertEqual(search["filter"], {"status": "active"})
+        self.assertEqual(search["k"], 3,
+                         "niente documenti chiesti in piu': il filtro e' nell'indice")
 
     def test_the_result_is_never_longer_than_k(self):
-        # L'over-fetch e' un dettaglio interno: chi chiama k ne vuole k.
         self.fill(tombstones=0, active=10)
 
         self.assertEqual(len(search_archive("gatto", k=3)), 3)

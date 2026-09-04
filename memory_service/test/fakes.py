@@ -100,6 +100,32 @@ class ScriptedChatModel(BaseChatModel):
         return [name for invocation in self.invocations for name in invocation["tools"]]
 
 
+class FakeCollection:
+    """Il pezzo di API chromadb che il servizio usa da sotto langchain_chroma.
+
+    Serve per aggiornare i metadata senza ricalcolare l'embedding: langchain non
+    espone un modo per farlo, quindi il codice scende di un livello e il doppio
+    deve scendere con lui.
+    """
+
+    def __init__(self, store):
+        self.store = store
+        self.updates = []
+
+    def count(self):
+        return len(self.store.documents)
+
+    def update(self, ids, metadatas=None, **kwargs):
+        # Solo i metadata: documento e vettore restano dove sono. Un doppio che
+        # riscrivesse anche il testo nasconderebbe il motivo per cui questa
+        # chiamata non passa da add_texts.
+        for doc_id, metadata in zip(list(ids), list(metadatas or [])):
+            self.updates.append(doc_id)
+            if doc_id not in self.store.documents:
+                continue  # chroma logga e ignora, non solleva
+            self.store.metadatas[doc_id] = dict(metadata)
+
+
 class FakeVectorStore:
     """In-memory stand-in for the Chroma archival store.
 
@@ -112,6 +138,10 @@ class FakeVectorStore:
         self.documents: Dict[str, str] = {}
         self.metadatas: Dict[str, Dict[str, Any]] = {}
         self.searches: List[Dict[str, Any]] = []
+        # Ogni add_texts e' un embedding ricalcolato: contarle serve a verificare
+        # che un cambio di status non ne paghi uno.
+        self.writes: List[List[str]] = []
+        self._collection = FakeCollection(self)
 
     def add_texts(self, texts, ids=None, metadatas=None, **kwargs):
         texts = list(texts)
@@ -121,6 +151,7 @@ class FakeVectorStore:
         metadatas = list(metadatas) if metadatas is not None else [{}] * len(texts)
         if not (len(texts) == len(ids) == len(metadatas)):
             raise ValueError("texts, ids and metadatas must have the same length")
+        self.writes.append(list(ids))
         for doc_id, text, metadata in zip(ids, texts, metadatas):
             self.documents[doc_id] = text
             self.metadatas[doc_id] = dict(metadata or {})
@@ -138,16 +169,24 @@ class FakeVectorStore:
             "metadatas": [self.metadatas.get(doc_id, {}) for doc_id in selected],
         }
 
-    def similarity_search(self, query, k=3, **kwargs):
+    def similarity_search(self, query, k=3, filter=None, **kwargs):
         if not isinstance(k, int):
             raise TypeError(f"k must be an int, got {type(k).__name__}")
-        self.searches.append({"query": query, "k": k})
+        self.searches.append({"query": query, "k": k, "filter": filter})
         words = {word.lower() for word in str(query).split()}
 
         def score(text):
             return len(words & {word.lower() for word in text.split()})
 
+        def matches(doc_id):
+            metadata = self.metadatas.get(doc_id, {})
+            return all(metadata.get(key) == value for key, value in (filter or {}).items())
+
         ranked = sorted(self.documents.items(), key=lambda item: score(item[1]), reverse=True)
+        # Il filtro PRIMA del taglio: e' tutto il punto di chiederlo allo store
+        # invece di applicarlo dopo. Un doppio che tagliasse prima farebbe
+        # passare il bug che questo filtro esiste per evitare.
+        ranked = [(doc_id, text) for doc_id, text in ranked if matches(doc_id)]
         return [
             Document(id=doc_id, page_content=text, metadata=self.metadatas.get(doc_id, {}))
             for doc_id, text in ranked[:k]
@@ -155,7 +194,12 @@ class FakeVectorStore:
 
     # -- helpers used by the tests --------------------------------------------
     def status_of(self, doc_id: str) -> Optional[str]:
-        """Status an archived item was stored with, None if it is not there."""
+        """Status an archived item was stored with, None if it is not there.
+
+        Un documento che esiste ha sempre uno status: lo scrive archive_metadata.
+        Se mancasse, questa riga solleva - meglio che restituire None e far
+        confrontare un'assert con un valore che non c'e'.
+        """
         if doc_id not in self.documents:
             return None
-        return self.metadatas.get(doc_id, {}).get("status")
+        return self.metadatas[doc_id]["status"]

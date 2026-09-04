@@ -71,7 +71,7 @@ fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
 python memory_service/run_tests.py -v
 ```
 
-111 test, tutti sul **grafo LangGraph reale** con backend simulati
+112 test, tutti sul **grafo LangGraph reale** con backend simulati
 (`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
@@ -253,17 +253,17 @@ attive **piu' le prime K dell'archivio** (`ARCHIVE_CANDIDATES_K = 5`), unite in 
 solo elenco `id: contenuto` da `build_candidate_memories`. Da entrambe le fonti
 passano **solo le attive**: superseded e deleted restano fuori.
 
-Il vettoriale pero' ordina per somiglianza e delle lapidi non sa niente, quindi
-puo' benissimo metterle nei primi K posti. Filtrare dopo una ricerca stretta
-restituirebbe meno di K candidati — e il divario **peggiora con l'uso**, perche'
-i tombstone non vengono mai rimossi: proprio su un archivio molto usato il
-classificatore si ritroverebbe senza bersagli, senza che niente lo segnali.
+Il filtro **non avviene dopo la ricerca, ma dentro l'indice**: `search_archive`
+passa `filter={"status": "active"}` a Chroma, che cerca solo fra le attive.
 
-Per questo `search_archive` cerca **piu' largo di quanto serve**
-(`ARCHIVE_OVERFETCH = 3`), filtra, e solo allora tronca a K. Chi chiama non se ne
-accorge: chiede K e riceve K, finche' K memorie attive esistono. Se non esistono
-riceve quelle che ci sono, in ordine di somiglianza — meno candidati e' un prompt
-piu' povero, non un errore.
+Non e' un dettaglio. Filtrando dopo una ricerca top-K si otterrebbero meno di K
+candidati, perche' le lapidi occupano i primi posti — e il divario **peggiora con
+l'uso**, dato che i tombstone non vengono mai rimossi: proprio su un archivio
+molto usato il classificatore si ritroverebbe senza bersagli, senza che niente lo
+segnali. Chiedendo K attive se ne ricevono K, sempre, finche' K attive esistono.
+
+Ogni documento in archivio ha uno `status`, scritto da `archive_metadata`: non
+esiste il caso "documento senza status", e il codice non lo contempla.
 
 Una cosa che resta com'e': la query usata per cercare nell'archivio e' **il blocco
 di messaggi in consolidamento**, non il singolo fatto estratto. I K candidati sono

@@ -443,8 +443,7 @@ def _print_core_memory(state):
     for item in active:
         safe_print(f"  - [{_short(item.id)}] {item.content}")
         safe_print(f"      created {_clock(item.created_at)}"
-                   f" | updated {_clock(item.updated_at)}"
-                   f" | supersedes {_short(item.supersedes)}")
+                   f" | updated {_clock(item.updated_at)}")
 
 
 def _print_archive(vector_store):
@@ -466,12 +465,11 @@ def _print_archive(vector_store):
     counters = {}
     for doc_id, content, metadata in zip(ids, documents, metadatas):
         metadata = metadata or {}
-        status = metadata.get("status", "N/A")
+        status = metadata["status"]
         counters[status] = counters.get(status, 0) + 1
         safe_print(f"  - [{_short(doc_id)}] ({status}) {content}")
         safe_print(f"      created {_clock_iso(metadata.get('created_at'))}"
-                   f" | updated {_clock_iso(metadata.get('updated_at'))}"
-                   f" | supersedes {_short(metadata.get('supersedes'))}")
+                   f" | updated {_clock_iso(metadata.get('updated_at'))}")
 
     summary = ", ".join(f"{name} {count}" for name, count in sorted(counters.items()))
     safe_print(f"\n  Riepilogo status: {summary}")
@@ -543,7 +541,6 @@ def _assert_state_is_consistent(state):
     for item in core_memory:
         assert item.content.strip(), "un item senza contenuto non ha senso"
         assert item.updated_at >= item.created_at
-        assert item.supersedes != item.id, "un item non puo' superare se stesso"
 
 
 def _assert_everything_that_left_core_is_in_the_archive(state, vector_store):

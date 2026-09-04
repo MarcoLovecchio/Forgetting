@@ -91,9 +91,15 @@ def split_by_speaker(messages):
 
 # Tool to check if information is sufficient to answer the query
 class InformationSufficiency(BaseModel):
-    """This tool checks if the information provided is sufficient to answer the user's query.
-    Answer True if sufficient, False otherwise.
-    Estimate sufficiency ONLY based on the provided context."""
+    """Decides whether the known facts already contain what the query asks for.
+
+    True means the answer is already there, in the facts listed in the prompt.
+    False starts a search in the archival memory, where older and less used
+    facts live: it is not a failure, it is how the archive gets opened.
+
+    Not knowing is not an answer. If the listed facts do not contain the
+    information, the answer is False, so that the archive can be searched.
+    """
     is_sufficient: bool
 
 
@@ -131,14 +137,26 @@ def check_information_sufficiency(state: AgentState) -> bool:
     core_memory = serialize_core_memory_for_prompt(state["core_memory"])
     previous_messages = messages_to_str(history)
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a tool that checks if the information provided is sufficient to answer the user's query."),
+        ("system", """You decide whether the assistant already has what it needs, or
+        whether it has to look into its archival memory first.
+
+        The known facts below are only the memories kept always at hand. Everything older
+        or less frequently used lives in an ARCHIVE that is not shown to you and that can
+        be searched: answering False is what starts that search, so False is not a
+        failure.
+
+        Answer True only when the known facts already contain what the query asks for.
+        Otherwise answer False: replying "I don't know" is not an answer, it is a lookup
+        that was not made."""),
         ("human", """User query: {user_query}
-Known facts: {core_memory}
+Known facts - only what is kept always at hand, the archive is not listed here:
+{core_memory}
+
 Your previous interactions:
 
 {previous_messages}
 
-Is the information sufficient to answer the query?""")
+Do the known facts already contain what this query asks for?""")
     ])
 
     router_llm = get_llm().bind_tools([InformationSufficiency], tool_choice=REQUIRED)

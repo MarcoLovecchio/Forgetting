@@ -27,10 +27,7 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
-from memory_service.consolidation import (  # noqa: E402
-    ARCHIVE_OVERFETCH,
-    CoreMemoryItem,
-)
+from memory_service.consolidation import CoreMemoryItem  # noqa: E402
 from memory_service.memory_manager_llm import (  # noqa: E402
     MemoryAgent,
     messages_to_str,
@@ -199,7 +196,7 @@ class CoreMemoryOverflowTest(MemoryServiceTestCase):
         )
 
     def test_archived_item_keeps_the_core_memory_item_fields(self):
-        item = CoreMemoryItem(content="y" * 300, supersedes="an-older-item")
+        item = CoreMemoryItem(content="y" * 300)
         self.agent.state["core_memory"] = [item]
         self.agent.state["messages"] = self.conversation(9)
         self.llm.script({
@@ -212,7 +209,6 @@ class CoreMemoryOverflowTest(MemoryServiceTestCase):
 
         metadata = self.vector_store.metadatas[item.id]
         self.assertEqual(metadata["status"], "active")
-        self.assertEqual(metadata["supersedes"], "an-older-item")
         self.assertEqual(metadata["created_at"], item.created_at.isoformat())
         self.assertEqual(metadata["updated_at"], item.updated_at.isoformat())
 
@@ -352,10 +348,10 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         state = self.agent.run_memory_agent("retrieve")
 
         self.assertEqual(len(self.vector_store.searches), 1)
-        # Two things at once: the string "2" reached the store as an int - the
-        # fake refuses anything else - and the search was deliberately widened,
-        # because tombstones are filtered out only afterwards.
-        self.assertEqual(self.vector_store.searches[0]["k"], 2 * ARCHIVE_OVERFETCH)
+        # The string "2" reached the store as an int: the fake refuses anything
+        # else. The filter travels with it, so no widening is needed.
+        self.assertEqual(self.vector_store.searches[0]["k"], 2)
+        self.assertEqual(self.vector_store.searches[0]["filter"], {"status": "active"})
         self.assertIn("black tea", state["retrieved_memory"])
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
 
@@ -477,6 +473,41 @@ class CurrentQueryTest(MemoryServiceTestCase):
 def _tool_name(tool):
     """Nome di uno strumento, sia esso un modello pydantic o un @tool."""
     return getattr(tool, "__name__", None) or getattr(tool, "name", str(tool))
+
+
+class SufficiencyPromptTest(MemoryServiceTestCase):
+    """Il cancello dell'archivio deve sapere che l'archivio esiste.
+
+    Chiedendo solo "l'informazione basta a rispondere?", "non lo so" e' una
+    risposta valida: il modello dice di si' e il recupero non parte mai. Su una
+    run lunga due domande su tre non hanno interrogato l'archivio mentre il dato
+    c'era. Le due cose che il prompt deve dire sono che un archivio esiste, e
+    che rispondere False e' quello che lo apre.
+    """
+
+    tool_responses = {"InformationSufficiency": {"is_sufficient": True}}
+
+    def sufficiency_prompt(self):
+        self.agent.state["messages"] = [
+            HumanMessage(content="che cosa sai della mia alimentazione?")]
+        self.agent.run_memory_agent("retrieve")
+
+        for invocation in self.llm.invocations:
+            if "InformationSufficiency" in invocation["tools"]:
+                return invocation["prompt"].lower()
+        raise AssertionError("la sufficienza non e' mai stata valutata")
+
+    def test_the_prompt_says_that_an_archive_exists(self):
+        self.assertIn("archive", self.sufficiency_prompt(),
+                      "senza sapere che c'e' un altrove, il modello valuta un "
+                      "contesto chiuso e risponde sempre di si'")
+
+    def test_the_prompt_says_that_saying_no_is_what_searches_it(self):
+        prompt = self.sufficiency_prompt()
+
+        self.assertIn("false", prompt,
+                      "il modello deve sapere cosa comporta rispondere False, "
+                      "altrimenti quella risposta non ha nessun significato utile")
 
 
 class SpeakerSeparationTest(MemoryServiceTestCase):
@@ -642,12 +673,6 @@ class RetrieveMemoryToolTest(MemoryServiceTestCase):
         self.assertIn("a live fact", result)
         self.assertNotIn("a deleted fact", result)
         self.assertNotIn("a superseded fact", result)
-
-    def test_entries_without_a_status_are_treated_as_active(self):
-        # Whatever was written before consolidation existed must stay readable.
-        self.vector_store.add_texts(texts=["a legacy fact"], ids=["memory_legacy"])
-
-        self.assertIn("a legacy fact", retrieve_memory.invoke({"query": "legacy"}))
 
     def test_no_results(self):
         self.assertEqual(
