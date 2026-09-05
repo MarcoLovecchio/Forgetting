@@ -270,21 +270,30 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     return archived
 
 
-def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str]]:
-    """The k active archival memories closest to a text, as (id, content) pairs."""
+def search_archive(query: str,
+                   k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str, float]]:
+    """The k active archival memories closest to a text.
+
+    Returns (id, content, distance) triples. The distance is the store's own,
+    raw: lower means closer. It is not normalised on purpose - the mapping to a
+    0-1 "relevance" depends on the collection's metric and on whether the
+    embeddings are normalised, so a converted number would look meaningful while
+    being wrong. What it is for is choosing a threshold by looking at the values
+    a real run produces.
+    """
     try:
         k = max(1, int(k))
     except (TypeError, ValueError):
         k = ARCHIVE_CANDIDATES_K
 
     try:
-        docs = backends.get_vector_store().similarity_search(
+        found = backends.get_vector_store().similarity_search_with_score(
             query, k=k, filter={"status": "active"})
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
 
-    return [(doc.id, doc.page_content) for doc in docs]
+    return [(doc.id, doc.page_content, float(distance)) for doc, distance in found]
 
 
 NO_ARCHIVAL_RESULTS = "No relevant active memories found."
@@ -303,7 +312,11 @@ def retrieve_active_archival_memories(query: str, k: int = 3) -> str:
     results = search_archive(query, k=k)
     if not results:
         return NO_ARCHIVAL_RESULTS
-    return "\n".join(f"ID: {doc_id}, Content: {content}" for doc_id, content in results)
+    # La distanza esce insieme al contenuto perche' questa stringa e' l'unico
+    # canale verso il resoconto: chi legge deve poter distinguere una memoria
+    # centrata da una raschiata dal fondo per riempire k.
+    return "\n".join(f"ID: {doc_id}, Content: {content}, Distance: {distance:.3f}"
+                      for doc_id, content, distance in results)
 
 
 def build_candidate_memories(
@@ -314,7 +327,9 @@ def build_candidate_memories(
     """Memories the classifier may point at: the active core ones, plus the archival
     ones that look related to the text being consolidated."""
     candidates = serialize_core_memory_with_ids(core_memory)
-    for doc_id, content in search_archive(query, k=k):
+    # La distanza qui non serve: al classificatore interessa a cosa puntare,
+    # non quanto il vettoriale ci abbia creduto.
+    for doc_id, content, _ in search_archive(query, k=k):
         if doc_id not in candidates:
             candidates[doc_id] = content
     return candidates

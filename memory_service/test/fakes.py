@@ -169,6 +169,22 @@ class FakeVectorStore:
             "metadatas": [self.metadatas.get(doc_id, {}) for doc_id in selected],
         }
 
+    def similarity_search_with_score(self, query, k=3, filter=None, **kwargs):
+        """Come similarity_search, ma con la distanza accanto a ogni documento.
+
+        Il punteggio finto e' derivato dal punteggio di sovrapposizione: piu'
+        parole in comune, distanza minore. Non ha nessun significato assoluto,
+        serve solo perche' i test possano verificare che il numero viaggi.
+        """
+        docs = self.similarity_search(query, k=k, filter=filter, **kwargs)
+        words = {word.lower() for word in str(query).split()}
+
+        def distance(text):
+            shared = len(words & {word.lower() for word in text.split()})
+            return round(1.0 / (1 + shared), 3)
+
+        return [(doc, distance(doc.page_content)) for doc in docs]
+
     def similarity_search(self, query, k=3, filter=None, **kwargs):
         if not isinstance(k, int):
             raise TypeError(f"k must be an int, got {type(k).__name__}")

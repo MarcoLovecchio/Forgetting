@@ -38,6 +38,7 @@ from memory_service.consolidation import (  # noqa: E402
     archive_items,
     get_active_items,
     reinforce_archived_item,
+    retrieve_active_archival_memories,
     search_archive,
     serialize_retrieved_for_response,
     supersede_archived_item,
@@ -414,7 +415,28 @@ class ArchiveSearchTest(unittest.TestCase):
         results = search_archive("gatto", k=3)
 
         self.assertEqual(len(results), 3, "i candidati attivi devono essere k")
-        self.assertTrue(all(doc_id.startswith("live_") for doc_id, _ in results))
+        self.assertTrue(all(doc_id.startswith("live_") for doc_id, _, _ in results))
+
+    def test_every_result_carries_its_distance(self):
+        self.fill(tombstones=0, active=3)
+
+        results = search_archive("gatto", k=3)
+
+        self.assertTrue(all(isinstance(distance, float) for _, _, distance in results))
+
+    def test_the_distance_reaches_the_retrieval_string(self):
+        """E' l'unico canale verso il resoconto.
+
+        Senza il numero, tre risultati si leggono tutti uguali e non c'e' modo di
+        distinguere una memoria centrata da una raschiata dal fondo per riempire
+        k - che e' proprio l'informazione che serve per tarare una soglia.
+        """
+        self.fill(tombstones=0, active=2)
+
+        retrieved = retrieve_active_archival_memories("gatto", k=2)
+
+        for line in retrieved.splitlines():
+            self.assertIn("Distance:", line)
 
     def test_the_search_delegates_the_filter_to_the_store(self):
         self.fill(tombstones=2, active=5)
@@ -443,7 +465,7 @@ class ArchiveSearchTest(unittest.TestCase):
         results = search_archive("gatto", k=3)
 
         self.assertEqual(len(results), 2)
-        self.assertTrue(all(doc_id.startswith("live_") for doc_id, _ in results))
+        self.assertTrue(all(doc_id.startswith("live_") for doc_id, _, _ in results))
 
 
 if __name__ == "__main__":
