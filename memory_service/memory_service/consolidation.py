@@ -41,8 +41,7 @@ from pydantic import BaseModel, Field
 
 from memory_service import backends
 
-# How many archival memories are offered to the classifier as possible targets.
-ARCHIVE_CANDIDATES_K = 5
+ARCHIVE_CANDIDATES_K = 3
 
 
 MemoryStatus = Literal["active", "superseded", "deleted"]
@@ -139,7 +138,6 @@ class SplitCoreAndArchivalMemory(BaseModel):
     decisions: List[MemorySplitDecision]
 
 
-# The classifier improvises on the labels more often than one would like.
 _OPERATION_ALIASES = {
     "new": "new", "create": "new", "add": "new", "insert": "new",
     "redundant": "redundant", "reinforce": "redundant", "duplicate": "redundant",
@@ -312,9 +310,6 @@ def retrieve_active_archival_memories(query: str, k: int = 3) -> str:
     results = search_archive(query, k=k)
     if not results:
         return NO_ARCHIVAL_RESULTS
-    # La distanza esce insieme al contenuto perche' questa stringa e' l'unico
-    # canale verso il resoconto: chi legge deve poter distinguere una memoria
-    # centrata da una raschiata dal fondo per riempire k.
     return "\n".join(f"ID: {doc_id}, Content: {content}, Distance: {distance:.3f}"
                       for doc_id, content, distance in results)
 
@@ -327,8 +322,6 @@ def build_candidate_memories(
     """Memories the classifier may point at: the active core ones, plus the archival
     ones that look related to the text being consolidated."""
     candidates = serialize_core_memory_with_ids(core_memory)
-    # La distanza qui non serve: al classificatore interessa a cosa puntare,
-    # non quanto il vettoriale ci abbia creduto.
     for doc_id, content, _ in search_archive(query, k=k):
         if doc_id not in candidates:
             candidates[doc_id] = content

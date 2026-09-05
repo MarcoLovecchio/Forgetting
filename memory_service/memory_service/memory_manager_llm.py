@@ -21,25 +21,19 @@ from memory_service.consolidation import (
     serialize_core_memory_for_prompt,
 )
 
-# Define the agent state.
-# NOTE: TypedDict does not support default values, so every key has to be provided
-# by the caller (see MemoryAgent.__init__ for the initial values).
 class AgentState(TypedDict):
     messages: list
     tool_calls: list[Dict[str, Any]]
-    core_memory: list[CoreMemoryItem]  # active items only, see memory_service.consolidation
+    core_memory: list[CoreMemoryItem]
     operation_log: list[OperationLogEntry]
     retrieved_memory: str
-    current_query: str  # domanda a cui il ramo retrieve deve rispondere
+    current_query: str
     current_interaction: Literal["insert", "retrieve"]
-    maximum_historical_messages: int  # Limit the number of historical messages to keep
-    core_memory_limit: int  # Character limit for core memory
-    generate_answer: bool  # see MemoryConfig.generate_answer
+    maximum_historical_messages: int
+    core_memory_limit: int
+    generate_answer: bool
 
 
-# The chat model and the archival vector store are built on first use, see
-# memory_service.backends. Tests (and any other application) can replace them
-# with backends.configure(llm=..., vector_store=...).
 def get_llm():
     """Chat model used by every node of the graph."""
     return backends.get_llm()
@@ -73,12 +67,6 @@ def messages_to_str(messages) -> str:
         return str(messages)
 
 
-# Asking for the tool is not the same as getting it: with a temperature that
-# is deliberately not zero, the model occasionally answers in prose instead of
-# emitting the call. Where a tool call is ALWAYS the expected outcome, that is
-# silent data loss - the node stores nothing and the messages are trimmed all
-# the same - so the call is required rather than hoped for. An empty result is
-# still expressible: the model can return no memories, no decisions.
 REQUIRED = "required"
 
 
@@ -190,7 +178,11 @@ def retrieval_node(state: AgentState):
     print("\tRetrieval node activated")
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are an agent who retrieves memories from the archive to enhance currently available context.
-         Current memory context: {core_memory}"""),
+         Current memory context: {core_memory}
+
+         Write the search query in the same language as the user's question: the archive
+         stores memories in the language the user speaks, and a query in another language
+         lands further from the memory it should find."""),
         ("human", "{input}")
     ])
 
@@ -330,13 +322,14 @@ For context only, what the assistant replied - do NOT extract facts from here:
 {assistant_messages}
 
 Known memories (id: content) are: {core_memory}.
-Focus on preferences, opinions, or personal facts mentioned by the user.""")
+Focus on preferences, opinions, or personal facts mentioned by the user.
+State each fact as it is true now, not as a change. The link to the memory being replaced
+goes in target_item_id, not in the text.
+Write each fact in the same language the user used in their messages above,
+not the language of these instructions.""")
     ])
     summarizer_llm = get_llm().bind_tools([InsertCoreMemories], tool_choice=REQUIRED)
     chain = prompt | summarizer_llm
-    # The classifier can point at core memories and at related archival ones. The
-    # search uses the user's words only: searching with the assistant's reply would
-    # surface exactly the memories the assistant was quoting.
     core_memories = build_candidate_memories(state["core_memory"], user_messages)
     response = chain.invoke({
         "user_messages": user_messages,
@@ -349,8 +342,6 @@ Focus on preferences, opinions, or personal facts mentioned by the user.""")
 def summarize_core_memories_node(state: AgentState):
 
     active_items = get_active_items(state["core_memory"])
-    # La lunghezza di ogni memoria e' nel prompt apposta: senza, al modello si
-    # chiede di rispettare un limite in caratteri senza dargli modo di contarli.
     core_memory_display = "\n".join(
         f"{item.id}: {item.content} ({len(item.content)} characters)" for item in active_items)
     used = core_memory_length(state["core_memory"])

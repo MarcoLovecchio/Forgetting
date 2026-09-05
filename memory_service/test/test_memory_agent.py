@@ -565,6 +565,109 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
         self.assertNotIn(self.ONLY_THE_ASSISTANT_SAYS_THIS, query)
 
 
+class LanguageRuleTest(MemoryServiceTestCase):
+    """La lingua delle memorie non deve dipendere dal modello di turno.
+
+    Nessun prompt l'ha mai fissata: le memorie sono state in italiano finche' il
+    modello ha scelto cosi', e sono passate all'inglese - la lingua delle
+    istruzioni - al cambio di modello, senza che una riga cambiasse. La regola
+    serve in due punti perche' le lingue che devono coincidere sono due: quella
+    in cui le memorie vengono scritte e quella in cui vengono cercate. Fissarne
+    una sola sposta il disallineamento, non lo toglie.
+    """
+
+    tool_responses = {
+        "InsertCoreMemories": {"memories": []},
+        "InformationSufficiency": {"is_sufficient": False},
+        "retrieve_memory": {"query": "irrilevante", "k": 3},
+    }
+
+    def prompt_of(self, tool_name):
+        for invocation in self.llm.invocations:
+            if tool_name in invocation["tools"]:
+                return invocation["prompt"].lower()
+        raise AssertionError(f"{tool_name} non e' mai stato invocato")
+
+    def consolidate(self):
+        self.agent.state["messages"] = [
+            HumanMessage(content="mi chiamo Bianca"),
+            AIMessage(content="piacere"),
+            HumanMessage(content="e vivo a Palermo"),
+            AIMessage(content="bella citta'"),
+            HumanMessage(content="a domani"),
+            AIMessage(content="a domani"),
+            HumanMessage(content="ciao"),
+            AIMessage(content="ciao"),
+        ]
+        self.agent.run_memory_agent("insert")
+
+    def test_the_consolidation_prompt_pins_the_language_of_the_facts(self):
+        self.consolidate()
+
+        self.assertIn("same language the user used",
+                      self.prompt_of("InsertCoreMemories"))
+
+    def test_the_rule_says_which_of_the_two_languages_it_means(self):
+        # Al modello ne arrivano due insieme: l'italiano dell'utente e l'inglese
+        # delle istruzioni. "Scrivi nella lingua che ricevi" e' ambiguo proprio
+        # nel punto che conta, e l'inglese e' una lettura legittima.
+        self.consolidate()
+
+        self.assertIn("not the language of these instructions",
+                      self.prompt_of("InsertCoreMemories"))
+
+    def test_the_retrieval_prompt_pins_the_language_of_the_query(self):
+        # La query la scrive il modello, in una chiamata sua: senza la regola
+        # qui, memorie in italiano e domanda in italiano possono comunque
+        # incontrarsi attraverso una query in inglese, e la distanza cresce.
+        self.agent.state["messages"] = [HumanMessage(content="dove abito?")]
+        self.agent.run_memory_agent("retrieve")
+
+        self.assertIn("same language as the user's question",
+                      self.prompt_of("retrieve_memory"))
+
+
+class FactShapeTest(MemoryServiceTestCase):
+    """Il testo di una memoria deve dire il fatto, non la modifica.
+
+    Il contenuto e' quello che viene incorporato: ogni parola che racconta la
+    storia dell'item invece del fatto entra nel vettore e lo sposta lontano dalle
+    domande che quel fatto dovrebbe attrarre. In una run vera "User now lives in
+    Mondello (a coastal district of Palermo), updating her previous location
+    memory" e' finito a 0.789 da "dove abito?", a 48 millesimi da una memoria che
+    non c'entrava nulla. La lineage ha gia' due posti suoi, target_item_id e
+    l'operation log.
+    """
+
+    tool_responses = {"InsertCoreMemories": {"memories": []}}
+
+    def consolidation_prompt(self):
+        self.agent.state["messages"] = [
+            HumanMessage(content="mi sono trasferita a Mondello"),
+            AIMessage(content="segnato"),
+            HumanMessage(content="a domani"),
+            AIMessage(content="a domani"),
+            HumanMessage(content="ciao"),
+            AIMessage(content="ciao"),
+        ]
+        self.agent.run_memory_agent("insert")
+
+        for invocation in self.llm.invocations:
+            if "InsertCoreMemories" in invocation["tools"]:
+                return invocation["prompt"]
+        raise AssertionError("il consolidamento non e' mai stato invocato")
+
+    def test_the_prompt_asks_for_the_current_state_not_the_change(self):
+        self.assertIn("State each fact as it is true now, not as a change",
+                      self.consolidation_prompt())
+
+    def test_the_prompt_says_where_the_lineage_goes_instead(self):
+        # Vietare senza dare un'alternativa lascia il modello a inventarsela:
+        # il collegamento ha gia' un campo suo nello schema.
+        self.assertIn("goes in target_item_id, not in the text",
+                      self.consolidation_prompt())
+
+
 class ToolChoiceSpy:
     """Registra come vengono legati gli strumenti, senza cambiare il risultato.
 
