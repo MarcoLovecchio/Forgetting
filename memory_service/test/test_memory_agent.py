@@ -306,10 +306,10 @@ class MalformedToolCallTest(MemoryServiceTestCase):
 
 
 class RetrieveInteractionTest(MemoryServiceTestCase):
-    tool_responses = {"InformationSufficiency": {"is_sufficient": True}}
+    tool_responses = {"NoSearchNeeded": {"reason": "Bianca is vegetarian"}}
     default_content = "Yes, you are vegetarian."
 
-    def test_sufficient_information_answers_without_retrieval(self):
+    def test_deciding_not_to_search_leaves_the_archive_alone(self):
         self.agent.state["core_memory"] = [CoreMemoryItem(content="Bianca is vegetarian")]
         self.agent.state["messages"] = [HumanMessage(content="What are my dietary preferences?")]
 
@@ -319,6 +319,9 @@ class RetrieveInteractionTest(MemoryServiceTestCase):
         self.assertEqual(self.vector_store.searches, [], "the archive must not be queried")
 
     def test_retrieve_result_is_cached_until_the_next_insert(self):
+        # La seconda meta' - che un insert butti via la cache - non era coperta
+        # da nessun test, e senza di lei la prima duplica soltanto
+        # CurrentQueryTest.test_the_same_question_is_still_cached.
         self.agent.state["messages"] = [HumanMessage(content="What are my dietary preferences?")]
 
         self.agent.run_memory_agent("retrieve")
@@ -328,16 +331,23 @@ class RetrieveInteractionTest(MemoryServiceTestCase):
         self.assertEqual(
             len(self.llm.invocations), calls_after_first, "second retrieve is served from cache")
 
+        self.agent.run_memory_agent("insert")
+        self.agent.run_memory_agent("retrieve")
+
+        self.assertGreater(
+            len(self.llm.invocations), calls_after_first,
+            "dopo un insert la memoria puo' essere cambiata: la risposta in "
+            "cache non vale piu'")
+
 
 class RetrieveWithArchiveTest(MemoryServiceTestCase):
     tool_responses = {
-        "InformationSufficiency": {"is_sufficient": False},
         # k deliberately arrives as a string, as the LLMs often do
         "retrieve_memory": {"query": "afternoon drink", "k": "2"},
     }
     default_content = "You like black tea in the afternoon."
 
-    def test_insufficient_information_goes_through_the_archive(self):
+    def test_a_decision_to_search_reaches_the_archive(self):
         self.vector_store.add_texts(
             texts=["User likes black tea in the afternoon", "User prefers coffee in the morning"],
             ids=["memory_a", "memory_b"],
@@ -366,7 +376,7 @@ class AnswerGenerationSwitchTest(MemoryServiceTestCase):
     invece di tre messaggi.
     """
 
-    tool_responses = {"InformationSufficiency": {"is_sufficient": True}}
+    tool_responses = {"NoSearchNeeded": {"reason": "basta la core memory"}}
     default_content = "una risposta qualsiasi"
 
     def run_retrieve(self, generate_answer):
@@ -384,13 +394,13 @@ class AnswerGenerationSwitchTest(MemoryServiceTestCase):
         state, calls = self.run_retrieve(generate_answer=True)
 
         self.assertEqual(len(state["messages"]), 2, "domanda piu' risposta")
-        self.assertEqual(calls, 2, "sufficienza piu' generazione")
+        self.assertEqual(calls, 2, "la decisione piu' la generazione")
 
     def test_switched_off_it_costs_one_call_less_and_appends_nothing(self):
         state, calls = self.run_retrieve(generate_answer=False)
 
         self.assertEqual(len(state["messages"]), 1, "resta solo la domanda dell'utente")
-        self.assertEqual(calls, 1, "solo la sufficienza")
+        self.assertEqual(calls, 1, "solo la decisione")
 
 
 class CurrentQueryTest(MemoryServiceTestCase):
@@ -402,7 +412,6 @@ class CurrentQueryTest(MemoryServiceTestCase):
     """
 
     tool_responses = {
-        "InformationSufficiency": {"is_sufficient": False},
         "retrieve_memory": {"query": "irrilevante", "k": 3},
     }
     default_content = "risposta"
@@ -475,39 +484,42 @@ def _tool_name(tool):
     return getattr(tool, "__name__", None) or getattr(tool, "name", str(tool))
 
 
-class SufficiencyPromptTest(MemoryServiceTestCase):
-    """Il cancello dell'archivio deve sapere che l'archivio esiste.
+class ArchiveGatePromptTest(MemoryServiceTestCase):
+    """Chi decide deve sapere che l'archivio esiste.
 
-    Chiedendo solo "l'informazione basta a rispondere?", "non lo so" e' una
-    risposta valida: il modello dice di si' e il recupero non parte mai. Su una
-    run lunga due domande su tre non hanno interrogato l'archivio mentre il dato
-    c'era. Le due cose che il prompt deve dire sono che un archivio esiste, e
-    che rispondere False e' quello che lo apre.
+    Era la lezione del vecchio nodo di sufficienza: chiedendo solo "quello che
+    hai basta?", "non lo so" e' una risposta valida, il modello dice di si' e il
+    recupero non parte mai - su una run lunga due domande su tre non hanno
+    interrogato l'archivio mentre il dato c'era. La decisione adesso e' fusa nel
+    nodo di recupero, e la lezione doveva traslocare con lei.
     """
 
-    tool_responses = {"InformationSufficiency": {"is_sufficient": True}}
+    tool_responses = {"NoSearchNeeded": {"reason": "e' gia' fra i fatti a portata"}}
 
-    def sufficiency_prompt(self):
+    def retrieval_prompt(self):
         self.agent.state["messages"] = [
             HumanMessage(content="che cosa sai della mia alimentazione?")]
         self.agent.run_memory_agent("retrieve")
 
         for invocation in self.llm.invocations:
-            if "InformationSufficiency" in invocation["tools"]:
+            if "retrieve_memory" in invocation["tools"]:
                 return invocation["prompt"].lower()
-        raise AssertionError("la sufficienza non e' mai stata valutata")
+        raise AssertionError("il nodo di recupero non e' mai stato invocato")
 
     def test_the_prompt_says_that_an_archive_exists(self):
-        self.assertIn("archive", self.sufficiency_prompt(),
+        self.assertIn("archive", self.retrieval_prompt(),
                       "senza sapere che c'e' un altrove, il modello valuta un "
-                      "contesto chiuso e risponde sempre di si'")
+                      "contesto chiuso e non cerca mai")
 
-    def test_the_prompt_says_that_saying_no_is_what_searches_it(self):
-        prompt = self.sufficiency_prompt()
+    def test_the_prompt_says_which_call_opens_it(self):
+        self.assertIn("retrieve_memory", self.retrieval_prompt(),
+                      "il modello deve sapere quale delle due chiamate guarda "
+                      "nell'archivio, altrimenti la scelta e' fra due etichette")
 
-        self.assertIn("false", prompt,
-                      "il modello deve sapere cosa comporta rispondere False, "
-                      "altrimenti quella risposta non ha nessun significato utile")
+    def test_not_knowing_is_not_offered_as_a_way_out(self):
+        # E' il buco da cui passava il vecchio cancello: senza questa riga
+        # "non lo so" e' una risposta accettabile e la ricerca non parte.
+        self.assertIn("is not an answer", self.retrieval_prompt())
 
 
 class SpeakerSeparationTest(MemoryServiceTestCase):
@@ -578,7 +590,6 @@ class LanguageRuleTest(MemoryServiceTestCase):
 
     tool_responses = {
         "InsertCoreMemories": {"memories": []},
-        "InformationSufficiency": {"is_sufficient": False},
         "retrieve_memory": {"query": "irrilevante", "k": 3},
     }
 
@@ -714,15 +725,19 @@ class ToolChoiceTest(MemoryServiceTestCase):
 
 
 class RetrieveToolChoiceTest(MemoryServiceTestCase):
-    """Sul percorso di recupero solo la sufficienza e' obbligatoria."""
+    """Sul ramo di recupero la chiamata e' obbligatoria, la scelta resta libera.
 
-    tool_responses = {
-        "InformationSufficiency": {"is_sufficient": False},
-        "retrieve_memory": {"query": "te nero", "k": 2},
-    }
+    Prima questo nodo era l'unico non forzato, perche' non cercare doveva restare
+    possibile. Ma si esprimeva non emettendo la tool call, e un modello che
+    sbaglia a emetterla lascia esattamente lo stesso stato: la decisione e il
+    guasto erano indistinguibili. Con due strumenti la stessa liberta' passa da
+    NoSearchNeeded, che si vede.
+    """
+
+    tool_responses = {"retrieve_memory": {"query": "te nero", "k": 2}}
     default_content = "Bevi te nero il pomeriggio."
 
-    def test_sufficiency_is_required_and_retrieval_is_not(self):
+    def test_both_ways_out_are_bound_and_one_of_them_is_mandatory(self):
         self.vector_store.add_texts(
             texts=["All'utente piace il te nero"], ids=["memory_a"],
             metadatas=[{"status": "active"}])
@@ -731,10 +746,9 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
         spy = ToolChoiceSpy(self, self.llm)
         self.agent.run_memory_agent("retrieve")
 
-        self.assertEqual(spy.calls.get("InformationSufficiency"), "required")
-        self.assertIsNone(
-            spy.calls.get("retrieve_memory"),
-            "decidere di non recuperare e' una risposta valida, non un fallimento")
+        self.assertEqual(spy.calls.get("retrieve_memory"), "required")
+        self.assertEqual(spy.calls.get("NoSearchNeeded"), "required",
+                         "non cercare deve essere una risposta, non un silenzio")
 
 
 class AppendMessageTest(MemoryServiceTestCase):

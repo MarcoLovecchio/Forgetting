@@ -41,8 +41,7 @@ from pydantic import BaseModel, Field
 
 from memory_service import backends
 
-ARCHIVE_CANDIDATES_K = 3
-
+ARCHIVE_CANDIDATES_K = 5
 
 MemoryStatus = Literal["active", "superseded", "deleted"]
 MemoryOperationType = Literal["new", "redundant", "update", "contradict", "delete"]
@@ -272,12 +271,16 @@ def search_archive(query: str,
                    k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str, float]]:
     """The k active archival memories closest to a text.
 
-    Returns (id, content, distance) triples. The distance is the store's own,
-    raw: lower means closer. It is not normalised on purpose - the mapping to a
-    0-1 "relevance" depends on the collection's metric and on whether the
-    embeddings are normalised, so a converted number would look meaningful while
-    being wrong. What it is for is choosing a threshold by looking at the values
-    a real run produces.
+    Returns (id, content, distance) triples, lower meaning closer. The number is
+    the store's own, on the metric the collection was created with: cosine
+    distance for an archive built with backends.ARCHIVE_DISTANCE, which reads as
+    a fraction and in practice stays below 1. An archive created before that
+    setting measures Chroma's squared euclidean instead - exactly twice as large
+    for the same pair - and backends warns about it on startup.
+
+    Not converted to a 0-1 "relevance" here on purpose: the converted number
+    would read the same on both scales and hide which one produced it. What it is
+    for is choosing a threshold by looking at the values a real run produces.
     """
     try:
         k = max(1, int(k))

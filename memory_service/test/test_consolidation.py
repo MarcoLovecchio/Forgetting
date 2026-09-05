@@ -230,7 +230,6 @@ class ConsolidationLifecycleTest(unittest.TestCase):
             7, "retrieve", "la risposta pesca dall'archivio, i tombstone restano fuori")
         self.llm.script(
             {
-                "InformationSufficiency": {"is_sufficient": False},
                 "retrieve_memory": {"query": "calorie obiettivo", "k": 10},
             },
             default_content="Il tuo obiettivo e' 2200 calorie al giorno.",

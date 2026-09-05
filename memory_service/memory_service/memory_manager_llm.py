@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END, START
@@ -69,6 +69,10 @@ def messages_to_str(messages) -> str:
 
 REQUIRED = "required"
 
+# Cosa finisce in tool_calls quando il modello decide di non interrogare
+# l'archivio. Non e' una memoria: retrieved_memory non lo vede.
+NO_SEARCH_NEEDED = "No archive search: the facts at hand were enough."
+
 
 def split_by_speaker(messages):
     """Le due voci separate: i fatti vengono dall'utente, il resto e' contesto."""
@@ -77,18 +81,22 @@ def split_by_speaker(messages):
     return messages_to_str(said_by_user), messages_to_str(said_by_assistant)
 
 
-# Tool to check if information is sufficient to answer the query
-class InformationSufficiency(BaseModel):
-    """Decides whether the known facts already contain what the query asks for.
+# The other half of the retrieval decision. It used to be a node of its own,
+# InformationSufficiency, asked one call earlier: a whole round trip whose only
+# output was a boolean deciding whether to make the next one - and the node that
+# followed could refuse to search anyway, so reaching the archive took two yeses.
+# Merged here it takes one, and because the choice is between two tools with
+# tool_choice=REQUIRED, "no search" is an answer the model has to give rather
+# than the absence of a tool call, which is indistinguishable from a malfunction.
+class NoSearchNeeded(BaseModel):
+    """Call this INSTEAD of retrieve_memory when the facts already at hand answer
+    the query on their own, and searching the archive would add nothing.
 
-    True means the answer is already there, in the facts listed in the prompt.
-    False starts a search in the archival memory, where older and less used
-    facts live: it is not a failure, it is how the archive gets opened.
+    Deciding not to search is a real decision and it is recorded as one. It is
+    not the same as not knowing: if the listed facts do not contain what the
+    query asks for, the archive is where to look, so call retrieve_memory."""
 
-    Not knowing is not an answer. If the listed facts do not contain the
-    information, the answer is False, so that the archive can be searched.
-    """
-    is_sufficient: bool
+    reason: str = Field(description="Which of the facts at hand already answers, in one line.")
 
 
 def query_and_history(state: AgentState):
@@ -115,53 +123,6 @@ def interaction_type_node(state: AgentState) -> str:
 def empty_node(state: AgentState) -> AgentState:
     return state
 
-def check_information_sufficiency(state: AgentState) -> bool:
-    print("\tChecking information sufficiency")
-
-    user_query, history = query_and_history(state)
-    if not user_query:
-        return False
-
-    core_memory = serialize_core_memory_for_prompt(state["core_memory"])
-    previous_messages = messages_to_str(history)
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You decide whether the assistant already has what it needs, or
-        whether it has to look into its archival memory first.
-
-        The known facts below are only the memories kept always at hand. Everything older
-        or less frequently used lives in an ARCHIVE that is not shown to you and that can
-        be searched: answering False is what starts that search, so False is not a
-        failure.
-
-        Answer True only when the known facts already contain what the query asks for.
-        Otherwise answer False: replying "I don't know" is not an answer, it is a lookup
-        that was not made."""),
-        ("human", """User query: {user_query}
-Known facts - only what is kept always at hand, the archive is not listed here:
-{core_memory}
-
-Your previous interactions:
-
-{previous_messages}
-
-Do the known facts already contain what this query asks for?""")
-    ])
-
-    router_llm = get_llm().bind_tools([InformationSufficiency], tool_choice=REQUIRED)
-    chain = prompt | router_llm
-    response = chain.invoke({"user_query": user_query, "core_memory": core_memory, "previous_messages": previous_messages})
-    # extract and coerce
-    try:
-        is_sufficient = response.tool_calls[0]['args']["is_sufficient"]
-        if isinstance(is_sufficient, str):
-            is_sufficient = is_sufficient.strip().lower() in ["true", "1", "yes"]
-    except Exception:
-        is_sufficient = False
-    print(f"\tInformation sufficiency: {is_sufficient}")
-
-    return bool(is_sufficient)
-
-
 # Tool to retrieve memories from the archive
 @tool
 def retrieve_memory(query: str, k: int = 3) -> str:
@@ -177,24 +138,40 @@ def retrieve_memory(query: str, k: int = 3) -> str:
 def retrieval_node(state: AgentState):
     print("\tRetrieval node activated")
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are an agent who retrieves memories from the archive to enhance currently available context.
-         Current memory context: {core_memory}
+        ("system", """You decide whether the assistant already has what it needs, and when
+         it does not, you search its archival memory.
+
+         The facts below are only the memories kept always at hand. Everything older or
+         less frequently used lives in an ARCHIVE that is not listed here and that
+         retrieve_memory searches: calling it is what opens the archive, so calling it is
+         not a failure. Replying "I don't know" is not an answer, it is a lookup that was
+         not made. Call NoSearchNeeded only when the facts below already contain what the
+         query asks for.
 
          Write the search query in the same language as the user's question: the archive
          stores memories in the language the user speaks, and a query in another language
-         lands further from the memory it should find."""),
+         lands further from the memory it should find.
+
+         Facts kept at hand: {core_memory}
+
+         Your previous interactions:
+
+         {previous_messages}"""),
         ("human", "{input}")
     ])
 
-    # Bind tools to LLM
-    # Non forzato, a differenza degli altri: qui decidere di NON recuperare e'
-    # una risposta valida, ed e' il comportamento dell'architettura originale.
-    llm_with_tools = get_llm().bind_tools([retrieve_memory])
+    # Forzato, come gli altri, ma su una scelta fra due strumenti: "non cercare"
+    # resta una risposta valida e ora e' anche una risposta esplicita. Con un
+    # solo strumento non forzato quella scelta si esprimeva per assenza, e
+    # l'assenza e' identica a una tool call mancata.
+    llm_with_tools = get_llm().bind_tools([retrieve_memory, NoSearchNeeded],
+                                          tool_choice=REQUIRED)
 
     chain = prompt | llm_with_tools
-    user_query, _ = query_and_history(state)
+    user_query, history = query_and_history(state)
     response = chain.invoke({"input": user_query,
-                             "core_memory": serialize_core_memory_for_prompt(state["core_memory"])})
+                             "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
+                             "previous_messages": messages_to_str(history)})
 
     return {"tool_calls": state["tool_calls"] + [response]}
 
@@ -214,6 +191,11 @@ def tool_node(state: AgentState):
         if tool_name == "retrieve_memory":
             print(f"Invoking retrieve_memory with args: {tool_args}")
             result = retrieve_memory.invoke(tool_args)
+        elif tool_name == "NoSearchNeeded":
+            # Niente da eseguire: quello che conta e' che la decisione sia
+            # passata di qui, contabile, invece di non lasciare traccia.
+            print(f"\tNo archive search: {tool_args.get('reason', '')}")
+            result = NO_SEARCH_NEEDED
         elif tool_name == "InsertCoreMemories":
             print(f"Invoking InsertCoreMemories with args: {tool_args}")
             # Each extracted fact carries its own classification: consolidation
@@ -309,10 +291,9 @@ def summarize_memories_node(state: AgentState):
         given separately, as context to make sense of a short answer like "yes, that one",
         and are never themselves a source of facts.
 
-        For each fact decide whether it is new, redundant, an update, a contradict or - only
-        when the user explicitly asked to forget something - a delete with respect to an
-        existing memory, and reference that memory's id whenever the fact is not new.
-        Only include facts that are relevant and likely to be referenced in future interactions."""),
+        Only include facts that are relevant and likely to be referenced in future
+        interactions. How to classify each one, and when to reference the id of an
+        existing memory, is defined with the tool you must call."""),
         ("human", """What the user said - this is where the facts come from:
 
 {user_messages}
@@ -396,7 +377,6 @@ graph = StateGraph(AgentState)
 graph.add_node("retrieve", retrieval_node)
 graph.add_node("execute_tool", tool_node)
 graph.add_node("generate_answer", generate_answer)
-graph.add_node("router", empty_node)
 
 graph.add_edge("retrieve", "execute_tool")
 graph.add_edge("execute_tool", "generate_answer")
@@ -413,8 +393,7 @@ graph.add_edge("summarize_memories",  "execute_insertion_tool")
 graph.add_edge("summarize_core_memories",  "execute_core_split_tool")
 graph.add_edge("execute_core_split_tool", END)
 
-graph.add_conditional_edges(START, interaction_type_node, {'insert': "insert_memories", 'retrieve': "router"})
-graph.add_conditional_edges('router', check_information_sufficiency, {True: "generate_answer", False: "retrieve"})
+graph.add_conditional_edges(START, interaction_type_node, {'insert': "insert_memories", 'retrieve': "retrieve"})
 
 graph.add_conditional_edges('insert_memories', exceed_memory_limit, {True: "summarize_memories", False: END})
 graph.add_conditional_edges('execute_insertion_tool', exceed_core_memory_limit, {True: "summarize_core_memories", False: END})

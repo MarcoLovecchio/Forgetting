@@ -206,6 +206,21 @@ def _build_embeddings(config: MemoryConfig) -> Any:
     )
 
 
+ARCHIVE_DISTANCE = "cosine"
+ARCHIVE_COLLECTION_METADATA = {"hnsw:space": ARCHIVE_DISTANCE}
+
+
+def distance_mismatch(collection_metadata: Optional[dict]) -> Optional[str]:
+    """The metric of an existing collection, when it is not the one we ask for.
+
+    Worth a warning rather than a failure: the archive still works and the
+    ranking is unchanged, but every distance in the reports is on a different
+    scale, and a threshold tuned on one is wrong on the other.
+    """
+    space = (collection_metadata or {}).get("hnsw:space", "l2")
+    return None if space == ARCHIVE_DISTANCE else space
+
+
 def _build_vector_store(config: MemoryConfig) -> Any:
     # Same reasoning as above: chromadb and the embedding provider are only
     # needed when the archival memory is actually used.
@@ -217,9 +232,17 @@ def _build_vector_store(config: MemoryConfig) -> Any:
 
     # Create or get the collection
     try:
-        client.get_collection(name=config.collection_name)
+        existing = client.get_collection(name=config.collection_name)
     except NotFoundError:
-        client.create_collection(name=config.collection_name)
+        client.create_collection(name=config.collection_name,
+                                 metadata=dict(ARCHIVE_COLLECTION_METADATA))
+    else:
+        found = distance_mismatch(existing.metadata)
+        if found:
+            print(f"	WARNING: collection '{config.collection_name}' measures "
+                  f"'{found}' distance, not '{ARCHIVE_DISTANCE}'. It was created "
+                  f"before this setting: the distances in the reports are on the "
+                  f"'{found}' scale until the archive is rebuilt.")
 
     return Chroma(
         client=client,

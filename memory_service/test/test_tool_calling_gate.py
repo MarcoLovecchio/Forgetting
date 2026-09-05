@@ -8,7 +8,7 @@ fallisce in modi silenziosi, non con un errore.
 Quello che verifica, in ordine di difficolta' crescente per il modello:
 
     1. risponde                      una invocazione banale, senza tool
-    2. InformationSufficiency        un solo campo booleano
+    2. scelta fra due strumenti      retrieve_memory o NoSearchNeeded
     3. InsertCoreMemories            lista di oggetti annidati, enum a 5 valori
     4. trascrizione degli id         copiare un id dal prompt alla tool call
     5. SplitCoreAndArchivalMemory    una decisione per ogni memoria data
@@ -53,7 +53,10 @@ from memory_service.consolidation import (  # noqa: E402
     new_item_id,
     normalize_operation,
 )
-from memory_service.memory_manager_llm import InformationSufficiency  # noqa: E402
+from memory_service.memory_manager_llm import (  # noqa: E402
+    NoSearchNeeded,
+    retrieve_memory,
+)
 
 from snapshot import SEPARATOR, safe_print  # noqa: E402
 
@@ -187,25 +190,49 @@ class ToolCallingGateTest(ModelGateTestCase):
         NOTES.append(f"thinking configurato: {configured}, visibile in content: "
                      f"{'si' if thinking else 'no'}")
 
-    def test_2_information_sufficiency(self):
-        """Un solo campo booleano: se fallisce qui, non c'e' structured output."""
+    def _choice_chain(self):
+        """Il nodo di recupero: due strumenti legati insieme, uno obbligatorio."""
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "Sei uno strumento che valuta se le informazioni bastano."),
-            ("human", "Domanda: come mi chiamo?\nFatti noti: l'utente si chiama Bianca.\n"
-                      "Le informazioni sono sufficienti?"),
+            ("system", "Decidi se i fatti a portata bastano. Se bastano chiama "
+                       "NoSearchNeeded, altrimenti cerca in archivio con "
+                       "retrieve_memory. Fatti a portata: {core_memory}"),
+            ("human", "{query}"),
         ])
-        chain = prompt | self.llm.bind_tools(
-            [InformationSufficiency], tool_choice="required")
+        return prompt | self.llm.bind_tools(
+            [retrieve_memory, NoSearchNeeded], tool_choice="required")
+
+    def _chose(self, variables, expected):
+        """Ha chiamato lo strumento giusto?
+
+        Distingue il non scegliere dallo scegliere male: il primo e' structured
+        output rotto, il secondo e' un modello che non vede la differenza fra i
+        due strumenti. Sono due guasti diversi e si curano diverso.
+        """
+        chain = self._choice_chain()
 
         def attempt():
-            call = _tool_call(chain.invoke({}), "InformationSufficiency")
-            if call is None:
+            response = chain.invoke(variables)
+            calls = getattr(response, "tool_calls", None) or []
+            if not calls:
                 return "nessuna tool call"
-            if "is_sufficient" not in call["args"]:
-                return f"campo mancante: {call['args']}"
+            if calls[0].get("name") != expected:
+                return f"ha scelto {calls[0].get('name')} invece di {expected}"
             return None
 
-        self.assertRate("InformationSufficiency", attempt)
+        return attempt
+
+    def test_2a_it_can_decide_not_to_search(self):
+        """La risposta e' gia' fra i fatti noti: cercare sarebbe sprecato."""
+        self.assertRate("scelta: non cercare", self._chose(
+            {"core_memory": "l'utente si chiama Bianca", "query": "come mi chiamo?"},
+            "NoSearchNeeded"))
+
+    def test_2b_it_can_decide_to_search(self):
+        """Il fatto non c'e'. E' la direzione che il vecchio cancello sbagliava:
+        rispondeva "sufficiente" e l'archivio non veniva aperto mai."""
+        self.assertRate("scelta: cercare", self._chose(
+            {"core_memory": "l'utente si chiama Bianca", "query": "dove abito?"},
+            "retrieve_memory"))
 
     def test_3_insert_core_memories_shape(self):
         """Lista di oggetti annidati con enum: la struttura piu' difficile."""

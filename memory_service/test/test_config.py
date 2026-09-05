@@ -216,6 +216,29 @@ class BackendsTest(EnvironmentTestCase):
         self.assertIsNone(backends._vector_store)
 
 
+class ArchiveDistanceTest(unittest.TestCase):
+    """La metrica dell'archivio si sceglie alla creazione e poi non si cambia.
+
+    Chroma di default usa "l2", che da lei e' la distanza euclidea AL QUADRATO:
+    su vettori normalizzati va da 0 a 4, e una memoria centrata legge 0.25 mentre
+    una scollegata legge 1.08. La coseno ordina allo stesso modo ma si legge come
+    una frazione. Siccome la scelta e' irreversibile, un archivio creato prima
+    resta sulla vecchia scala: va detto, non corretto di nascosto.
+    """
+
+    def test_a_collection_on_cosine_is_not_reported(self):
+        self.assertIsNone(backends.distance_mismatch({"hnsw:space": "cosine"}))
+
+    def test_an_older_collection_reports_the_metric_it_actually_uses(self):
+        self.assertEqual(backends.distance_mismatch({"hnsw:space": "l2"}), "l2")
+
+    def test_no_metadata_means_the_chroma_default(self):
+        # Le collection create prima di questa impostazione non hanno il campo:
+        # l'assenza non e' "va bene", e' "l2".
+        self.assertEqual(backends.distance_mismatch(None), "l2")
+        self.assertEqual(backends.distance_mismatch({}), "l2")
+
+
 class LocalModelParametersTest(EnvironmentTestCase):
     """Che cosa arriva davvero al costruttore del chat model.
 
