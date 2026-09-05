@@ -79,11 +79,25 @@ class OperationLogEntry(BaseModel):
 # --------------------------------------------------------------------------- #
 
 class MemoryOperation(BaseModel):
-    """A fact extracted from the conversation, classified against what is known."""
+    """A fact extracted from the conversation, classified against what is known.
 
-    fact: str
+    The rules on how to word a fact live on the field itself rather than in the
+    prompt. They were in the prompt, at the end of a long human message, and a run
+    showed the model copying the user's sentences verbatim: an instruction buried
+    in a complex prompt is the weakest form there is. Here they sit next to the
+    thing being written.
+    """
+
+    fact: str = Field(description=(
+        "The fact itself. Write it about the user, in the third person, never as a copy "
+        "of the sentence the user wrote. State what is true now, not what changed. "
+        "Use the language the user spoke, not the language of these instructions."))
     operation: MemoryOperationType
-    target_item_id: Optional[str] = None
+    target_item_id: Optional[str] = Field(
+        default=None,
+        description=("Id of the memory this fact concerns, required for every operation "
+                     "except new. The link belongs here and never in the text of the "
+                     "fact."))
 
 
 class InsertCoreMemories(BaseModel):

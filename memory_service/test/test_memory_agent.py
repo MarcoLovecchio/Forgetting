@@ -12,6 +12,7 @@ test_consolidation.py; this file keeps the unit level checks.
 import contextlib
 import dataclasses
 import io
+import json
 import os
 import sys
 import unittest
@@ -27,7 +28,9 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
-from memory_service.consolidation import CoreMemoryItem  # noqa: E402
+from langchain_core.utils.function_calling import convert_to_openai_tool  # noqa: E402
+
+from memory_service.consolidation import CoreMemoryItem, InsertCoreMemories  # noqa: E402
 from memory_service.memory_manager_llm import (  # noqa: E402
     MemoryAgent,
     messages_to_str,
@@ -35,6 +38,16 @@ from memory_service.memory_manager_llm import (  # noqa: E402
 )
 
 from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
+
+
+def consolidation_tool_schema():
+    """Il testo che viaggia con lo strumento, non quello che sta nel prompt.
+
+    Le regole su come scrivere un fatto stanno sulle description dei campi di
+    MemoryOperation. Serializzare lo schema come fa langchain e' l'unico modo di
+    verificare che arrivino davvero al modello invece di essere solo definite.
+    """
+    return json.dumps(convert_to_openai_tool(InsertCoreMemories))
 
 
 # generate_answer e' acceso qui perche' molte classi esercitano il ramo
@@ -516,6 +529,18 @@ class ArchiveGatePromptTest(MemoryServiceTestCase):
                       "il modello deve sapere quale delle due chiamate guarda "
                       "nell'archivio, altrimenti la scelta e' fra due etichette")
 
+    def test_the_decision_is_asked_after_the_question_not_before(self):
+        # Il vecchio cancello chiudeva il messaggio umano con il quesito da
+        # decidere e apriva l'archivio 4 volte su 5. Fondendolo avevo lasciato
+        # per ultima la domanda dell'utente, con le istruzioni sepolte sopra:
+        # 0 su 3. La decisione deve stare nella posizione piu' recente.
+        prompt = self.retrieval_prompt()
+
+        self.assertLess(
+            prompt.index("che cosa sai della mia alimentazione?"),
+            prompt.index("already contain what this asks for"),
+            "il quesito deve venire dopo la domanda dell'utente, non prima")
+
     def test_not_knowing_is_not_offered_as_a_way_out(self):
         # E' il buco da cui passava il vecchio cancello: senza questa riga
         # "non lo so" e' una risposta accettabile e la ricerca non parte.
@@ -612,20 +637,15 @@ class LanguageRuleTest(MemoryServiceTestCase):
         ]
         self.agent.run_memory_agent("insert")
 
-    def test_the_consolidation_prompt_pins_the_language_of_the_facts(self):
-        self.consolidate()
-
-        self.assertIn("same language the user used",
-                      self.prompt_of("InsertCoreMemories"))
+    def test_the_fact_field_pins_the_language_of_the_facts(self):
+        self.assertIn("language the user spoke", consolidation_tool_schema())
 
     def test_the_rule_says_which_of_the_two_languages_it_means(self):
         # Al modello ne arrivano due insieme: l'italiano dell'utente e l'inglese
         # delle istruzioni. "Scrivi nella lingua che ricevi" e' ambiguo proprio
         # nel punto che conta, e l'inglese e' una lettura legittima.
-        self.consolidate()
-
         self.assertIn("not the language of these instructions",
-                      self.prompt_of("InsertCoreMemories"))
+                      consolidation_tool_schema())
 
     def test_the_retrieval_prompt_pins_the_language_of_the_query(self):
         # La query la scrive il modello, in una chiamata sua: senza la regola
@@ -636,6 +656,30 @@ class LanguageRuleTest(MemoryServiceTestCase):
 
         self.assertIn("same language as the user's question",
                       self.prompt_of("retrieve_memory"))
+
+
+class ExtractionStanceTest(MemoryServiceTestCase):
+    """Il system message deve dire che i fatti si estraggono e si classificano.
+
+    Avevo tolto quella frase perche' la tassonomia sta gia', parola per parola,
+    nel docstring dello strumento. Ed e' vero. Ma lo schema era identico nelle due
+    run: quella con la frase ha prodotto 1 fatto in prima persona su 33, quella
+    senza 17 su 28, ricopiati dalle frasi dell'utente. Non serviva il contenuto,
+    serviva la postura - e serviva nel prompt, non nello schema.
+    """
+
+    tool_responses = {"InsertCoreMemories": {"memories": []}}
+
+    def test_the_prompt_frames_facts_as_something_to_classify(self):
+        # Sopra la finestra di cinque, altrimenti il consolidamento non parte.
+        self.agent.state["messages"] = self.conversation(8)
+        self.agent.run_memory_agent("insert")
+
+        for invocation in self.llm.invocations:
+            if "InsertCoreMemories" in invocation["tools"]:
+                self.assertIn("decide which operation applies", invocation["prompt"])
+                return
+        raise AssertionError("il consolidamento non e' mai stato invocato")
 
 
 class FactShapeTest(MemoryServiceTestCase):
@@ -650,33 +694,23 @@ class FactShapeTest(MemoryServiceTestCase):
     l'operation log.
     """
 
-    tool_responses = {"InsertCoreMemories": {"memories": []}}
+    def test_the_fact_is_not_a_copy_of_the_user_sentence(self):
+        # E' il guasto osservato: su una run con le regole in fondo al blocco
+        # umano, 17 fatti su 28 erano la frase dell'utente ricopiata parola per
+        # parola, prima persona compresa.
+        schema = consolidation_tool_schema()
 
-    def consolidation_prompt(self):
-        self.agent.state["messages"] = [
-            HumanMessage(content="mi sono trasferita a Mondello"),
-            AIMessage(content="segnato"),
-            HumanMessage(content="a domani"),
-            AIMessage(content="a domani"),
-            HumanMessage(content="ciao"),
-            AIMessage(content="ciao"),
-        ]
-        self.agent.run_memory_agent("insert")
+        self.assertIn("third person", schema)
+        self.assertIn("never as a copy", schema)
 
-        for invocation in self.llm.invocations:
-            if "InsertCoreMemories" in invocation["tools"]:
-                return invocation["prompt"]
-        raise AssertionError("il consolidamento non e' mai stato invocato")
+    def test_the_field_asks_for_the_current_state_not_the_change(self):
+        self.assertIn("State what is true now, not what changed",
+                      consolidation_tool_schema())
 
-    def test_the_prompt_asks_for_the_current_state_not_the_change(self):
-        self.assertIn("State each fact as it is true now, not as a change",
-                      self.consolidation_prompt())
-
-    def test_the_prompt_says_where_the_lineage_goes_instead(self):
+    def test_the_lineage_goes_in_its_own_field(self):
         # Vietare senza dare un'alternativa lascia il modello a inventarsela:
         # il collegamento ha gia' un campo suo nello schema.
-        self.assertIn("goes in target_item_id, not in the text",
-                      self.consolidation_prompt())
+        self.assertIn("never in the text of the fact", consolidation_tool_schema())
 
 
 class ToolChoiceSpy:

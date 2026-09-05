@@ -69,8 +69,6 @@ def messages_to_str(messages) -> str:
 
 REQUIRED = "required"
 
-# Cosa finisce in tool_calls quando il modello decide di non interrogare
-# l'archivio. Non e' una memoria: retrieved_memory non lo vede.
 NO_SEARCH_NEEDED = "No archive search: the facts at hand were enough."
 
 
@@ -81,13 +79,6 @@ def split_by_speaker(messages):
     return messages_to_str(said_by_user), messages_to_str(said_by_assistant)
 
 
-# The other half of the retrieval decision. It used to be a node of its own,
-# InformationSufficiency, asked one call earlier: a whole round trip whose only
-# output was a boolean deciding whether to make the next one - and the node that
-# followed could refuse to search anyway, so reaching the archive took two yeses.
-# Merged here it takes one, and because the choice is between two tools with
-# tool_choice=REQUIRED, "no search" is an answer the model has to give rather
-# than the absence of a tool call, which is indistinguishable from a malfunction.
 class NoSearchNeeded(BaseModel):
     """Call this INSTEAD of retrieve_memory when the facts already at hand answer
     the query on their own, and searching the archive would add nothing.
@@ -141,29 +132,29 @@ def retrieval_node(state: AgentState):
         ("system", """You decide whether the assistant already has what it needs, and when
          it does not, you search its archival memory.
 
-         The facts below are only the memories kept always at hand. Everything older or
-         less frequently used lives in an ARCHIVE that is not listed here and that
-         retrieve_memory searches: calling it is what opens the archive, so calling it is
-         not a failure. Replying "I don't know" is not an answer, it is a lookup that was
-         not made. Call NoSearchNeeded only when the facts below already contain what the
-         query asks for.
-
-         Write the search query in the same language as the user's question: the archive
-         stores memories in the language the user speaks, and a query in another language
-         lands further from the memory it should find.
-
          Facts kept at hand: {core_memory}
 
          Your previous interactions:
 
-         {previous_messages}"""),
-        ("human", "{input}")
+         {previous_messages}
+
+         Those facts are only the memories kept always at hand. Everything older or less
+         frequently used lives in an ARCHIVE that is not listed above and that
+         retrieve_memory searches: calling it is what opens the archive, so calling it is
+         not a failure. Replying "I don't know" is not an answer, it is a lookup that was
+         not made. Call NoSearchNeeded only when the facts above already contain what the
+         query asks for.
+
+         Write the search query in the same language as the user's question: the archive
+         stores memories in the language the user speaks, and a query in another language
+         lands further from the memory it should find."""),
+        ("human", """{input}
+
+Do the facts kept at hand already contain what this asks for? If they do, call
+NoSearchNeeded. If they do not, or you are not sure, call retrieve_memory: the answer may
+be in the archive, and not looking is how it gets missed."""),
     ])
 
-    # Forzato, come gli altri, ma su una scelta fra due strumenti: "non cercare"
-    # resta una risposta valida e ora e' anche una risposta esplicita. Con un
-    # solo strumento non forzato quella scelta si esprimeva per assenza, e
-    # l'assenza e' identica a una tool call mancata.
     llm_with_tools = get_llm().bind_tools([retrieve_memory, NoSearchNeeded],
                                           tool_choice=REQUIRED)
 
@@ -192,24 +183,16 @@ def tool_node(state: AgentState):
             print(f"Invoking retrieve_memory with args: {tool_args}")
             result = retrieve_memory.invoke(tool_args)
         elif tool_name == "NoSearchNeeded":
-            # Niente da eseguire: quello che conta e' che la decisione sia
-            # passata di qui, contabile, invece di non lasciare traccia.
             print(f"\tNo archive search: {tool_args.get('reason', '')}")
             result = NO_SEARCH_NEEDED
         elif tool_name == "InsertCoreMemories":
             print(f"Invoking InsertCoreMemories with args: {tool_args}")
-            # Each extracted fact carries its own classification: consolidation
-            # decides whether it becomes a new item, reinforces, supersedes or
-            # deletes an existing one, in core memory or in the archive.
             state["core_memory"], result = apply_memory_operations(
                 tool_args.get("memories", []), state["core_memory"], state["operation_log"])
         elif tool_name == "SplitCoreAndArchivalMemory":
             print(f"Invoking SplitCoreAndArchivalMemory with args: {tool_args}")
             state["core_memory"], result = apply_split_decisions(
                 tool_args.get("decisions", []), state["core_memory"], state["operation_log"])
-            # Il limite resta una richiesta al modello, non un vincolo imposto:
-            # se non lo rispetta non si interviene, ma non deve passare in
-            # silenzio.
             remaining = core_memory_length(state["core_memory"])
             if remaining > state["core_memory_limit"]:
                 print(f"\tWARNING: core memory still over the limit after the split "
@@ -233,8 +216,6 @@ def tool_node(state: AgentState):
 
 def generate_answer(state: AgentState):
     if not state.get("generate_answer", True):
-        # Nothing is appended: the caller keeps whatever the assistant really
-        # said, instead of a reply the user never saw.
         print("\tAnswer generation disabled, skipping")
         return {}
 
@@ -291,9 +272,10 @@ def summarize_memories_node(state: AgentState):
         given separately, as context to make sense of a short answer like "yes, that one",
         and are never themselves a source of facts.
 
-        Only include facts that are relevant and likely to be referenced in future
-        interactions. How to classify each one, and when to reference the id of an
-        existing memory, is defined with the tool you must call."""),
+        For each fact you extract, decide which operation applies and reference the id of
+        the memory it concerns; the operations themselves are defined with the tool you
+        must call. Only include facts that are relevant and likely to be referenced in
+        future interactions."""),
         ("human", """What the user said - this is where the facts come from:
 
 {user_messages}
@@ -303,11 +285,7 @@ For context only, what the assistant replied - do NOT extract facts from here:
 {assistant_messages}
 
 Known memories (id: content) are: {core_memory}.
-Focus on preferences, opinions, or personal facts mentioned by the user.
-State each fact as it is true now, not as a change. The link to the memory being replaced
-goes in target_item_id, not in the text.
-Write each fact in the same language the user used in their messages above,
-not the language of these instructions.""")
+Focus on preferences, opinions, or personal facts mentioned by the user.""")
     ])
     summarizer_llm = get_llm().bind_tools([InsertCoreMemories], tool_choice=REQUIRED)
     chain = prompt | summarizer_llm
