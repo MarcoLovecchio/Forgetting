@@ -308,13 +308,18 @@ def summarize_memories_node(state: AgentState):
         What the user is doing with their words is never itself a fact.
         A question stores nothing. Asking to forget something is a delete
         on the memory it names, not a new memory about the request."""),
-        ("human", """What the user said - this is where the facts come from:
-
-{user_messages}
-
-For context only, what the assistant replied - do NOT extract facts from here:
+        # Il contesto prima, le fonti dopo: l'ordine non e' estetico. Con il
+        # blocco vietato in fondo era lui a occupare la posizione di recenza, e
+        # sui turni di sola domanda - dove il blocco utente non contiene fatti -
+        # era anche l'unico testo con sostanza nel prompt. Da li' uscivano le
+        # risposte dell'assistente riestratte come memorie.
+        ("human", """For context only, what the assistant replied - do NOT extract facts from here:
 
 {assistant_messages}
+
+What the user said - this is where the facts come from:
+
+{user_messages}
 
 Known memories (id: content) are: {core_memory}.
 Focus on preferences, opinions, or personal facts mentioned by the user.""")

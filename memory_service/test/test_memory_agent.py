@@ -725,13 +725,30 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
         self.consolidate()
         prompt = self.consolidation_prompt()
 
-        border = prompt.index("do NOT extract facts from here")
-        self.assertLess(
+        # Il confine e' l'etichetta del blocco utente: sopra il contesto, sotto
+        # le fonti. Se un giorno i blocchi tornassero nell'ordine di prima,
+        # questo test fallisce - e la correzione non e' capovolgere le
+        # asserzioni, e' il test qui sotto che dice perche'.
+        border = prompt.index("this is where the facts come from")
+        self.assertGreater(
             prompt.index("mi chiamo Bianca"), border,
             "quello che dice l'utente deve stare nella parte da cui si estrae")
-        self.assertGreater(
+        self.assertLess(
             prompt.index(self.ONLY_THE_ASSISTANT_SAYS_THIS), border,
             "la risposta dell'assistente deve stare nel contesto, non fra le fonti")
+
+    def test_the_user_block_is_the_last_thing_read(self):
+        # Il blocco vietato stava in fondo, cioe' nella posizione di recenza, e
+        # sui turni di sola domanda - dove il blocco utente non ha fatti - era
+        # l'unico testo con sostanza che il modello avesse davanti. Su una run
+        # vera i tre fatti di una risposta erano diventati tre operazioni.
+        self.consolidate()
+        prompt = self.consolidation_prompt()
+
+        self.assertLess(
+            prompt.index("do NOT extract facts from here"),
+            prompt.index("this is where the facts come from"),
+            "il contesto va letto prima, le fonti per ultime")
 
     def test_the_archive_is_searched_with_the_words_of_the_user(self):
         # Cercare con la risposta dell'assistente riporterebbe a galla proprio
