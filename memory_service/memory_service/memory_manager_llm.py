@@ -153,9 +153,10 @@ def retrieval_node(state: AgentState):
          not made. Call NoSearchNeeded only when the facts above already contain what the
          query asks for.
 
-         Write the search query in the same language as the user's question: the archive
-         stores memories in the language the user speaks, and a query in another language
-         lands further from the memory it should find."""),
+         Write the search query in the same language as the facts listed above: the
+         archive is written in that same language, which is not necessarily the one the
+         user is speaking right now. A query in the wrong language lands further from the
+         memory it should find."""),
         ("human", """{input}
 
 Do the facts kept at hand already contain what this asks for? If they do, call
@@ -241,6 +242,10 @@ def generate_answer(state: AgentState):
          The recalled memories are listed as ID, Content and Distance: answer from their
          content, and never mention the id or the number - they are bookkeeping, not
          something the user told you.
+
+         The memory is consolidated with a delay, so the exchanges above can already
+         correct or retract what the facts say. When the user has just changed something,
+         or has just asked you to forget it, the conversation wins over the stored fact.
 
          Answer in one or two sentences, in the language the user wrote in. If what you
          were given does not contain the answer, say so plainly instead of inventing it."""),

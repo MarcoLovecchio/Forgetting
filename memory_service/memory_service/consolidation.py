@@ -80,12 +80,6 @@ class OperationLogEntry(BaseModel):
 
 class MemoryOperation(BaseModel):
     """A fact extracted from the conversation, classified against what is known.
-
-    The rules on how to word a fact live on the field itself rather than in the
-    prompt. They were in the prompt, at the end of a long human message, and a run
-    showed the model copying the user's sentences verbatim: an instruction buried
-    in a complex prompt is the weakest form there is. Here they sit next to the
-    thing being written.
     """
 
     fact: str = Field(description=(

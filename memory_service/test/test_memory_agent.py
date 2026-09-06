@@ -495,6 +495,17 @@ class AnswerPromptTest(MemoryServiceTestCase):
     def test_the_answer_follows_the_language_of_the_user(self):
         self.assertIn("in the language the user wrote in", self.answer_prompt())
 
+    def test_the_recent_conversation_outranks_the_stored_facts(self):
+        # Il consolidamento e' in ritardo di un turno, quindi l'ultimo scambio
+        # puo' aver gia' corretto o ritirato un fatto che risulta ancora in
+        # memoria. Su una run vera, alla domanda "sai dirmi dove abito?" posta
+        # subito dopo "dimentica il mio indirizzo", il modello aveva entrambi
+        # davanti e ha risposto con l'indirizzo.
+        prompt = self.answer_prompt()
+
+        self.assertIn("correct or retract what the facts say", prompt)
+        self.assertIn("the conversation wins over the stored fact", prompt)
+
     def test_ids_and_distances_are_not_to_be_quoted_back(self):
         self.assertIn("never mention the id or the number", self.answer_prompt())
 
@@ -744,29 +755,13 @@ class LanguageRuleTest(MemoryServiceTestCase):
     una sola sposta il disallineamento, non lo toglie.
     """
 
-    tool_responses = {
-        "InsertCoreMemories": {"memories": []},
-        "retrieve_memory": {"query": "irrilevante", "k": 3},
-    }
+    tool_responses = {"retrieve_memory": {"query": "irrilevante", "k": 3}}
 
     def prompt_of(self, tool_name):
         for invocation in self.llm.invocations:
             if tool_name in invocation["tools"]:
                 return invocation["prompt"].lower()
         raise AssertionError(f"{tool_name} non e' mai stato invocato")
-
-    def consolidate(self):
-        self.agent.state["messages"] = [
-            HumanMessage(content="mi chiamo Bianca"),
-            AIMessage(content="piacere"),
-            HumanMessage(content="e vivo a Palermo"),
-            AIMessage(content="bella citta'"),
-            HumanMessage(content="a domani"),
-            AIMessage(content="a domani"),
-            HumanMessage(content="ciao"),
-            AIMessage(content="ciao"),
-        ]
-        self.agent.run_memory_agent("insert")
 
     def test_the_fact_field_pins_the_language_of_the_facts(self):
         self.assertIn("language the user spoke", consolidation_tool_schema())
@@ -778,14 +773,20 @@ class LanguageRuleTest(MemoryServiceTestCase):
         self.assertIn("not the language of these instructions",
                       consolidation_tool_schema())
 
-    def test_the_retrieval_prompt_pins_the_language_of_the_query(self):
-        # La query la scrive il modello, in una chiamata sua: senza la regola
-        # qui, memorie in italiano e domanda in italiano possono comunque
-        # incontrarsi attraverso una query in inglese, e la distanza cresce.
+    def test_the_query_follows_the_language_of_the_memories(self):
+        # La query la scrive il modello, in una chiamata sua, e il confronto e'
+        # fra la query e i documenti: la lingua da inseguire e' quella delle
+        # memorie, non quella dell'utente. Prima la regola diceva "come la
+        # domanda dell'utente" e la motivazione era che l'archivio contiene la
+        # lingua che l'utente parla - vero solo finche' un'altra regola lo
+        # imponeva. Tolta quella, l'archivio e' in inglese e le domande in
+        # italiano, e la vecchia formulazione chiedeva il disallineamento.
+        # I fatti a portata sono nel prompt, quindi la lingua giusta il modello
+        # ce l'ha davanti qualunque essa sia.
         self.agent.state["messages"] = [HumanMessage(content="dove abito?")]
         self.agent.run_memory_agent("retrieve")
 
-        self.assertIn("same language as the user's question",
+        self.assertIn("same language as the facts listed above",
                       self.prompt_of("retrieve_memory"))
 
 
