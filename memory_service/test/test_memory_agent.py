@@ -34,6 +34,7 @@ from memory_service.consolidation import CoreMemoryItem, InsertCoreMemories  # n
 from memory_service.memory_manager_llm import (  # noqa: E402
     MemoryAgent,
     messages_to_str,
+    query_and_history,
     retrieve_memory,
 )
 
@@ -409,11 +410,93 @@ class AnswerGenerationSwitchTest(MemoryServiceTestCase):
         self.assertEqual(len(state["messages"]), 2, "domanda piu' risposta")
         self.assertEqual(calls, 2, "la decisione piu' la generazione")
 
+    def test_a_question_passed_in_is_appended_before_its_answer(self):
+        # La domanda arrivata come current_query - cioe' dal campo user_input
+        # della GetMemory - non e' ancora in messages. Appendere la sola
+        # risposta lascerebbe la coppia invertita, e il consolidamento
+        # leggerebbe una risposta senza la domanda a cui risponde.
+        config = dataclasses.replace(TEST_CONFIG, generate_answer=True)
+        backends.configure(config=config)
+        MemoryAgent.reset_instance()
+        agent = MemoryAgent(config=config)
+
+        state = agent.run_memory_agent("retrieve", query="cosa mi piace bere?")
+
+        self.assertEqual(len(state["messages"]), 2, "un turno, non uno solo")
+        self.assertIsInstance(state["messages"][0], HumanMessage)
+        self.assertEqual(state["messages"][0].content, "cosa mi piace bere?")
+        self.assertIsInstance(state["messages"][1], AIMessage)
+
     def test_switched_off_it_costs_one_call_less_and_appends_nothing(self):
         state, calls = self.run_retrieve(generate_answer=False)
 
         self.assertEqual(len(state["messages"]), 1, "resta solo la domanda dell'utente")
         self.assertEqual(calls, 1, "solo la decisione")
+
+
+class StaleRetrievalTest(MemoryServiceTestCase):
+    """Il recupero di un giro non deve sopravvivere al giro dopo.
+
+    tool_node conserva retrieved_memory quando la ricerca non avviene, e niente
+    lo azzerava fra una get_memory e l'altra. Finche' generate_answer era spento
+    non lo leggeva nessuno e il difetto era invisibile; adesso il giro che decide
+    di non cercare risponderebbe con le memorie tirate su per la domanda
+    precedente, e le pubblicherebbe in retrieved_memories come proprie.
+    """
+
+    tool_responses = {"retrieve_memory": {"query": "te", "k": 2}}
+
+    def test_a_turn_that_does_not_search_starts_from_nothing(self):
+        self.vector_store.add_texts(
+            texts=["All'utente piace il te nero"], ids=["memory_a"],
+            metadatas=[{"status": "active"}])
+
+        first = self.agent.run_memory_agent("retrieve", query="cosa bevo?")
+        self.assertIn("te nero", first["retrieved_memory"])
+
+        self.llm.script({"NoSearchNeeded": {"reason": "basta la core memory"}})
+        second = self.agent.run_memory_agent("retrieve", query="come mi chiamo?")
+
+        self.assertEqual(
+            second["retrieved_memory"], "",
+            "la risposta di questo giro non deve vedere il recupero del giro prima")
+
+
+class AnswerPromptTest(MemoryServiceTestCase):
+    """Le tre regole che il doppio del test lungo aveva e il servizio no.
+
+    Per mesi la risposta nel resoconto veniva da _answer_like_explainability, un
+    prompt scritto dentro il test. Quel prompt teneva le risposte a una o due
+    frasi e nella lingua dell'utente, e su tre run di fila il modello ha
+    obbedito. Passando a generate_answer quelle regole andavano portate con lui,
+    altrimenti il resoconto cambia stile insieme al mittente e i confronti fra
+    run saltano.
+
+    La terza e' nuova e nasce dal formato: retrieved_memory ora contiene
+    "ID: ..., Content: ..., Distance: ...", e la risposta viene consolidata -
+    un id ricopiato nella risposta diventerebbe una memoria.
+    """
+
+    tool_responses = {"NoSearchNeeded": {"reason": "basta la core memory"}}
+
+    def answer_prompt(self):
+        self.agent.state["messages"] = [HumanMessage(content="cosa bevo la mattina?")]
+        self.agent.run_memory_agent("retrieve")
+
+        # L'ultima invocazione senza strumenti legati e' la generazione.
+        for invocation in reversed(self.llm.invocations):
+            if not invocation["tools"]:
+                return invocation["prompt"]
+        raise AssertionError("la risposta non e' mai stata generata")
+
+    def test_the_answer_is_short(self):
+        self.assertIn("one or two sentences", self.answer_prompt())
+
+    def test_the_answer_follows_the_language_of_the_user(self):
+        self.assertIn("in the language the user wrote in", self.answer_prompt())
+
+    def test_ids_and_distances_are_not_to_be_quoted_back(self):
+        self.assertIn("never mention the id or the number", self.answer_prompt())
 
 
 class CurrentQueryTest(MemoryServiceTestCase):
@@ -481,6 +564,15 @@ class CurrentQueryTest(MemoryServiceTestCase):
         self.assertTrue(self.llm.invocations, "il grafo deve girare, non uscire subito")
         self.assertIn("arachidi", state["retrieved_memory"])
 
+    def test_a_retrieve_with_no_question_spends_nothing(self):
+        # Solo messaggi dell'assistente: non c'e' niente a cui rispondere, e il
+        # ramo girerebbe su un input vuoto cercando in archivio con niente.
+        self.agent.state["messages"] = [AIMessage(content="ciao")]
+
+        self.agent.run_memory_agent("retrieve")
+
+        self.assertEqual(self.llm.invocations, [])
+
     def test_an_insert_clears_the_query(self):
         self.agent.state["messages"] = self.conversation(9)
         self.llm.script({"InsertCoreMemories": {"memories": []}})
@@ -495,6 +587,45 @@ class CurrentQueryTest(MemoryServiceTestCase):
 def _tool_name(tool):
     """Nome di uno strumento, sia esso un modello pydantic o un @tool."""
     return getattr(tool, "__name__", None) or getattr(tool, "name", str(tool))
+
+
+class QueryFallbackTest(unittest.TestCase):
+    """Senza user_input la domanda e' l'ultimo messaggio DELL'UTENTE.
+
+    intent_recognition chiama get_memory senza passare user_input, e in quel
+    momento l'ultimo messaggio in memoria e' la spiegazione che explainability ha
+    appeso al giro prima. Ripiegando sull'ultimo messaggio e basta si cercherebbe
+    in archivio con le parole dell'assistente e gli si risponderebbe come a una
+    domanda: la stessa retroazione tolta dal lato del consolidamento, rimasta in
+    piedi da questo.
+    """
+
+    def test_the_query_from_the_caller_wins(self):
+        state = {"current_query": "quante calorie?",
+                 "messages": [HumanMessage(content="e il cane?")]}
+
+        query, history = query_and_history(state)
+
+        self.assertEqual(query, "quante calorie?")
+        self.assertEqual(len(history), 1,
+                         "con la domanda dal chiamante, i messaggi sono tutti storico")
+
+    def test_the_last_assistant_line_is_not_taken_as_a_question(self):
+        state = {"current_query": "",
+                 "messages": [HumanMessage(content="cosa bevo la mattina?"),
+                              AIMessage(content="bevi caffe")]}
+
+        query, history = query_and_history(state)
+
+        self.assertEqual(query, "cosa bevo la mattina?")
+        self.assertEqual(history, [],
+                         "lo storico e' cio' che precede la domanda, e la "
+                         "risposta a quella domanda non la precede")
+
+    def test_without_any_user_message_there_is_no_question(self):
+        state = {"current_query": "", "messages": [AIMessage(content="ciao")]}
+
+        self.assertEqual(query_and_history(state), ("", []))
 
 
 class ArchiveGatePromptTest(MemoryServiceTestCase):
@@ -669,6 +800,24 @@ class ExtractionStanceTest(MemoryServiceTestCase):
     """
 
     tool_responses = {"InsertCoreMemories": {"memories": []}}
+
+    def test_a_speech_act_is_not_a_fact(self):
+        # Su un turno di sola domanda il blocco dell'utente non ha fatti, la
+        # tool call e' obbligatoria, e il modello ne fabbrica uno sull'atto:
+        # "The user is asking about their current diet" e' finito in archivio
+        # come memoria, e in una run italiana "L'utente chiede esplicitamente
+        # che il suo indirizzo non venga memorizzato" ha preso il posto del
+        # delete che quel messaggio doveva provocare.
+        self.agent.state["messages"] = self.conversation(8)
+        self.agent.run_memory_agent("insert")
+
+        for invocation in self.llm.invocations:
+            if "InsertCoreMemories" in invocation["tools"]:
+                prompt = invocation["prompt"]
+                self.assertIn("A question stores nothing.", prompt)
+                self.assertIn("not a new memory about the request", prompt)
+                return
+        raise AssertionError("il consolidamento non e' mai stato invocato")
 
     def test_the_prompt_frames_facts_as_something_to_classify(self):
         # Sopra la finestra di cinque, altrimenti il consolidamento non parte.

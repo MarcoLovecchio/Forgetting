@@ -83,20 +83,21 @@ class ConfigTest(EnvironmentTestCase):
 
         self.assertEqual(MemoryConfig.from_environment().maximum_historical_messages, 4)
 
-    def test_the_answer_is_not_generated_unless_asked(self):
-        # Spenta di default: nessun campo del servizio la restituisce, e finiva
-        # in last_messages come un turno che l'utente non ha mai letto.
-        self.assertFalse(MemoryConfig.from_environment().generate_answer)
-
-        os.environ["MEMORY_GENERATE_ANSWER"] = "true"
-
+    def test_the_answer_is_generated_unless_the_caller_opts_out(self):
+        # Accesa di default: e' l'unico nodo dell'architettura che risponde
+        # dalla memoria - explainability risponde dai risultati di una query e
+        # la memoria non la legge. Chi ha un proprio nodo di risposta la spegne.
         self.assertTrue(MemoryConfig.from_environment().generate_answer)
 
-    def test_an_unreadable_answer_switch_keeps_the_default(self):
-        # Un typo non deve riaccendere in silenzio un pezzo del grafo.
-        os.environ["MEMORY_GENERATE_ANSWER"] = "forse"
+        os.environ["MEMORY_GENERATE_ANSWER"] = "false"
 
         self.assertFalse(MemoryConfig.from_environment().generate_answer)
+
+    def test_an_unreadable_answer_switch_keeps_the_default(self):
+        # Un typo non deve spegnere in silenzio un pezzo del grafo.
+        os.environ["MEMORY_GENERATE_ANSWER"] = "forse"
+
+        self.assertTrue(MemoryConfig.from_environment().generate_answer)
 
     def test_chroma_path_is_absolute(self):
         os.environ["MEMORY_CHROMA_PATH"] = "./relative_db"

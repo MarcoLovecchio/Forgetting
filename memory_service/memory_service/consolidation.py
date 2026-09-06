@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 
 from memory_service import backends
 
-ARCHIVE_CANDIDATES_K = 5
+ARCHIVE_CANDIDATES_K = 4
 
 MemoryStatus = Literal["active", "superseded", "deleted"]
 MemoryOperationType = Literal["new", "redundant", "update", "contradict", "delete"]
@@ -90,8 +90,7 @@ class MemoryOperation(BaseModel):
 
     fact: str = Field(description=(
         "The fact itself. Write it about the user, in the third person, never as a copy "
-        "of the sentence the user wrote. State what is true now, not what changed. "
-        "Use the language the user spoke, not the language of these instructions."))
+        "of the sentence the user wrote. State what is true now, not what changed."))
     operation: MemoryOperationType
     target_item_id: Optional[str] = Field(
         default=None,

@@ -50,7 +50,9 @@ riporta per esteso:
     "sai dirmi dove abito?"                     -> non deve piu' saperlo
 
 Nel resoconto si vede, per ogni domanda, cosa ha risposto l'assistente e se
-l'archivio e' stato consultato per quel giro.
+l'archivio e' stato consultato per quel giro. La risposta e' quella del servizio,
+composta da generate_answer sulla core memory piu' l'eventuale recupero: il test
+non ne simula piu' una propria.
 
 La domanda corrente viene passata al servizio (GetMemory.user_input ->
 run_memory_agent(query=...)), quindi la ricerca in archivio parte da quello che
@@ -107,12 +109,11 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+from langchain_core.messages import AIMessage  # noqa: E402
+
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
-from memory_service.consolidation import (  # noqa: E402
-    get_active_items,
-    serialize_core_memory_for_prompt,
-)
+from memory_service.consolidation import get_active_items  # noqa: E402
 
 from live_model import live_stack_unavailable  # noqa: E402
 from snapshot import SEPARATOR, safe_print  # noqa: E402
@@ -300,6 +301,10 @@ def _build_agent():
     config = dataclasses.replace(
         MemoryConfig.from_environment(),
         maximum_historical_messages=2,  # ogni messaggio fa scattare il consolidamento
+        # Fissata, non ereditata: senza la risposta del servizio questo test non
+        # ha niente da misurare, e un MEMORY_GENERATE_ANSWER=false nell'ambiente
+        # lo svuoterebbe in silenzio.
+        generate_answer=True,
         core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "200")),
         collection_name=os.getenv("MEMORY_LONGRUN_COLLECTION", "longterm_test_archive"),
         **({"chroma_path": os.path.abspath(chroma_path)} if chroma_path else {}),
@@ -361,44 +366,19 @@ def _clock_iso(text):
     return str(text).split("T")[-1][:8]
 
 
-def _answer_like_explainability(message, memories):
-    """Genera la risposta all'utente, come fa il nodo explainability.
+def _last_answer(state):
+    """La risposta composta da generate_answer: e' l'ultimo messaggio del turno.
 
-    In produzione questo passo non e' nel memory service: `explainability` ha un
-    suo LLM, riceve il contesto che `intent_recognition` ha preso dalla memoria e
-    produce la spiegazione che poi torna indietro come `update_memory`. Qui lo
-    stesso ruolo e' svolto da una chiamata diretta al modello, per avere una
-    risposta vera da consolidare e da verificare.
+    Prima qui c'era un doppio di explainability, una chiamata al modello scritta
+    dentro il test. Era una finzione due volte: explainability non risponde dalla
+    memoria - risponde dai risultati di una query al database, e la memoria non
+    la legge affatto - e quel doppio non riceveva l'archivio, quindi il resoconto
+    mostrava recuperi che non entravano in nessuna risposta. Adesso la risposta
+    e' quella del servizio, e il resoconto misura il servizio.
     """
-    from langchain_core.prompts import ChatPromptTemplate
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """Sei l'assistente personale dell'utente. Rispondi in italiano,
-         in una o due frasi, usando SOLO quello che sai di lui:
-
-         {memories}
-
-         Se l'informazione non c'e', dillo chiaramente invece di inventarla."""),
-        ("human", "{input}"),
-    ])
-    chain = prompt | backends.get_llm()
-    response = chain.invoke({"input": message, "memories": "\n".join(memories)})
-    return str(response.content).strip()
-
-
-def _context_from_memory(state):
-    """Quello che intent_recognition passa a valle: memory_list + last_messages."""
-    memories = serialize_core_memory_for_prompt(state.get("core_memory", []))
-    messages = [str(getattr(m, "content", m)) for m in state.get("messages", [])]
-    return memories + messages
-
-
-def _last_answer(state, question):
-    """Ultimo messaggio dell'assistente, se la retrieve ne ha prodotto uno."""
     for message in reversed(state.get("messages", [])):
-        content = str(getattr(message, "content", "")).strip()
-        if content and content != question.strip():
-            return content
+        if isinstance(message, AIMessage):
+            return str(message.content).strip()
     return ""
 
 
@@ -603,21 +583,19 @@ def test_long_term_interaction():
             with contextlib.redirect_stdout(noise):
                 # --- come intent_recognition.listener_callback ---------------
                 # Un get_memory su OGNI messaggio, senza condizioni: e' il modo
-                # in cui la pipeline si procura il contesto. Azzerare prima
-                # retrieved_memory serve solo al resoconto, per capire se
-                # l'archivio e' stato interrogato per questo giro o per uno
-                # precedente.
-                agent.state["retrieved_memory"] = ""
+                # in cui la pipeline si procura il contesto. L'azzeramento di
+                # retrieved_memory lo fa il servizio, quindi qui non si tocca:
+                # farlo dal test nasconderebbe una regressione su quel punto.
                 state = agent.run_memory_agent("retrieve", query=message)
                 retrieved = state.get("retrieved_memory", "")
-                context = _context_from_memory(state)
 
-                # --- come explainability: produce la risposta -----------------
-                answer = _answer_like_explainability(message, context)
+                # --- la risposta la compone il servizio ----------------------
+                # generate_answer ha gia' appeso la domanda e la sua risposta a
+                # messages, quindi qui non si appende piu' niente: farlo
+                # duplicherebbe il turno.
+                answer = _last_answer(state)
 
                 # --- come explainability: send_update_request(input, risposta) -
-                agent.append_message(message, "user")
-                agent.append_message(answer, "assistant")
                 agent.run_memory_agent("insert")
 
             if _is_question(message):

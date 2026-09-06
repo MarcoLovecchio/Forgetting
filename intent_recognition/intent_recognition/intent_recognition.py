@@ -50,12 +50,18 @@ class Intent_Recognition(Node):
     def listener_callback(self, msg):
         self.get_logger().info('Received: "%s"\n' % msg.data)
 
+        user_input = msg.data.strip()
+
         # Update Memory
-        self.get_response = self.memory_client.send_get_request()
+        # user_input viaggia con la richiesta: il ramo di recupero del
+        # servizio cerca in archivio a partire da quello che l'utente sta
+        # chiedendo adesso. Senza, ripiegava sull'ultimo messaggio gia' in
+        # memoria - la risposta del giro precedente - e rispondeva con un
+        # turno di ritardo.
+        self.get_response = self.memory_client.send_get_request(user_input)
         memories = self.get_response.memory_list + self.get_response.last_messages
         print('Current Memory:', memories)
         
-        user_input = msg.data.strip()
         tool_name, tool_result = self.IR_LLM.get_LLM_response(user_input, memories)
         intent_msg = Intent()
         intent_msg.user_input = user_input

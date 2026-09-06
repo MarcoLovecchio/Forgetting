@@ -99,14 +99,16 @@ class MemoryConfig:
     node_name: str = "memory_agent"
     maximum_historical_messages: int = 4
     core_memory_limit: int = 400
-    # Whether the retrieve branch also composes a reply to the user. Off by
-    # default: no service field returns that reply - the archive now reaches the
-    # caller through retrieved_memories - so it only landed in last_messages as
-    # one more turn of the conversation, one the user never read. Leaving it out
-    # saves a call per retrieve, keeps a (user, assistant) pair per exchange
-    # instead of three messages, and stops the memory from quoting itself back
-    # into the consolidation. MEMORY_GENERATE_ANSWER=true brings it back.
-    generate_answer: bool = False
+    # Whether the retrieve branch also composes the reply to the user. On,
+    # because this is the only node in the architecture that answers FROM the
+    # memory: explainability answers from the results of a database query and
+    # never reads what it remembers. It was off for a while, when the reply
+    # reached no caller and only landed in last_messages as a turn nobody read;
+    # retrieved_memories in the service response and this node appending the
+    # question together with its answer closed both holes.
+    # MEMORY_GENERATE_ANSWER=false turns it off again, for a caller that has its
+    # own answering node and only wants the context.
+    generate_answer: bool = True
 
     # Archival memory (ChromaDB)
     chroma_path: str = "./chroma_db"
@@ -137,7 +139,7 @@ class MemoryConfig:
             node_name=node_name,
             maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES", 4),
             core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", 400),
-            generate_answer=_env_bool("MEMORY_GENERATE_ANSWER", False),
+            generate_answer=_env_bool("MEMORY_GENERATE_ANSWER", True),
             chroma_path=os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db")),
             collection_name=os.getenv("MEMORY_COLLECTION_NAME", "memory_archive"),
             llm_config=_read_model_config("LLM_CONFIG", node_name),

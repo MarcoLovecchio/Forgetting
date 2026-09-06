@@ -95,17 +95,25 @@ def query_and_history(state: AgentState):
 
     Il ramo di recupero ha bisogno di sapere che cosa sta chiedendo l'utente.
     Se il chiamante l'ha passata (GetMemory.user_input -> current_query) si usa
-    quella, e tutti i messaggi in memoria sono storico. Altrimenti si ripiega
-    sull'ultimo messaggio noto, che e' quello che succedeva sempre prima che il
-    servizio potesse ricevere la domanda.
+    quella, e tutti i messaggi in memoria sono storico.
+
+    Altrimenti si ripiega sull'ultimo messaggio **dell'utente**, non sull'ultimo
+    messaggio e basta. La differenza conta: intent_recognition chiama get_memory
+    senza user_input, e a quel punto l'ultimo messaggio in memoria e' la
+    spiegazione che explainability ha appeso al giro prima. Ripiegando su quella
+    si cercherebbe in archivio con le parole dell'assistente e gli si
+    risponderebbe come se fosse una domanda - la stessa retroazione che abbiamo
+    tolto dal lato del consolidamento, rimasta in piedi da questo.
     """
     query = str(state.get("current_query") or "").strip()
     messages = state.get("messages") or []
     if query:
         return query, messages
-    if not messages:
-        return "", []
-    return messages[-1].content, messages[:-1]
+
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], HumanMessage):
+            return str(messages[index].content), messages[:index]
+    return "", []
 
 
 def interaction_type_node(state: AgentState) -> str:
@@ -221,14 +229,21 @@ def generate_answer(state: AgentState):
 
     print("\tAnswer agent node activated")
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a helpful agent that replies to user queries.
-         You answer only based on the following information:
-         Facts about the user: {core_memory}
-         Retrieved memories: {retrieved_memory}
+        ("system", """You are the user's personal assistant. You answer only from what
+         you know about them, which is everything listed here and nothing else.
+
+         Facts kept at hand: {core_memory}
+
+         Memories recalled from the archive for this question: {retrieved_memory}
+
          Your previous interactions: {messages}
-         Select the most relevant information to answer the user's query as best as you can.
-         If you don't know the answer, simply say you don't know.
-         Do not make up an answer."""),
+
+         The recalled memories are listed as ID, Content and Distance: answer from their
+         content, and never mention the id or the number - they are bookkeeping, not
+         something the user told you.
+
+         Answer in one or two sentences, in the language the user wrote in. If what you
+         were given does not contain the answer, say so plainly instead of inventing it."""),
         ("human", "{input}")
     ])
 
@@ -240,7 +255,15 @@ def generate_answer(state: AgentState):
                              "retrieved_memory": state.get("retrieved_memory", ""),
                              "messages": messages_to_str(history)})
 
-    return {"messages": state["messages"] + [response]}
+    # Quando la domanda arriva come current_query - cioe' dal campo user_input
+    # della GetMemory - non e' ancora in messages, e appendere la sola risposta
+    # lascerebbe la coppia invertita: la risposta prima della domanda a cui
+    # risponde, e il consolidamento leggerebbe quell'ordine. Quando invece la
+    # domanda era gia' l'ultimo messaggio, riappenderla la duplicherebbe.
+    asked_out_of_band = bool(str(state.get("current_query") or "").strip())
+    turn = [HumanMessage(content=user_query)] if asked_out_of_band else []
+
+    return {"messages": state["messages"] + turn + [response]}
 
 def exceed_memory_limit(state: AgentState) -> bool:
     print("\tInsert memories interaction selected")
@@ -275,7 +298,11 @@ def summarize_memories_node(state: AgentState):
         For each fact you extract, decide which operation applies and reference the id of
         the memory it concerns; the operations themselves are defined with the tool you
         must call. Only include facts that are relevant and likely to be referenced in
-        future interactions."""),
+        future interactions.
+
+        What the user is doing with their words is never itself a fact.
+        A question stores nothing. Asking to forget something is a delete
+        on the memory it names, not a new memory about the request."""),
         ("human", """What the user said - this is where the facts come from:
 
 {user_messages}
@@ -441,12 +468,25 @@ class MemoryAgent():
             if self.up_to_date and query == self.state.get("current_query", ""):
                 return self.state
             self.up_to_date = True
+            # Il recupero appartiene alla domanda che lo ha provocato. tool_node
+            # conserva retrieved_memory quando la ricerca non avviene, quindi
+            # senza questo azzeramento un giro che decide di non cercare
+            # risponderebbe con le memorie tirate su per la domanda precedente -
+            # e le pubblicherebbe in retrieved_memories come se fossero sue.
+            self.state["retrieved_memory"] = ""
 
         if interaction_mode == "insert":
             self.up_to_date = False
 
         self.state["current_interaction"] = interaction_mode
         self.state["current_query"] = query if interaction_mode == "retrieve" else ""
+
+        if interaction_mode == "retrieve" and not query_and_history(self.state)[0]:
+            # Nessuna domanda: ne' dal chiamante ne' fra i messaggi. Il ramo
+            # girerebbe su un input vuoto, cercherebbe in archivio con niente e
+            # appenderebbe una risposta a nessuno.
+            print("No question to answer.")
+            return self.state
 
         if not self.state["messages"] and not self.state["current_query"]:
             print("No messages to process.")
