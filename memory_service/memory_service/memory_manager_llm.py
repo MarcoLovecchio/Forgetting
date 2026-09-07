@@ -1,3 +1,5 @@
+import time
+
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
@@ -34,9 +36,13 @@ class AgentState(TypedDict):
     generate_answer: bool
 
 
-def get_llm():
-    """Chat model used by every node of the graph."""
-    return backends.get_llm()
+def get_llm(node: str = ""):
+    """Chat model used by the nodes of the graph, one set of settings per node.
+
+    Il nome sceglie una voce di NODE_SAMPLING: vedi config.py per accendere o
+    spegnere il ragionamento, o cambiare il campionamento, di un nodo solo.
+    """
+    return backends.get_llm(node)
 
 
 def get_vector_store():
@@ -68,6 +74,37 @@ def messages_to_str(messages) -> str:
 
 
 REQUIRED = "required"
+
+
+# Quanto costa ogni nodo. Senza questo, una run piu' corta dice solo che e' piu'
+# corta: il tempo totale mescola quattro chiamate con bisogni diversi e il carico
+# della GPU, che e' condivisa. I token generati invece non dipendono dal carico,
+# quindi separano "ha ragionato di meno" da "il cluster era piu' libero" - ed e'
+# la distinzione che serve per tarare NODE_SAMPLING un nodo alla volta.
+NODE_STATS: Dict[str, Dict[str, float]] = {}
+
+
+def reset_node_stats() -> None:
+    """Azzera i contatori: si misura una run, non la vita del processo."""
+    NODE_STATS.clear()
+
+
+def _timed(node: str, call):
+    """Esegue la chiamata al modello registrando durata e token."""
+    started = time.perf_counter()
+    response = call()
+    elapsed = time.perf_counter() - started
+
+    stats = NODE_STATS.setdefault(
+        node, {"calls": 0, "seconds": 0.0, "input_tokens": 0, "output_tokens": 0})
+    stats["calls"] += 1
+    stats["seconds"] += elapsed
+    # I doppi dei test non lo popolano, e nemmeno ogni provider: l'assenza vale
+    # zero token, non un errore.
+    usage = getattr(response, "usage_metadata", None) or {}
+    stats["input_tokens"] += int(usage.get("input_tokens") or 0)
+    stats["output_tokens"] += int(usage.get("output_tokens") or 0)
+    return response
 
 NO_SEARCH_NEEDED = "No archive search: the facts at hand were enough."
 
@@ -164,14 +201,15 @@ NoSearchNeeded. If they do not, or you are not sure, call retrieve_memory: the a
 be in the archive, and not looking is how it gets missed."""),
     ])
 
-    llm_with_tools = get_llm().bind_tools([retrieve_memory, NoSearchNeeded],
-                                          tool_choice=REQUIRED)
+    llm_with_tools = get_llm("retrieval").bind_tools(
+        [retrieve_memory, NoSearchNeeded], tool_choice=REQUIRED)
 
     chain = prompt | llm_with_tools
     user_query, history = query_and_history(state)
-    response = chain.invoke({"input": user_query,
-                             "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
-                             "previous_messages": messages_to_str(history)})
+    response = _timed("retrieval", lambda: chain.invoke(
+        {"input": user_query,
+         "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
+         "previous_messages": messages_to_str(history)}))
 
     return {"tool_calls": state["tool_calls"] + [response]}
 
@@ -252,13 +290,14 @@ def generate_answer(state: AgentState):
         ("human", "{input}")
     ])
 
-    chain = prompt | get_llm()
+    chain = prompt | get_llm("generate_answer")
 
     user_query, history = query_and_history(state)
-    response = chain.invoke({"input": user_query,
-                             "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
-                             "retrieved_memory": state.get("retrieved_memory", ""),
-                             "messages": messages_to_str(history)})
+    response = _timed("generate_answer", lambda: chain.invoke(
+        {"input": user_query,
+         "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
+         "retrieved_memory": state.get("retrieved_memory", ""),
+         "messages": messages_to_str(history)}))
 
     # Quando la domanda arriva come current_query - cioe' dal campo user_input
     # della GetMemory - non e' ancora in messages, e appendere la sola risposta
@@ -324,14 +363,15 @@ What the user said - this is where the facts come from:
 Known memories (id: content) are: {core_memory}.
 Focus on preferences, opinions, or personal facts mentioned by the user.""")
     ])
-    summarizer_llm = get_llm().bind_tools([InsertCoreMemories], tool_choice=REQUIRED)
+    summarizer_llm = get_llm("consolidation").bind_tools(
+        [InsertCoreMemories], tool_choice=REQUIRED)
     chain = prompt | summarizer_llm
     core_memories = build_candidate_memories(state["core_memory"], user_messages)
-    response = chain.invoke({
+    response = _timed("consolidation", lambda: chain.invoke({
         "user_messages": user_messages,
         "assistant_messages": assistant_messages or "(none)",
         "core_memory": core_memories,
-    })
+    }))
     print(f"\tSummarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response], "messages": state["messages"][-keep:]}  # Keep only the last N messages
 
@@ -374,13 +414,14 @@ Total: {core_memory_length} characters. Limit: {core_memory_limit} characters.
 You must move to the archive at least {to_free} characters worth of memories.
 Return one decision for every memory listed above.""")])
 
-    summarizer_llm = get_llm().bind_tools(
+    summarizer_llm = get_llm("core_split").bind_tools(
         [SplitCoreAndArchivalMemory], tool_choice=REQUIRED)
     chain = prompt | summarizer_llm
-    response = chain.invoke({"core_memory": core_memory_display,
-                             "core_memory_length": used,
-                             "core_memory_limit": limit,
-                             "to_free": to_free})
+    response = _timed("core_split", lambda: chain.invoke(
+        {"core_memory": core_memory_display,
+         "core_memory_length": used,
+         "core_memory_limit": limit,
+         "to_free": to_free}))
     print(f"\tCore memory summarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response]}
 

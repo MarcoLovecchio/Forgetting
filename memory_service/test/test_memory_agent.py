@@ -27,14 +27,17 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 from memory_service import backends  # noqa: E402
-from memory_service.config import MemoryConfig  # noqa: E402
+from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
 from langchain_core.utils.function_calling import convert_to_openai_tool  # noqa: E402
 
 from memory_service.consolidation import CoreMemoryItem, InsertCoreMemories  # noqa: E402
 from memory_service.memory_manager_llm import (  # noqa: E402
+    NODE_STATS,
     MemoryAgent,
+    _timed,
     messages_to_str,
     query_and_history,
+    reset_node_stats,
     retrieve_memory,
 )
 
@@ -130,7 +133,8 @@ class ImportIsolationTest(unittest.TestCase):
 
     def test_importing_does_not_build_backends(self):
         backends.reset()
-        self.assertIsNone(backends._llm)
+        self.assertEqual(backends._llm, {})
+        self.assertIsNone(backends._injected_llm)
         self.assertIsNone(backends._vector_store)
 
 
@@ -878,6 +882,104 @@ class FactShapeTest(MemoryServiceTestCase):
         # Vietare senza dare un'alternativa lascia il modello a inventarsela:
         # il collegamento ha gia' un campo suo nello schema.
         self.assertIn("never in the text of the fact", consolidation_tool_schema())
+
+
+class NodeSamplingWiringTest(MemoryServiceTestCase):
+    """Ogni nodo deve chiedere il proprio nome, e quel nome deve esistere.
+
+    Il doppio dei test viene restituito per qualunque nome, quindi un refuso -
+    get_llm("retrival") - non farebbe fallire niente: quel nodo erediterebbe in
+    silenzio le impostazioni generali, e la manopola che credi di girare in
+    NODE_SAMPLING non sarebbe collegata a nulla.
+    """
+
+    tool_responses = {
+        "retrieve_memory": {"query": "q", "k": 2},
+        "InsertCoreMemories": {"memories": []},
+        "SplitCoreAndArchivalMemory": {"decisions": []},
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.nodes = []
+        original = backends.get_llm
+
+        def spy(node=""):
+            self.nodes.append(node)
+            return original(node)
+
+        backends.get_llm = spy
+        self.addCleanup(setattr, backends, "get_llm", original)
+
+    def test_every_node_asks_for_a_name_that_exists(self):
+        # Una core memory oltre il limite serve a far scattare anche lo split,
+        # che e' il quarto e il piu' facile da dimenticare.
+        self.agent.state["core_memory"] = [CoreMemoryItem(content="x" * 200)]
+        self.agent.run_memory_agent("retrieve", query="cosa bevo?")
+
+        self.agent.state["messages"] = self.conversation(8)
+        self.agent.run_memory_agent("insert")
+
+        self.assertEqual(
+            set(self.nodes),
+            set(NODE_SAMPLING),
+            "i nomi usati dai nodi e le chiavi di NODE_SAMPLING devono coincidere")
+
+
+class NodeStatsTest(MemoryServiceTestCase):
+    """Il costo di una run va attribuito al nodo che l'ha speso.
+
+    Il totale mescola quattro chiamate con bisogni diversi e il carico di una GPU
+    condivisa. Senza la ripartizione, girare una manopola di NODE_SAMPLING
+    produce un numero solo e nessun modo di sapere quale nodo l'ha mosso - e i
+    token, che dal carico non dipendono, separano "ha ragionato di meno" da "il
+    cluster era piu' libero".
+    """
+
+    tool_responses = {
+        "retrieve_memory": {"query": "q", "k": 2},
+        "InsertCoreMemories": {"memories": []},
+    }
+
+    def setUp(self):
+        super().setUp()
+        reset_node_stats()
+        self.addCleanup(reset_node_stats)
+
+    def test_each_node_counts_its_own_calls(self):
+        self.agent.run_memory_agent("retrieve", query="cosa bevo?")
+
+        self.assertEqual(NODE_STATS["retrieval"]["calls"], 1)
+        self.assertEqual(NODE_STATS["generate_answer"]["calls"], 1)
+        self.assertNotIn("consolidation", NODE_STATS,
+                         "il ramo insert non ha girato, non deve comparire")
+
+    def test_the_time_is_recorded(self):
+        self.agent.run_memory_agent("retrieve", query="cosa bevo?")
+
+        self.assertGreater(NODE_STATS["retrieval"]["seconds"], 0)
+
+    def test_the_tokens_come_from_the_usage_metadata(self):
+        class Response:
+            usage_metadata = {"input_tokens": 120, "output_tokens": 45}
+
+        _timed("finto", Response)
+
+        self.assertEqual(NODE_STATS["finto"]["input_tokens"], 120)
+        self.assertEqual(NODE_STATS["finto"]["output_tokens"], 45)
+
+    def test_a_response_without_usage_metadata_counts_zero(self):
+        # I doppi non lo popolano, e nemmeno ogni provider lo restituisce:
+        # l'assenza deve valere zero token, non fermare la run a meta'.
+        self.agent.run_memory_agent("retrieve", query="cosa bevo?")
+
+        self.assertEqual(NODE_STATS["retrieval"]["output_tokens"], 0)
+
+    def test_the_counters_are_reset_between_runs(self):
+        self.agent.run_memory_agent("retrieve", query="cosa bevo?")
+        reset_node_stats()
+
+        self.assertEqual(NODE_STATS, {})
 
 
 class ToolChoiceSpy:

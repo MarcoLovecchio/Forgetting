@@ -11,12 +11,16 @@ They are now created on first use and can be replaced by test doubles through
 """
 
 import os
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
-from memory_service.config import MemoryConfig
+from memory_service.config import NODE_SAMPLING, MemoryConfig
 
 _config: Optional[MemoryConfig] = None
-_llm: Any = None
+# Un modello per nodo: le impostazioni possono differire, quindi le istanze pure.
+_llm: Dict[str, Any] = {}
+# Il doppio iniettato dai test sta in una variabile sua e non nella cache: serve
+# ogni nodo, compresi quelli che nessuno ha ancora chiesto.
+_injected_llm: Any = None
 _vector_store: Any = None
 
 
@@ -35,29 +39,40 @@ def configure(llm: Any = None, vector_store: Any = None,
     Used by the tests to run the whole graph offline, and available to any
     application that wants to provide its own chat model or vector store.
     """
-    global _config, _llm, _vector_store
+    global _config, _injected_llm, _vector_store
     if config is not None:
         _config = config
+        # I modelli in cache sono costruiti da questa configurazione: tenerli
+        # significherebbe restituire istanze tarate su quella precedente.
+        _llm.clear()
     if llm is not None:
-        _llm = llm
+        _injected_llm = llm
     if vector_store is not None:
         _vector_store = vector_store
 
 
 def reset() -> None:
     """Forget the cached backends (mostly useful between tests)."""
-    global _config, _llm, _vector_store
+    global _config, _injected_llm, _vector_store
     _config = None
-    _llm = None
+    _llm.clear()
+    _injected_llm = None
     _vector_store = None
 
 
-def get_llm() -> Any:
-    """Return the chat model, building it from the configuration if needed."""
-    global _llm
-    if _llm is None:
-        _llm = _build_llm(get_config())
-    return _llm
+def get_llm(node: str = "") -> Any:
+    """Chat model for a node, built from the configuration on first use.
+
+    `node` picks an entry of NODE_SAMPLING, so a single node can run with the
+    reasoning off, or with its own temperature, without touching the others. An
+    unknown name - and the empty default - means the configured settings, which
+    is what every caller got before this existed.
+    """
+    if _injected_llm is not None:
+        return _injected_llm
+    if node not in _llm:
+        _llm[node] = _build_llm(get_config(), NODE_SAMPLING.get(node, {}))
+    return _llm[node]
 
 
 def get_vector_store() -> Any:
@@ -112,17 +127,17 @@ _SAMPLING_PARAMETERS = ("temperature", "top_p", "presence_penalty",
                         "frequency_penalty", "max_tokens")
 
 
-def _extra_body(config: MemoryConfig) -> dict:
+def _extra_body(settings: dict) -> dict:
     """Options an OpenAI compatible server accepts but the OpenAI API does not."""
     extra: dict = {}
-    if "top_k" in config.llm_config:
+    if "top_k" in settings:
         # Not an OpenAI parameter, but vLLM and sglang honour it, and Qwen's
         # recommended settings rely on it to cut the tail of the distribution.
-        extra["top_k"] = config.llm_config["top_k"]
+        extra["top_k"] = settings["top_k"]
 
     # Absent means "leave it to the server": None is not False, and deciding
     # on the server's behalf is not the same as not deciding.
-    thinking = config.llm_config.get("enable_thinking")
+    thinking = settings.get("enable_thinking")
     if thinking is not None:
         # Qwen switches reasoning through its chat template, not through a
         # sampling parameter.
@@ -130,24 +145,36 @@ def _extra_body(config: MemoryConfig) -> dict:
     return extra
 
 
-def _build_llm(config: MemoryConfig) -> Any:
+def _build_llm(config: MemoryConfig, overrides: Optional[dict] = None) -> Any:
     # Imported here so that the package can be imported without langchain's
     # provider extras installed.
     from langchain.chat_models import init_chat_model
 
     provider = _require_model_config(config.llm_config, "LLM_CONFIG", config.node_name)
 
+    # Le sovrascritture del nodo si fondono qui, una volta sola. Da qui in giu'
+    # nessuno sa piu' che esistono, e soprattutto la divisione fra parametri di
+    # primo livello ed extra_body resta in un posto solo: legare extra_body alla
+    # singola chiamata avrebbe sostituito l'intero dizionario, portandosi via
+    # top_k insieme al resto.
+    settings = {**config.llm_config, **(overrides or {})}
+    # Un None toglie il parametro invece di impostarlo a None: e' il modo per
+    # far tornare un singolo nodo al default del server. Senza questo passaggio
+    # arriverebbe temperature=None al costruttore, che non e' la stessa cosa che
+    # non passarlo. False e 0 sopravvivono, come devono.
+    settings = {name: value for name, value in settings.items() if value is not None}
+
     parameters = {
-        "model": config.llm_config["model_name"],
+        "model": settings["model_name"],
         "model_provider": provider,
     }
     for name in _SAMPLING_PARAMETERS:
-        if name in config.llm_config:
-            parameters[name] = config.llm_config[name]
+        if name in settings:
+            parameters[name] = settings[name]
 
     # extra_body exists on ChatOpenAI and would be an unknown argument elsewhere.
     if provider == "openai":
-        extra_body = _extra_body(config)
+        extra_body = _extra_body(settings)
         if extra_body:
             parameters["extra_body"] = extra_body
 

@@ -213,8 +213,19 @@ class BackendsTest(EnvironmentTestCase):
         backends.configure(llm=object(), vector_store=object())
         backends.reset()
 
-        self.assertIsNone(backends._llm)
+        self.assertIsNone(backends._injected_llm)
+        self.assertEqual(backends._llm, {}, "anche la cache per nodo")
         self.assertIsNone(backends._vector_store)
+
+    def test_the_injected_model_serves_every_node(self):
+        # Il doppio sta fuori dalla cache per nodo apposta: se stesse dentro,
+        # la prima chiamata con un nome non ancora presente costruirebbe un
+        # modello vero in mezzo alla suite offline.
+        sentinel = object()
+        backends.configure(llm=sentinel)
+
+        for node in ("", "retrieval", "generate_answer", "consolidation", "mai visto"):
+            self.assertIs(backends.get_llm(node), sentinel, node)
 
 
 class ArchiveDistanceTest(unittest.TestCase):
@@ -261,12 +272,95 @@ class LocalModelParametersTest(EnvironmentTestCase):
         chat_models.init_chat_model = spy
         self.addCleanup(setattr, chat_models, "init_chat_model", self._original)
 
-    def _build(self, llm_config, **overrides):
+    def _build(self, llm_config, node_sampling=None, **overrides):
         from memory_service.backends import _build_llm
 
         config = MemoryConfig(node_name="memory_agent", llm_config=llm_config, **overrides)
-        _build_llm(config)
+        _build_llm(config, node_sampling)
         return self.calls[-1]
+
+    def test_a_node_override_wins_over_the_configuration(self):
+        parameters = self._build(
+            {"model_name": "qwen3.5-4b", "model_provider": "openai",
+             "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True},
+            node_sampling={"enable_thinking": False, "temperature": 0.7})
+
+        self.assertEqual(parameters["temperature"], 0.7)
+        self.assertIs(
+            parameters["extra_body"]["chat_template_kwargs"]["enable_thinking"], False)
+
+    def test_a_new_configuration_invalidates_the_cached_models(self):
+        # I modelli in cache derivano dalla configurazione: tenendoli, dopo un
+        # configure(config=...) si continuerebbe a servire istanze tarate su
+        # quella precedente, e con quattro slot invece di uno la cosa si nota
+        # ancora meno.
+        self.addCleanup(backends.reset)
+        backends.reset()
+
+        backends.configure(config=MemoryConfig(
+            node_name="memory_agent",
+            llm_config={"model_name": "primo", "model_provider": "openai"}))
+        backends.get_llm("retrieval")
+
+        backends.configure(config=MemoryConfig(
+            node_name="memory_agent",
+            llm_config={"model_name": "secondo", "model_provider": "openai"}))
+        backends.get_llm("retrieval")
+
+        self.assertEqual(self.calls[-1]["model"], "secondo")
+
+    def test_switching_one_node_off_leaves_the_others_untouched(self):
+        # La domanda pratica: spegnendo il ragionamento a un nodo solo, gli altri
+        # restano come stanno? Ogni build parte da una fusione nuova, quindi la
+        # tabella delle sovrascritture e la configurazione non vengono toccate.
+        base = {"model_name": "qwen3.5-4b", "model_provider": "openai",
+             "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True}
+
+        off = self._build(base, node_sampling={"enable_thinking": False,
+                                               "temperature": 0.7})
+        still_on = self._build(base, node_sampling={})
+
+        self.assertIs(
+            off["extra_body"]["chat_template_kwargs"]["enable_thinking"], False)
+        self.assertEqual(off["temperature"], 0.7)
+        self.assertIs(
+            still_on["extra_body"]["chat_template_kwargs"]["enable_thinking"], True)
+        self.assertEqual(still_on["temperature"], 1.0)
+
+    def test_building_does_not_modify_the_override_table(self):
+        # NODE_SAMPLING.get(node) restituisce il dizionario vero: se _build_llm
+        # lo mutasse, la manopola di un nodo cambierebbe da sola.
+        override = {"enable_thinking": False}
+
+        self._build({"model_name": "qwen3.5-4b", "model_provider": "openai",
+             "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True}, node_sampling=override)
+
+        self.assertEqual(override, {"enable_thinking": False})
+
+    def test_none_in_an_override_falls_back_to_the_server_default(self):
+        # Togliere un parametro per un nodo solo: passarlo come None deve
+        # ometterlo, non spedire temperature=None al costruttore.
+        parameters = self._build(base := {"model_name": "qwen3.5-4b", "model_provider": "openai",
+             "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True},
+                                 node_sampling={"temperature": None, "top_k": None})
+
+        self.assertNotIn("temperature", parameters)
+        self.assertNotIn("top_k", parameters.get("extra_body", {}))
+        self.assertEqual(parameters["top_p"], base["top_p"], "il resto resta")
+
+    def test_what_the_override_does_not_mention_is_inherited(self):
+        # E' il punto per cui la fusione avviene prima della divisione fra
+        # parametri di primo livello ed extra_body: legare extra_body alla
+        # chiamata avrebbe sostituito il dizionario intero, e top_k - che sta
+        # li' dentro insieme a enable_thinking - sarebbe sparito in silenzio.
+        parameters = self._build(
+            {"model_name": "qwen3.5-4b", "model_provider": "openai",
+             "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True},
+            node_sampling={"enable_thinking": False})
+
+        self.assertEqual(parameters["extra_body"]["top_k"], 20, "top_k sopravvive")
+        self.assertEqual(parameters["top_p"], 0.95)
+        self.assertEqual(parameters["temperature"], 1.0)
 
     def test_the_endpoint_address_is_passed_through(self):
         parameters = self._build(

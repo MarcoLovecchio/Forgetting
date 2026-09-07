@@ -477,6 +477,56 @@ def _print_questions(answers):
         safe_print("")
 
 
+def _print_node_costs(elapsed):
+    """Dove sono finiti i secondi, nodo per nodo.
+
+    Il totale di una run mescola quattro chiamate con bisogni diversi e il carico
+    di una GPU condivisa. I token generati non dipendono dal carico, quindi le
+    due colonne insieme dicono se un nodo e' costato perche' ha ragionato tanto o
+    perche' il cluster era occupato - che e' quello che serve per tarare
+    NODE_SAMPLING un nodo alla volta.
+    """
+    # Differito come gli altri di memory_manager_llm: importarlo qui sopra
+    # tirerebbe dentro langgraph al momento della raccolta, e questo modulo deve
+    # potersi saltare quando lo stack non c'e'.
+    from memory_service.memory_manager_llm import NODE_STATS
+
+    if not NODE_STATS:
+        safe_print("")
+        safe_print("--- COSTO PER NODO ---")
+        safe_print("  (nessuna chiamata registrata)")
+        return
+
+    safe_print("")
+    safe_print("--- COSTO PER NODO ---")
+    safe_print(f"  {'nodo':<18}{'chiam.':>7}{'secondi':>10}{'s/chiam':>9}"
+               f"{'tok out':>10}{'tok/chiam':>11}{'quota':>7}")
+
+    rows = sorted(NODE_STATS.items(), key=lambda item: -item[1]["seconds"])
+    totals = {"calls": 0, "seconds": 0.0, "output_tokens": 0}
+    for name, stats in rows:
+        for key in totals:
+            totals[key] += stats[key]
+
+    for name, stats in rows:
+        calls = stats["calls"] or 1
+        share = stats["seconds"] / elapsed * 100 if elapsed else 0
+        safe_print(f"  {name:<18}{stats['calls']:>7}{stats['seconds']:>10.1f}"
+                   f"{stats['seconds'] / calls:>9.1f}{stats['output_tokens']:>10}"
+                   f"{stats['output_tokens'] / calls:>11.0f}{share:>6.0f}%")
+
+    calls = totals["calls"] or 1
+    safe_print(f"  {'-' * 60}")
+    safe_print(f"  {'totale':<18}{totals['calls']:>7}{totals['seconds']:>10.1f}"
+               f"{totals['seconds'] / calls:>9.1f}{totals['output_tokens']:>10}"
+               f"{totals['output_tokens'] / calls:>11.0f}"
+               f"{totals['seconds'] / elapsed * 100 if elapsed else 0:>6.0f}%")
+
+    if not totals["output_tokens"]:
+        safe_print("  (il server non ha restituito il conteggio dei token: "
+                   "restano i tempi)")
+
+
 def _print_final_report(state, vector_store, config, injected, failures, elapsed,
                        answers, inherited=0):
     safe_print("\n" + SEPARATOR)
@@ -504,6 +554,7 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
     _print_core_memory(state)
     _print_archive(vector_store)
     _print_questions(answers)
+    _print_node_costs(elapsed)
 
     safe_print("\n" + SEPARATOR + "\n")
 
@@ -554,6 +605,11 @@ def test_long_term_interaction():
 
     _configure_langsmith()
     agent, config = _build_agent()
+    # I contatori sono di modulo: azzerarli qui significa misurare questa run e
+    # non quello che il processo ha fatto prima.
+    from memory_service.memory_manager_llm import reset_node_stats
+
+    reset_node_stats()
     # Contato prima di iniettare: dopo non si distinguerebbe piu' quello che
     # ha scritto questa run da quello che ha trovato.
     inherited = _archived_documents(config) or 0
