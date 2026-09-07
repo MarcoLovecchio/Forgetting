@@ -151,7 +151,7 @@ CONVERSATION = [
     "Ho un cane che si chiama Argo.",
     "Argo e' un labrador di quattro anni.",
     "Vado a correre tre volte a settimana.",
-    "Corro sempre la mattina presto, prima del lavoro.",
+    "Corro la mattina presto, prima del lavoro.",
     "Il mio piatto preferito e' la parmigiana di melanzane.",
     "Odio il gusto della liquirizia.",
     "Mia sorella si chiama Chiara e vive a Milano.",

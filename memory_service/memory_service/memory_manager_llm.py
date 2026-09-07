@@ -287,19 +287,12 @@ def generate_answer(state: AgentState):
 
          Answer in one or two sentences, in the language the user wrote in. If what you
          were given does not contain the answer, say so plainly instead of inventing it."""),
-        # Il controllo sul conflitto sta anche qui, dopo la domanda, e in forma
-        # imperativa. Nel system message e' un principio da dedurre - bisogna
-        # prima accorgersi che c'e' un conflitto - e con il ragionamento spento
-        # non veniva applicato: alla domanda "sai dirmi dove abito?" posta subito
-        # dopo "dimentica il mio indirizzo", il modello ha risposto con
-        # l'indirizzo. Ritrattazione e rimpiazzo sono ripetuti tutti e due: il
-        # secondo funzionava gia', ed e' li' per non perderlo.
         ("human", """{input}
 
-Before answering, check the conversation above against the facts.
+Before answering, check the conversation above against the facts or among the recalled memories.
 If the user has just given a newer value, use the newer one.
 If the user has just asked you to forget something, it is gone: do not use it,
-even if it is still listed among the facts.""")
+even if it is still listed among the facts or among the recalled memories.""")
     ])
 
     chain = prompt | get_llm("generate_answer")
@@ -311,11 +304,6 @@ even if it is still listed among the facts.""")
          "retrieved_memory": state.get("retrieved_memory", ""),
          "messages": messages_to_str(history)}))
 
-    # Quando la domanda arriva come current_query - cioe' dal campo user_input
-    # della GetMemory - non e' ancora in messages, e appendere la sola risposta
-    # lascerebbe la coppia invertita: la risposta prima della domanda a cui
-    # risponde, e il consolidamento leggerebbe quell'ordine. Quando invece la
-    # domanda era gia' l'ultimo messaggio, riappenderla la duplicherebbe.
     asked_out_of_band = bool(str(state.get("current_query") or "").strip())
     turn = [HumanMessage(content=user_query)] if asked_out_of_band else []
 
@@ -363,11 +351,6 @@ def summarize_memories_node(state: AgentState):
         Never emit two operations with the same fact text. If one thing the user
         said concerns two stored memories, choose the one it belongs to.
         Facts that are always true together belong in a single memory."""),
-        # Il contesto prima, le fonti dopo: l'ordine non e' estetico. Con il
-        # blocco vietato in fondo era lui a occupare la posizione di recenza, e
-        # sui turni di sola domanda - dove il blocco utente non contiene fatti -
-        # era anche l'unico testo con sostanza nel prompt. Da li' uscivano le
-        # risposte dell'assistente riestratte come memorie.
         ("human", """For context only, what the assistant replied - do NOT extract facts from here:
 
 {assistant_messages}
