@@ -75,12 +75,6 @@ def messages_to_str(messages) -> str:
 
 REQUIRED = "required"
 
-
-# Quanto costa ogni nodo. Senza questo, una run piu' corta dice solo che e' piu'
-# corta: il tempo totale mescola quattro chiamate con bisogni diversi e il carico
-# della GPU, che e' condivisa. I token generati invece non dipendono dal carico,
-# quindi separano "ha ragionato di meno" da "il cluster era piu' libero" - ed e'
-# la distinzione che serve per tarare NODE_SAMPLING un nodo alla volta.
 NODE_STATS: Dict[str, Dict[str, float]] = {}
 
 
@@ -99,8 +93,6 @@ def _timed(node: str, call):
         node, {"calls": 0, "seconds": 0.0, "input_tokens": 0, "output_tokens": 0})
     stats["calls"] += 1
     stats["seconds"] += elapsed
-    # I doppi dei test non lo popolano, e nemmeno ogni provider: l'assenza vale
-    # zero token, non un errore.
     usage = getattr(response, "usage_metadata", None) or {}
     stats["input_tokens"] += int(usage.get("input_tokens") or 0)
     stats["output_tokens"] += int(usage.get("output_tokens") or 0)
@@ -282,8 +274,8 @@ def generate_answer(state: AgentState):
          something the user told you.
 
          The memory is consolidated with a delay, so the exchanges above can already
-         correct or retract what the facts say. When the user has just changed something,
-         or has just asked you to forget it, the conversation wins over the stored fact.
+         correct or retract what the facts or the recalled memories say. When the user has just changed something,
+         or has just asked you to forget it, the conversation wins over the stored fact and the recalled memories.
 
          Answer in one or two sentences, in the language the user wrote in. If what you
          were given does not contain the answer, say so plainly instead of inventing it."""),
@@ -345,8 +337,12 @@ def summarize_memories_node(state: AgentState):
         future interactions.
 
         What the user is doing with their words is never itself a fact.
-        A question stores nothing. Asking to forget something is a delete
-        on the memory it names, not a new memory about the request.
+        A question produces no operations at all - not even a redundant.
+        Asking to forget something is a delete on the memory it names,
+        not a new memory about the request.
+
+        The known memories are there to be pointed at, not to be confirmed.
+        A memory the user did not mention in this exchange gets no operation.
 
         Never emit two operations with the same fact text. If one thing the user
         said concerns two stored memories, choose the one it belongs to.
@@ -513,16 +509,9 @@ class MemoryAgent():
         query = str(query or "").strip()
 
         if interaction_mode == "retrieve":
-            # La cache vale solo finche' la domanda e' la stessa: due domande
-            # diverse di fila devono produrre due risposte diverse.
             if self.up_to_date and query == self.state.get("current_query", ""):
                 return self.state
             self.up_to_date = True
-            # Il recupero appartiene alla domanda che lo ha provocato. tool_node
-            # conserva retrieved_memory quando la ricerca non avviene, quindi
-            # senza questo azzeramento un giro che decide di non cercare
-            # risponderebbe con le memorie tirate su per la domanda precedente -
-            # e le pubblicherebbe in retrieved_memories come se fossero sue.
             self.state["retrieved_memory"] = ""
 
         if interaction_mode == "insert":
@@ -532,9 +521,6 @@ class MemoryAgent():
         self.state["current_query"] = query if interaction_mode == "retrieve" else ""
 
         if interaction_mode == "retrieve" and not query_and_history(self.state)[0]:
-            # Nessuna domanda: ne' dal chiamante ne' fra i messaggi. Il ramo
-            # girerebbe su un input vuoto, cercherebbe in archivio con niente e
-            # appenderebbe una risposta a nessuno.
             print("No question to answer.")
             return self.state
 

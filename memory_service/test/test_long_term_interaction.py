@@ -119,8 +119,6 @@ from live_model import live_stack_unavailable  # noqa: E402
 from snapshot import SEPARATOR, safe_print  # noqa: E402
 
 
-# Lo skip a livello di modulo resta economico (guarda solo la configurazione):
-# la raggiungibilita' dei modelli costa una chiamata e si verifica dentro il test.
 pytestmark = pytest.mark.skipif(
     not os.getenv("LLM_CONFIG"),
     reason="LLM_CONFIG is required to run the long term interaction test",
@@ -131,8 +129,7 @@ ID_WIDTH = 8
 
 
 # --------------------------------------------------------------------------- #
-# La conversazione: 117 messaggi dell'utente (101 fatti e 16 domande),
-# nell'ordine in cui li direbbe
+# La conversazione: 117 messaggi dell'utente (101 fatti e 16 domande)
 # --------------------------------------------------------------------------- #
 
 CONVERSATION = [
@@ -163,11 +160,6 @@ CONVERSATION = [
     "Sono intollerante al lattosio, ma solo leggermente.",
     "Faccio yoga il sabato mattina.",
 
-    # --- da qui in poi tutto mescolato, come in una sessione vera ---------- #
-    # Il commento segna il caso atteso: l'ordine rispetta le dipendenze, un
-    # fatto viene sempre introdotto prima di essere ripetuto, raffinato,
-    # smentito o cancellato. I messaggi che finiscono con "?" sono domande:
-    # non consolidano, interrogano la memoria (vedi _is_question).
     "Oggi al lavoro ho avuto una giornata lunga, sette pazienti.",  # chiacchiere
     "Che cosa sai della mia alimentazione?",  # DOMANDA: fatti della presentazione
     "Ti ripeto che sono allergica alle arachidi.",  # redundant: allergia

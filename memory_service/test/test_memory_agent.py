@@ -507,8 +507,14 @@ class AnswerPromptTest(MemoryServiceTestCase):
         # davanti e ha risposto con l'indirizzo.
         prompt = self.answer_prompt()
 
-        self.assertIn("correct or retract what the facts say", prompt)
+        self.assertIn("correct or retract what the facts or the recalled memories say",
+                      prompt)
         self.assertIn("the conversation wins over the stored fact", prompt)
+        # I blocchi nel prompt sono tre e hanno etichette diverse: la regola deve
+        # nominare anche quello d'archivio, perche' e' li' che stava l'indirizzo
+        # da dimenticare a msg 45 - e quell'etichetta ne afferma pure la
+        # pertinenza ("recalled for this question").
+        self.assertIn("among the facts or among the recalled memories", prompt)
 
     def test_both_kinds_of_conflict_are_named_after_the_question(self):
         # Con il ragionamento acceso bastava il principio nel system message.
@@ -848,15 +854,32 @@ class ExtractionStanceTest(MemoryServiceTestCase):
         # come memoria, e in una run italiana "L'utente chiede esplicitamente
         # che il suo indirizzo non venga memorizzato" ha preso il posto del
         # delete che quel messaggio doveva provocare.
+        prompt = self.consolidation_prompt()
+
+        self.assertIn("A question produces no operations at all", prompt)
+        self.assertIn("not a new memory about the request", prompt)
+
+    def test_the_known_memories_are_an_index_not_a_source(self):
+        # "A question stores nothing" non bastava: un redundant non memorizza
+        # niente, quindi il modello lo leggeva come rispettato. Su un turno di
+        # sola domanda ha emesso SETTE redundant - esattamente i 3 item di core
+        # memory piu' i 4 candidati d'archivio - confermando l'intera lista che
+        # gli era stata data per puntarci. E ogni redundant rinfresca updated_at,
+        # che e' il campo su cui poggerebbe un eventuale segnale di ritenzione.
+        prompt = self.consolidation_prompt()
+
+        self.assertIn(
+            "The known memories are there to be pointed at, not to be confirmed.",
+            prompt)
+        self.assertIn("gets no operation", prompt)
+
+    def consolidation_prompt(self):
         self.agent.state["messages"] = self.conversation(8)
         self.agent.run_memory_agent("insert")
 
         for invocation in self.llm.invocations:
             if "InsertCoreMemories" in invocation["tools"]:
-                prompt = invocation["prompt"]
-                self.assertIn("A question stores nothing.", prompt)
-                self.assertIn("not a new memory about the request", prompt)
-                return
+                return invocation["prompt"]
         raise AssertionError("il consolidamento non e' mai stato invocato")
 
     def test_one_fact_does_not_become_two_operations(self):

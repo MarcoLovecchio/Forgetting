@@ -57,19 +57,21 @@ def load_environment(override: bool = False) -> list:
                 load_dotenv(path, override=override)
                 loaded.append(path)
         if loaded:
-            # Stop at the first directory that carries the configuration.
             break
 
     return loaded
 
 
 NODE_SAMPLING: Dict[str, Dict[str, Any]] = {
-    "retrieval": {},
+    "retrieval": {"enable_thinking": False,
+                "temperature": 0.7, "top_p": 0.8,
+                "presence_penalty": 1.5,},
     "generate_answer": {"enable_thinking": False,
-    "temperature": 0.7, "top_p": 0.8,
-    "presence_penalty": 1.5,},
+                        "temperature": 0.7, "top_p": 0.8,},
     "consolidation": {},
-    "core_split": {},
+    "core_split": {"enable_thinking": False,
+                    "temperature": 0.7, "top_p": 0.8,
+                    "presence_penalty": 1.5,},
 }
 
 
@@ -109,15 +111,6 @@ class MemoryConfig:
     node_name: str = "memory_agent"
     maximum_historical_messages: int = 4
     core_memory_limit: int = 400
-    # Whether the retrieve branch also composes the reply to the user. On,
-    # because this is the only node in the architecture that answers FROM the
-    # memory: explainability answers from the results of a database query and
-    # never reads what it remembers. It was off for a while, when the reply
-    # reached no caller and only landed in last_messages as a turn nobody read;
-    # retrieved_memories in the service response and this node appending the
-    # question together with its answer closed both holes.
-    # MEMORY_GENERATE_ANSWER=false turns it off again, for a caller that has its
-    # own answering node and only wants the context.
     generate_answer: bool = True
 
     # Archival memory (ChromaDB)
@@ -126,18 +119,10 @@ class MemoryConfig:
 
     # Chat model, read from the LLM_CONFIG entry of this node
     llm_config: Dict[str, Any] = field(default_factory=dict)
-    # Environment variable holding the API key, empty when the endpoint does not
-    # want one. It is deliberately NOT defaulted to GROQ_API_KEY: the memory
-    # agent talks to the cluster, and that key belongs to the other nodes - it
-    # would travel to an endpoint that has no business seeing it.
     api_key_env: str = ""
-    # Endpoint of the model server. None means "the provider default", which is
-    # what the hosted providers use.
     base_url: Optional[str] = None
 
     # Embedding model, read from the EMBEDDING_CONFIG entry of this node.
-    # Kept separate from llm_config because it is a different model, served
-    # possibly by a different runtime.
     embedding_config: Dict[str, Any] = field(default_factory=dict)
     embedding_base_url: Optional[str] = None
 
