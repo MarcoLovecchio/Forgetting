@@ -287,7 +287,19 @@ def generate_answer(state: AgentState):
 
          Answer in one or two sentences, in the language the user wrote in. If what you
          were given does not contain the answer, say so plainly instead of inventing it."""),
-        ("human", "{input}")
+        # Il controllo sul conflitto sta anche qui, dopo la domanda, e in forma
+        # imperativa. Nel system message e' un principio da dedurre - bisogna
+        # prima accorgersi che c'e' un conflitto - e con il ragionamento spento
+        # non veniva applicato: alla domanda "sai dirmi dove abito?" posta subito
+        # dopo "dimentica il mio indirizzo", il modello ha risposto con
+        # l'indirizzo. Ritrattazione e rimpiazzo sono ripetuti tutti e due: il
+        # secondo funzionava gia', ed e' li' per non perderlo.
+        ("human", """{input}
+
+Before answering, check the conversation above against the facts.
+If the user has just given a newer value, use the newer one.
+If the user has just asked you to forget something, it is gone: do not use it,
+even if it is still listed among the facts.""")
     ])
 
     chain = prompt | get_llm("generate_answer")

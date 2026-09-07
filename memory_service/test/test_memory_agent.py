@@ -510,6 +510,24 @@ class AnswerPromptTest(MemoryServiceTestCase):
         self.assertIn("correct or retract what the facts say", prompt)
         self.assertIn("the conversation wins over the stored fact", prompt)
 
+    def test_both_kinds_of_conflict_are_named_after_the_question(self):
+        # Con il ragionamento acceso bastava il principio nel system message.
+        # Spegnendolo, i rimpiazzi hanno continuato a funzionare (msg 30 e 49) e
+        # le ritrattazioni no (msg 45, l'indirizzo che doveva essere dimenticato):
+        # sopprimere un fatto che si ha davanti e' un'operazione di secondo grado
+        # e serve nella posizione piu' recente, in forma imperativa. Il rimpiazzo
+        # e' ripetuto anche se gia' funzionava, per non perderlo.
+        prompt = self.answer_prompt()
+
+        self.assertIn("If the user has just given a newer value, use the newer one.",
+                      prompt)
+        self.assertIn("If the user has just asked you to forget something, it is gone",
+                      prompt)
+        self.assertLess(
+            prompt.index("cosa bevo la mattina?"),
+            prompt.index("it is gone"),
+            "il controllo deve venire dopo la domanda, non prima")
+
     def test_ids_and_distances_are_not_to_be_quoted_back(self):
         self.assertIn("never mention the id or the number", self.answer_prompt())
 
