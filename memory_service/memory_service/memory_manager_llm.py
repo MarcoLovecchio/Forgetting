@@ -346,7 +346,11 @@ def summarize_memories_node(state: AgentState):
 
         What the user is doing with their words is never itself a fact.
         A question stores nothing. Asking to forget something is a delete
-        on the memory it names, not a new memory about the request."""),
+        on the memory it names, not a new memory about the request.
+
+        Never emit two operations with the same fact text. If one thing the user
+        said concerns two stored memories, choose the one it belongs to.
+        Facts that are always true together belong in a single memory."""),
         # Il contesto prima, le fonti dopo: l'ordine non e' estetico. Con il
         # blocco vietato in fondo era lui a occupare la posizione di recenza, e
         # sui turni di sola domanda - dove il blocco utente non contiene fatti -

@@ -841,6 +841,26 @@ class ExtractionStanceTest(MemoryServiceTestCase):
                 return
         raise AssertionError("il consolidamento non e' mai stato invocato")
 
+    def test_one_fact_does_not_become_two_operations(self):
+        # Una frase sola - "mia sorella Chiara e' sempre a Milano" - ha prodotto
+        # due update con il testo IDENTICO, perche' la sorella era stata spezzata
+        # in due memorie all'inizio: nome da una parte, citta' dall'altra. Il
+        # risultato sono due item uguali, tutti e due attivi, che poi tornano
+        # insieme nei recuperi.
+        self.agent.state["messages"] = self.conversation(8)
+        self.agent.run_memory_agent("insert")
+
+        for invocation in self.llm.invocations:
+            if "InsertCoreMemories" in invocation["tools"]:
+                prompt = invocation["prompt"]
+                self.assertIn(
+                    "Never emit two operations with the same fact text.", prompt)
+                self.assertIn(
+                    "Facts that are always true together belong in a single memory.",
+                    prompt)
+                return
+        raise AssertionError("il consolidamento non e' mai stato invocato")
+
     def test_the_prompt_frames_facts_as_something_to_classify(self):
         # Sopra la finestra di cinque, altrimenti il consolidamento non parte.
         self.agent.state["messages"] = self.conversation(8)

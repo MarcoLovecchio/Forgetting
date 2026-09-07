@@ -63,25 +63,13 @@ def load_environment(override: bool = False) -> list:
     return loaded
 
 
-# Sovrascritture per nodo dei parametri del modello. Quello che non e' elencato
-# qui viene dalla voce LLM_CONFIG di .config, quindi un dizionario vuoto
-# significa "come tutti gli altri" - ed e' lo stato attuale, cioe' nessun
-# cambiamento di comportamento finche' non ci si scrive dentro.
-#
-# I quattro nodi hanno bisogni diversi: classificare fatti contro id e' il posto
-# dove il ragionamento paga, scegliere fra due strumenti o scrivere due frasi da
-# un testo gia' pronto molto meno. Accendere o spegnere il ragionamento per uno
-# di loro e' una riga qui.
-#
-# Attenzione al campionamento: temperature e top_p in .config sono i valori che
-# Qwen consiglia PER la modalita' con ragionamento. Spegnendolo per un nodo,
-# vanno messi qui anche i suoi, presi dal model card - lasciare solo
-# enable_thinking lo farebbe girare con il preset sbagliato.
 NODE_SAMPLING: Dict[str, Dict[str, Any]] = {
-    "retrieval": {},        # decide fra retrieve_memory e NoSearchNeeded
-    "generate_answer": {},  # compone la risposta all'utente
-    "consolidation": {},    # estrae i fatti e li classifica
-    "core_split": {},       # decide cosa resta in core e cosa va in archivio
+    "retrieval": {},
+    "generate_answer": {"enable_thinking": False,
+    "temperature": 0.7, "top_p": 0.8,
+    "presence_penalty": 1.5,},
+    "consolidation": {},
+    "core_split": {},
 }
 
 
