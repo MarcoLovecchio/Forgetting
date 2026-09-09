@@ -63,9 +63,19 @@ riga di avanzamento ogni 10 messaggi. **Alla fine** viene stampato il resoconto:
 operation log completo, core memory, archivio, e domande con le relative
 risposte.
 
+Le diciassette domande sono anche i punti di valutazione di **FAMA** (Memora,
+arXiv:2604.20006): ognuna porta in fama.py dei criteri binari - cosa la risposta
+deve contenere, cosa non deve piu' contenere - e il resoconto ne ricava un
+punteggio. Lo calcola due volte, con gli stessi criteri: una sulla risposta, che
+e' la metrica del paper e misura tutta la catena, e una sulle memorie attive al
+momento della domanda, che non passa da nessun modello e misura la sola
+consolidation. Lo scarto fra le due dice quale nodo ha ceduto.
+
 Le assert sono strutturali (invarianti che devono valere qualunque cosa decida il
 modello), non sul contenuto: con un LLM vero pretendere una classificazione
-esatta renderebbe il test inutilizzabile.
+esatta renderebbe il test inutilizzabile. **Anche FAMA e' misurata e stampata,
+mai asserita**: con diciassette domande e temperature 1.0 una soglia
+trasformerebbe la varianza del campionamento in un test che fallisce a caso.
 
 Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG in .config, e i due modelli
 raggiungibili all'indirizzo indicato da MEMORY_LLM_BASE_URL /
@@ -115,6 +125,7 @@ from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
 from memory_service.consolidation import get_active_items  # noqa: E402
 
+import fama  # noqa: E402
 from live_model import live_stack_unavailable  # noqa: E402
 from snapshot import SEPARATOR, safe_print  # noqa: E402
 
@@ -129,7 +140,11 @@ ID_WIDTH = 8
 
 
 # --------------------------------------------------------------------------- #
-# La conversazione: 117 messaggi dell'utente (101 fatti e 16 domande)
+# La conversazione: 117 messaggi dell'utente (100 fatti e 17 domande)
+#
+# Quali siano le diciassette lo dice fama.QUESTIONS, non la punteggiatura:
+# l'ultimo messaggio chiede un riassunto senza punto interrogativo, ed e' una
+# domanda come le altre.
 # --------------------------------------------------------------------------- #
 
 CONVERSATION = [
@@ -308,18 +323,48 @@ def _build_agent():
     return MemoryAgent(config=config), config
 
 
-def _is_question(message: str) -> bool:
+def _is_question(index: int) -> bool:
     """Solo per il resoconto: quali messaggi vale la pena riportare per esteso.
 
     NON decide il ramo del grafo. Ogni messaggio, domanda o no, passa da retrieve
     e poi da insert, come nella pipeline vera: e' che le risposte alle domande
     sono le uniche interessanti da leggere fra centodiciassette.
+
+    A deciderlo e' la tabella dei criteri, non il punto interrogativo. Prima era
+    il contrario, e il messaggio 117 - "Riassumi tutto quello che sai di me." -
+    non finiva nel resoconto per motivi di punteggiatura, pur essendo la domanda
+    che mette alla prova tutta la memoria insieme.
     """
-    return message.strip().endswith("?")
+    return index in fama.QUESTIONS
 
 
 def questions_in(messages) -> int:
-    return sum(1 for message in messages if _is_question(message))
+    return sum(1 for index in range(1, len(messages) + 1) if _is_question(index))
+
+
+def _active_memory_text(state, vector_store) -> str:
+    """Le memorie attive in questo istante: core piu' archivio, una per riga.
+
+    E' l'oggetto su cui si misura FAMA-memoria. Solo le attive: quello che e'
+    stato cancellato o superato resta in archivio come tombstone, e contarlo
+    significherebbe rimproverare alla consolidation di aver conservato la storia
+    invece di averla dimenticata.
+
+    Va letto **prima** dell'insert, perche' e' lo stato da cui la risposta e'
+    stata composta: dopo il consolidamento della domanda sarebbe gia' un altro.
+    """
+    lines = [item.content for item in get_active_items(state["core_memory"])]
+    try:
+        stored = vector_store.get()
+    except Exception:
+        return "\n".join(lines)
+
+    documents = stored.get("documents") or []
+    metadatas = stored.get("metadatas") or []
+    for content, metadata in zip(documents, metadatas):
+        if (metadata or {}).get("status") == "active":
+            lines.append(str(content))
+    return "\n".join(lines)
 
 
 def _message_limit():
@@ -466,7 +511,102 @@ def _print_questions(answers):
                 safe_print(f"           archivio: {line}")
         else:
             safe_print("           archivio: (non interrogato, e' bastata la core memory)")
+
+        on_answer, on_memory = answer["on_answer"], answer["on_memory"]
+        safe_print(f"           FAMA: risposta {on_answer.fama:.2f}"
+                   f" | memoria {on_memory.fama:.2f}"
+                   f" | {fama.verdict(on_memory, on_answer)}")
+        for name, scored in (("risposta", on_answer), ("memoria", on_memory)):
+            if scored.missed:
+                safe_print(f"             {name}: non ricorda {list(scored.missed)}")
+            if scored.leaked:
+                safe_print(f"             {name}: non ha dimenticato {list(scored.leaked)}")
         safe_print("")
+
+
+def _cell(value, width=7):
+    """Una cifra della tabella FAMA, o un trattino se il conto non esiste.
+
+    MPA senza criteri di presenza e FAA senza criteri di assenza sono None, non
+    zero: stamparli come 0.0 direbbe "e' andata malissimo" dove invece non c'era
+    niente da misurare.
+    """
+    return f"{'-':>{width}}" if value is None else f"{value:>{width}.1f}"
+
+
+def _print_fama(answers):
+    """FAMA domanda per domanda, sulla risposta e sulle memorie attive.
+
+    Le stesse due colonne di sempre non basterebbero: un numero solo sulla
+    risposta somma consolidation, retrieval e generate_answer, e quando cala non
+    dice quale dei tre ha ceduto. La colonna "memoria" applica gli stessi criteri
+    allo store al momento della domanda, dove non c'e' nessun modello di mezzo:
+    e' li' che si legge se la consolidation ha fatto il suo lavoro.
+
+    Il verdetto in fondo alla riga e' la lettura congiunta delle due:
+    "risposta" quando la memoria era giusta e la risposta no, "consolidation"
+    quando gia' lo store era sbagliato, "fuori memoria" quando la risposta era
+    giusta pur senza avere in memoria di che dirlo - cioe' ha risposto dal
+    contesto della conversazione, non dalla memoria.
+    """
+    safe_print("")
+    safe_print("--- FAMA (Memora, arXiv:2604.20006) ---")
+    if not answers:
+        safe_print("  (nessuna domanda valutata)")
+        return
+
+    safe_print("  FAMA = max(0, MPA - lam * (1 - FAA)),  lam = N_assenza / N_criteri")
+    safe_print("")
+    safe_print(f"  {'':>5} {'':>6} {'':>6} |{'sulla risposta':^21} |"
+               f"{'sulle memorie attive':^21} |")
+    safe_print(f"  {'msg':>5} {'P/F':>6} {'lam':>6} |{'MPA':>7}{'FAA':>7}{'FAMA':>7} |"
+               f"{'MPA':>7}{'FAA':>7}{'FAMA':>7} | verdetto")
+
+    verdicts = {}
+    for answer in answers:
+        on_answer, on_memory = answer["on_answer"], answer["on_memory"]
+        subject = fama.QUESTIONS[answer["index"]]
+        name = fama.verdict(on_memory, on_answer)
+        verdicts[name] = verdicts.get(name, 0) + 1
+        shape = f"{len(subject.presence)}/{len(subject.forgetting)}"
+        safe_print(f"  {answer['index']:>5} {shape:>6} {on_answer.lam:>6.2f} |"
+                   f"{on_answer.mpa:>7.2f}{on_answer.faa:>7.2f}{on_answer.fama:>7.2f} |"
+                   f"{on_memory.mpa:>7.2f}{on_memory.faa:>7.2f}{on_memory.fama:>7.2f} |"
+                   f" {name}")
+
+    reply = fama.aggregate([answer["on_answer"] for answer in answers])
+    store = fama.aggregate([answer["on_memory"] for answer in answers])
+    safe_print(f"  {'-' * 82}")
+    safe_print(f"  {'tot':>5} {'':>6} {'':>6} |"
+               f"{_cell(reply['mpa'])}{_cell(reply['faa'])}{reply['fama']:>7.1f} |"
+               f"{_cell(store['mpa'])}{_cell(store['faa'])}{store['fama']:>7.1f} |"
+               f" su {reply['questions']} domande")
+
+    # Il punteggio dell'architettura. MPA e FAA della riga sopra non sono la
+    # media delle colonne: sono micro-medie sui criteri, come nel riferimento,
+    # quindi una domanda con sette criteri pesa per sette.
+    safe_print("")
+    safe_print(f"  --- PUNTEGGIO COMPLESSIVO ({reply['questions']} domande, "
+               f"{reply['criteria']} criteri) ---")
+    safe_print(f"  {'':<38}{'risposta':>12}{'memoria':>12}")
+    for label, key in (("FAMA", "fama"),
+                       ("MPA  (presenza, micro-media)", "mpa"),
+                       ("FAA  (assenza, micro-media)", "faa"),
+                       ("Criteri passati in tutto", "accuracy")):
+        safe_print(f"  {label:<38}{_cell(reply[key], 12)}{_cell(store[key], 12)}")
+
+    if verdicts:
+        summary = ", ".join(f"{name} {count}"
+                            for name, count in sorted(verdicts.items(), key=lambda x: -x[1]))
+        safe_print(f"\n  Verdetti: {summary}")
+
+    safe_print("")
+    safe_print("  Il conto e' quello del riferimento (model_based_evaluator.py), ma il")
+    safe_print("  numero non e' confrontabile con le tabelle del paper: altri dati, una")
+    safe_print("  persona invece di dieci, 17 domande invece di 150, altro giudice.")
+    safe_print("  Serve a confrontare questa architettura con se stessa, e nemmeno da")
+    safe_print("  una run sola: una domanda che cambia esito muove il totale di circa")
+    safe_print("  sei punti, e a temperature 1.0 l'esito cambia da solo.")
 
 
 def _print_node_costs(elapsed):
@@ -546,6 +686,7 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
     _print_core_memory(state)
     _print_archive(vector_store)
     _print_questions(answers)
+    _print_fama(answers)
     _print_node_costs(elapsed)
 
     safe_print("\n" + SEPARATOR + "\n")
@@ -643,15 +784,23 @@ def test_long_term_interaction():
                 # duplicherebbe il turno.
                 answer = _last_answer(state)
 
+                # Fotografia della memoria attiva com'era quando la risposta e'
+                # stata composta: dopo l'insert non sarebbe piu' la stessa.
+                memory = (_active_memory_text(state, vector_store)
+                          if _is_question(index) else "")
+
                 # --- come explainability: send_update_request(input, risposta) -
                 agent.run_memory_agent("insert")
 
-            if _is_question(message):
+            if _is_question(index):
+                subject = fama.QUESTIONS[index]
                 answers.append({
                     "index": index,
                     "question": message,
                     "answer": answer,
                     "retrieved": retrieved,
+                    "on_answer": fama.score(subject, answer),
+                    "on_memory": fama.score(subject, memory),
                 })
         except Exception as error:
             failures.append((index, message, repr(error)))
@@ -676,7 +825,7 @@ def test_long_term_interaction():
 
     expected_questions = questions_in(messages)
     assert len(answers) == expected_questions - len(
-        [f for f in failures if _is_question(f[1])]), (
+        [f for f in failures if _is_question(f[0])]), (
         "ogni domanda andata a buon fine deve comparire nel resoconto")
     unanswered = [answer for answer in answers if not answer["answer"]]
     assert not unanswered, (
