@@ -67,7 +67,8 @@ class CoreMemoryItem(BaseModel):
 class OperationLogEntry(BaseModel):
     """One consolidation decision, kept for inspection and evaluation."""
 
-    op_type: Literal["create", "redundant", "update", "contradict", "delete", "archive"]
+    op_type: Literal["create", "redundant", "update", "contradict", "delete", "archive",
+                     "evict"]
     item_id: str
     related_item_id: Optional[str] = None
     content: Optional[str] = None

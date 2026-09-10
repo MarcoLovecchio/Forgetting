@@ -130,8 +130,8 @@ class FakeVectorStore:
     """In-memory stand-in for the Chroma archival store.
 
     Mirrors the slice of the langchain Chroma API the service uses: ``add_texts``
-    (which upserts by id), ``get`` and ``similarity_search``. Metadata is stored
-    and returned, because consolidation reads the item status from there.
+    (which upserts by id), ``get``, ``delete`` and ``similarity_search``. Metadata
+    is stored and returned, because consolidation reads the item status from there.
     """
 
     def __init__(self):
@@ -141,6 +141,9 @@ class FakeVectorStore:
         # Ogni add_texts e' un embedding ricalcolato: contarle serve a verificare
         # che un cambio di status non ne paghi uno.
         self.writes: List[List[str]] = []
+        # Ogni delete ricevuta, con i suoi id: l'eviction non deve mai farne una
+        # a vuoto, e questo e' il modo di vederlo.
+        self.deletes: List[List[str]] = []
         self._collection = FakeCollection(self)
 
     def add_texts(self, texts, ids=None, metadatas=None, **kwargs):
@@ -157,17 +160,45 @@ class FakeVectorStore:
             self.metadatas[doc_id] = dict(metadata or {})
         return ids
 
-    def get(self, ids=None, **kwargs):
-        """Same contract as Chroma.get: no ids means the whole collection."""
+    def get(self, ids=None, where=None, **kwargs):
+        """Same contract as Chroma.get: no ids means the whole collection.
+
+        `where` solo con l'uguaglianza, che e' quello che il servizio usa. Un
+        operatore ("$in", "$ne") solleva invece di essere ignorato: ignorarlo
+        vorrebbe dire rispondere con tutta la collezione, e il doppio smetterebbe
+        di assomigliare allo store proprio nel punto che si sta provando.
+        """
         if ids is None:
             selected = list(self.documents)
         else:
             selected = [doc_id for doc_id in ids if doc_id in self.documents]
+        for key, value in (where or {}).items():
+            if key.startswith("$") or isinstance(value, dict):
+                raise NotImplementedError(f"FakeVectorStore.get: filtro non supportato {where!r}")
+            selected = [doc_id for doc_id in selected
+                        if self.metadatas.get(doc_id, {}).get(key) == value]
         return {
             "ids": selected,
             "documents": [self.documents[doc_id] for doc_id in selected],
             "metadatas": [self.metadatas.get(doc_id, {}) for doc_id in selected],
         }
+
+    def delete(self, ids=None, **kwargs):
+        """Come Chroma.delete, per id.
+
+        Senza id solleva: e' il caso da cui l'eviction si difende, e un doppio che
+        lo accettasse in silenzio non potrebbe mai farlo vedere. Ma la chiamata
+        viene registrata **prima** di sollevare: l'eviction assorbe le eccezioni
+        dello store, e un doppio che sollevasse senza lasciare traccia farebbe
+        sparire la delete a vuoto proprio dalla lista che i test guardano.
+        """
+        ids = list(ids or [])
+        self.deletes.append(ids)
+        if not ids:
+            raise ValueError("FakeVectorStore.delete chiamata senza id")
+        for doc_id in ids:
+            self.documents.pop(doc_id, None)
+            self.metadatas.pop(doc_id, None)
 
     def similarity_search_with_score(self, query, k=3, filter=None, **kwargs):
         """Come similarity_search, ma con la distanza accanto a ogni documento.
