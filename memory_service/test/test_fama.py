@@ -323,6 +323,22 @@ class DeleteVersusUpdateTest(unittest.TestCase):
         self.assertFalse(criterion.satisfied(
             "Non bevi più caffè. Il caffè lo prendi alle otto."))
 
+    def test_a_retraction_covers_the_whole_sentence(self):
+        criterion = fama.supersedes("caffe'", "caffe", "coffee")
+        self.assertTrue(criterion.satisfied(
+            "La memoria diceva che bevevi caffè; poi hai eliminato il caffè."))
+        self.assertFalse(criterion.satisfied(
+            "Bevevi caffè la mattina. Poi hai eliminato il caffè del pomeriggio."))
+        self.assertFalse(criterion.satisfied(
+            "The user no longer drinks coffee\nThe user drinks coffee every morning"))
+
+    def test_the_replacing_value_in_the_same_sentence_narrates_the_change(self):
+        criterion = fama.supersedes("milano", "milano", replaced_by=("torino",))
+        self.assertTrue(criterion.satisfied("Vive a Torino, ci è andata da Milano."))
+        self.assertFalse(criterion.satisfied("Vive a Milano. A Torino va in vacanza."))
+        self.assertFalse(fama.supersedes("milano", "milano").satisfied(
+            "Vive a Torino, ci è andata da Milano."))
+
 
 class OpenQuestionTest(unittest.TestCase):
     """Le domande aperte vogliono alcuni fatti, non quei fatti."""
@@ -576,6 +592,8 @@ class CriteriaTableTest(unittest.TestCase):
             45: "Abiti a Mondello, in provincia di Palermo.",
             49: "La mattina bevi il caffè.",
             76: "Argo è un labrador.",
+            92: "Suoni la chitarra e il pianoforte e ascolti jazz.",  # convivevano
+            107: "Nuoti, corri e fai yoga il sabato.",
             113: "Hai un cane, si chiama Argo.",
         }
         for index, answer in wrong.items():

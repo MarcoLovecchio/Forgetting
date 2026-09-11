@@ -63,7 +63,10 @@ scrivere un criterio di dimenticanza:
     forgets()     dopo un delete: il valore non deve comparire, punto.
                   La memoria non c'e' piu', nominarla e' gia' una perdita.
     supersedes()  dopo un update o una contraddizione: il valore puo' comparire
-                  solo come superato ("non piu' X", "prima X", "da X a Y").
+                  solo come superato - nella sua proposizione ("non piu' X",
+                  "prima X"), oppure in una frase che lo ritratta altrove o
+                  che nomina il valore che l'ha sostituito ("mangi pesce dopo
+                  sei anni di vegetarianesimo").
 
 La differenza non e' arbitraria, e' la semantica delle due operazioni: una
 cancellazione non deve lasciare traccia, un aggiornamento puo' essere raccontato
@@ -89,12 +92,10 @@ Dove le due lingue condividono la radice basta una voce: "vegetarian*" prende
 "vegetariana" e "vegetarian", "clinic*" prende "clinica" e "clinic", "eliminat*"
 prende "eliminato" ed "eliminated".
 
-Resta una distorsione, ed e' bene saperla: il controllo di superamento guarda i
-marcatori nella stessa proposizione del valore, quindi una risposta prolissa che
-riepiloga la storia di un fatto puo' passare, e una che nomina il valore vecchio
-in una proposizione tutta sua viene contata come errore. La distorsione e'
-conservativa - punisce, non regala - e va nella stessa direzione della regola
-delle due frasi che generate_answer ha gia' nel prompt.
+Resta una distorsione, ed e' bene saperla: il controllo di superamento guarda la
+frase del valore, quindi una frase che si contraddice da sola ("bevi caffe' la
+mattina, ma hai eliminato il caffe'") passa, e il valore vecchio nominato in una
+frase tutta sua, senza marcatori, viene contato come errore.
 
 Fedelta' al riferimento
 -----------------------
@@ -153,6 +154,10 @@ _GAP = 24
 # superamento si cercano nella proposizione del valore, e senza la virgola
 # "bevi caffe', non te'" passerebbe per una negazione del caffe'.
 _CLAUSE_BREAK = re.compile(r"[.!?;:,\n]")
+
+# Su cosa si spezza una frase: mai oltre un a capo, che nella memoria separa due
+# fatti diversi.
+_SENTENCE_BREAK = re.compile(r"[.!?\n]")
 
 # Il valore compare, ma negato: la memoria e' stata cancellata o smentita.
 # I marcatori portano il proprio '*': stelletta dove serve la famiglia di
@@ -253,6 +258,15 @@ def _clause_around(text: str, position: int) -> str:
     return text[start:end.start() if end else len(text)]
 
 
+def _sentence_around(text: str, position: int) -> Tuple[int, int]:
+    """Inizio e fine della frase che contiene quella posizione."""
+    start = 0
+    for match in _SENTENCE_BREAK.finditer(text, 0, position):
+        start = match.end()
+    end = _SENTENCE_BREAK.search(text, position)
+    return start, end.start() if end else len(text)
+
+
 # Una proposizione che segue il valore e comincia cosi' lo sta correggendo...
 _ADVERSATIVE = ("ma", "pero", "tuttavia", "eppure", "but", "however", "though", "yet")
 
@@ -312,6 +326,9 @@ class Criterion:
     # varianti, e quanti ne devono comparire.
     groups: Tuple[Tuple[str, ...], ...] = ()
     minimum: int = 1
+    # Solo per supersedes, e solo dove il valore nuovo esclude il vecchio (2200 al
+    # posto di 2000): chitarra e pianoforte convivevano, non si sostituiscono.
+    replaced_by: Tuple[str, ...] = ()
 
     def satisfied(self, text: str) -> bool:
         """Il criterio e' rispettato da questo testo?"""
@@ -324,7 +341,17 @@ class Criterion:
             return bool(hits)
         if not self.superseded_ok:
             return not hits
-        return all(_is_superseded(haystack, position) for position in hits)
+        # Una menzione non superata nella sua proposizione passa se la stessa frase
+        # ritratta il valore altrove, o nomina il valore che l'ha sostituito.
+        retracted = [position for position in hits if _is_superseded(haystack, position)]
+        narrated = retracted + _occurrences(haystack, self.replaced_by)
+        for position in hits:
+            if position in retracted:
+                continue
+            start, end = _sentence_around(haystack, position)
+            if not any(start <= other < end for other in narrated):
+                return False
+        return True
 
 
 def recalls(label: str, *variants: str) -> Criterion:
@@ -355,13 +382,14 @@ def forgets(label: str, *variants: str) -> Criterion:
     return Criterion(label, tuple(variants) or (label,), FORGETTING, superseded_ok=False)
 
 
-def supersedes(label: str, *variants: str) -> Criterion:
+def supersedes(label: str, *variants: str, replaced_by: Sequence[str] = ()) -> Criterion:
     """Criterio di assenza dopo un update o una contraddizione.
 
     Il valore vecchio puo' comparire, ma solo come vecchio: raccontare il
     cambiamento e' legittimo, riproporre il valore superato come attuale no.
     """
-    return Criterion(label, tuple(variants) or (label,), FORGETTING, superseded_ok=True)
+    return Criterion(label, tuple(variants) or (label,), FORGETTING, superseded_ok=True,
+                     replaced_by=tuple(replaced_by))
 
 
 @dataclass(frozen=True)
@@ -542,13 +570,6 @@ def memory_snapshot_turn(question: int, maximum_historical_messages: int) -> int
 # --------------------------------------------------------------------------- #
 # Le diciassette domande
 # --------------------------------------------------------------------------- #
-#
-# L'indice e' la posizione del messaggio in CONVERSATION, da 1. I criteri sono
-# scritti guardando la catena causale del fatto fino a quel punto: cosa era vero
-# quando la domanda e' stata posta, e cosa aveva gia' smesso di esserlo.
-#
-# Sulle domande aperte (27, 117) basta che la risposta dica almeno due fatti
-# veri fra quelli ancora validi, quali che siano: vedi recalls_some.
 
 QUESTIONS: Dict[int, EvaluationQuestion] = {
 
@@ -569,7 +590,7 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         30, "msg 29 ha aggiornato le calorie da 2000 a 2200",
         (
             recalls("2200", "2200"),
-            supersedes("2000", "2000"),
+            supersedes("2000", "2000", replaced_by=("2200",)),
         ),
     ),
 
@@ -577,7 +598,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         40, "msg 39 ha smentito la dieta vegetariana: ora mangia pesce",
         (
             recalls("mangia pesce", "pesce", "pescetarian*", "fish", "pescatarian*"),
-            supersedes("non piu' vegetariana", "vegetarian*"),
+            supersedes("vegetarian*",
+                       replaced_by=("pesce", "fish", "pescatarian*", "pescetarian*")),
         ),
     ),
 
@@ -589,8 +611,6 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    # Con N_presence = 0 il conto degenera in FAMA = FAA, che e' esattamente
-    # quello che questa domanda vuole misurare.
     49: EvaluationQuestion(
         49, "msg 48 ha eliminato il caffe': nessuna bevanda nuova al suo posto",
         (
@@ -610,7 +630,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         60, "msg 59 ha spostato la sorella da Milano a Torino",
         (
             recalls("vive a Torino", "torino", "turin"),
-            supersedes("vecchia citta' Milano", "milano", "milan"),
+            supersedes("vecchia citta' Milano", "milano", "milan",
+                       replaced_by=("torino", "turin")),
         ),
     ),
 
@@ -625,7 +646,7 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         76, "msg 75 ha smentito la razza: non labrador ma golden retriever",
         (
             recalls("golden retriever", "golden"),
-            supersedes("vecchia razza labrador", "labrador"),
+            supersedes("vecchia razza labrador", "labrador", replaced_by=("golden",)),
         ),
     ),
 
@@ -663,8 +684,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         95, "msg 94 ha portato le calorie a 1800, dopo 2000 e 2200",
         (
             recalls("obiettivo 1800", "1800"),
-            supersedes("obiettivo 2200", "2200"),
-            supersedes("obiettivo 2000", "2000"),
+            supersedes("obiettivo 2200", "2200", replaced_by=("1800",)),
+            supersedes("obiettivo 2000", "2000", replaced_by=("1800",)),
         ),
     ),
 

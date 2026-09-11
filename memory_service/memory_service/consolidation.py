@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 
 from memory_service import backends
 
-ARCHIVE_CANDIDATES_K = 4
+ARCHIVE_CANDIDATES_K = 5
 
 MemoryStatus = Literal["active", "superseded", "deleted"]
 MemoryOperationType = Literal["new", "redundant", "update", "contradict", "delete"]
