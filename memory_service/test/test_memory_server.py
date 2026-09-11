@@ -136,7 +136,7 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
         agent = StubAgent(
             {"core_memory": [item], "messages": []},
             operations=[
-                OperationLogEntry(op_type="contradict", item_id=item.id,
+                OperationLogEntry(op_type="update", item_id=item.id,
                                   related_item_id=older.id, content=item.content),
             ],
         )
@@ -149,7 +149,7 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
 
         self.assertEqual(len(response.operation_log), 1)
         operation = json.loads(response.operation_log[0])
-        self.assertEqual(operation["op_type"], "contradict")
+        self.assertEqual(operation["op_type"], "update")
         self.assertEqual(operation["item_id"], item.id)
         self.assertEqual(operation["related_item_id"], older.id)
         self.assertIn("timestamp", operation)

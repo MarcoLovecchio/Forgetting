@@ -30,7 +30,7 @@ a distanza, come succederebbe davvero - per esempio le calorie:
 
     msg 7    "il mio obiettivo giornaliero e' 2000 calorie"     (new)
     msg 28   "in realta' l'obiettivo ora e' 2200"               (update)
-    msg 82   "ho cambiato obiettivo: 1800, voglio dimagrire"    (contradict)
+    msg 82   "ho cambiato obiettivo: 1800, voglio dimagrire"    (update)
     msg 93   "non memorizzare piu' quante calorie punto"        (delete)
 
 Ogni messaggio porta in commento il caso che dovrebbe provocare. Le chiacchiere
@@ -71,6 +71,11 @@ e' la metrica del paper e misura tutta la catena, e una sulle memorie attive una
 volta consolidato il messaggio che precede la domanda, che non passa da nessun
 modello e misura la sola consolidation. Lo scarto fra le due dice quale nodo ha ceduto.
 
+Ogni messaggio e' anche una riga della **matrice di confusione** delle operazioni
+(operation_matrix.py): l'operazione attesa, dal commento accanto, contro quella
+che il consolidamento ha fatto davvero. La run viene aggiunta a un file che
+operation_matrix.py sa sommare con le altre dello stesso commit.
+
 Le assert sono strutturali (invarianti che devono valere qualunque cosa decida il
 modello), non sul contenuto: con un LLM vero pretendere una classificazione
 esatta renderebbe il test inutilizzabile. **Anche FAMA e' misurata e stampata,
@@ -102,6 +107,8 @@ Variabili utili:
                                  servizio, ripulibile con reset_archive.py, in
                                  una collezione sua)
     MEMORY_CORE_MEMORY_LIMIT     limite di caratteri della core memory (1500)
+    MEMORY_LONGRUN_RESULTS       dove aggiungere le operazioni della run (default:
+                                 test/longrun_operations.jsonl)
 """
 
 import ast
@@ -109,6 +116,7 @@ import contextlib
 import dataclasses
 import io
 import os
+import subprocess
 import sys
 import time
 
@@ -122,11 +130,12 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
 from langchain_core.messages import AIMessage  # noqa: E402
 
 from memory_service import backends  # noqa: E402
-from memory_service.config import MemoryConfig  # noqa: E402
-from memory_service.consolidation import get_active_items  # noqa: E402
+from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
+from memory_service.consolidation import ARCHIVE_CANDIDATES_K, get_active_items  # noqa: E402
 
 import fama  # noqa: E402
 from live_model import live_stack_unavailable  # noqa: E402
+import operation_matrix  # noqa: E402
 from snapshot import SEPARATOR, safe_print  # noqa: E402
 
 
@@ -655,8 +664,64 @@ def _print_node_costs(elapsed):
                    "restano i tempi)")
 
 
+def _print_operation_matrix(records):
+    """Operazione attesa contro operazione eseguita, messaggio per messaggio."""
+    safe_print("")
+    safe_print(f"--- MATRICE DI CONFUSIONE DELLE OPERAZIONI ({len(records)} messaggi "
+               f"consolidati) ---")
+    if not records:
+        safe_print("  (nessun messaggio consolidato)")
+        return
+    for line in operation_matrix.format_report(records):
+        safe_print(line)
+
+    wrong = [record for record in records if not operation_matrix.is_strict(record)]
+    if wrong:
+        safe_print("\n  Sbagliati (attesa -> eseguita):")
+    for record in wrong:
+        note = " (accettabile)" if operation_matrix.is_lenient(record) else ""
+        done = "+".join(record["types"]) or "nessuna"
+        text = CONVERSATION[record["index"] - 1][:55]
+        safe_print(f"    msg {record['index']:>3}  "
+                   f"{operation_matrix.display(record['expected']):<9} -> "
+                   f"{done:<16}{note}  {text!r}")
+
+
+def _git_commit():
+    """Il commit della run, con un '+' se l'albero ha modifiche non committate."""
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=PACKAGE_ROOT,
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=PACKAGE_ROOT,
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return commit + ("+" if commit and dirty else "")
+
+
+def _save_run(config, records, elapsed):
+    """Aggiunge la run al file delle operazioni, per sommarla alle altre."""
+    path = os.getenv("MEMORY_LONGRUN_RESULTS") or operation_matrix.DEFAULT_RESULTS
+    run = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "commit": _git_commit(),
+        "model": config.llm_config.get("model_name"),
+        "window": config.maximum_historical_messages,
+        "core_memory_limit": config.core_memory_limit,
+        "archive_candidates_k": ARCHIVE_CANDIDATES_K,
+        "node_sampling": NODE_SAMPLING,
+        "seconds": round(elapsed, 1),
+        "messages": list(records),
+    }
+    try:
+        operation_matrix.save_run(path, run)
+        safe_print(f"Operazioni della run aggiunte a {path} (commit {run['commit'] or '?'})")
+    except OSError as error:
+        safe_print(f"Operazioni della run non salvate in {path}: {error}")
+
+
 def _print_final_report(state, vector_store, config, injected, failures, elapsed,
-                       answers, inherited=0):
+                       answers, inherited=0, operations=()):
     safe_print("\n" + SEPARATOR)
     safe_print("=== RESOCONTO FINALE - LONG TERM INTERACTION ===")
     safe_print(SEPARATOR)
@@ -683,6 +748,7 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
     _print_archive(vector_store)
     _print_questions(answers)
     _print_fama(answers)
+    _print_operation_matrix(operations)
     _print_node_costs(elapsed)
 
     safe_print("\n" + SEPARATOR + "\n")
@@ -709,7 +775,7 @@ def _assert_everything_that_left_core_is_in_the_archive(state, vector_store):
     for entry in state["operation_log"]:
         if entry.op_type in ("delete", "archive"):
             expected.add(entry.item_id)
-        elif entry.op_type in ("update", "contradict") and entry.related_item_id:
+        elif entry.op_type == "update" and entry.related_item_id:
             expected.add(entry.related_item_id)
 
     if not expected:
@@ -755,6 +821,7 @@ def test_long_term_interaction():
     noise = io.StringIO()
     failures = []
     answers = []
+    operations = []
     started = time.time()
 
     snapshot_due = {}
@@ -771,6 +838,12 @@ def test_long_term_interaction():
 
                 # --- come explainability: send_update_request(input, risposta) -
                 agent.run_memory_agent("insert")
+
+            consolidated = operation_matrix.consolidated_message(
+                index, config.maximum_historical_messages)
+            if consolidated >= 1:
+                operations.append(operation_matrix.row(
+                    consolidated, [logged.op_type for logged in agent.last_operations()]))
 
             if _is_question(index):
                 entry = {
@@ -804,7 +877,8 @@ def test_long_term_interaction():
         _score_memory(entries, state, vector_store)
 
     _print_final_report(state, vector_store, config, len(messages), failures, elapsed,
-                        answers, inherited)
+                        answers, inherited, operations)
+    _save_run(config, operations, elapsed)
 
     assert len(failures) < len(messages) / 2, (
         f"{len(failures)} messaggi su {len(messages)} sono falliti: "

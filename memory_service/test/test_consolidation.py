@@ -10,7 +10,7 @@ I turni sono in sequenza e ognuno parte dallo stato lasciato dal precedente:
     1. new         tre fatti nuovi entrano in core memory
     2. redundant   lo stesso fatto ripetuto rinforza l'item esistente
     3. update      un fatto viene raffinato: il vecchio diventa superseded
-    4. contradict  un fatto viene smentito: stessa meccanica, op diversa
+    4. update      un fatto viene smentito: arriva come contradict, e' un update
     5. delete      l'utente chiede di dimenticare: l'item diventa deleted
     6. archive     core memory oltre il limite: un item passa all'archivio
     7. retrieve    la risposta pesca dall'archivio, i tombstone restano fuori
@@ -165,7 +165,7 @@ class ConsolidationLifecycleTest(unittest.TestCase):
 
         # --- TURNO 4: contradict ------------------------------------------ #
         state = self.consolidate(
-            4, "contradict", "un fatto viene smentito: stessa meccanica dell'update",
+            4, "contradict", "un fatto viene smentito: la vecchia etichetta si legge update",
             "In realta' non sono piu' vegetariana, ora mangio pesce.",
             [{"fact": "L'utente mangia pesce, non e' piu' vegetariana",
               "operation": "contradict", "target_item_id": veg_item.id}],
@@ -176,7 +176,7 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         find_item(items, "pesce")
         self.assertEqual(self.store.status_of(veg_item.id), "superseded")
         last = state["operation_log"][-1]
-        self.assertEqual((last.op_type, last.related_item_id), ("contradict", veg_item.id))
+        self.assertEqual((last.op_type, last.related_item_id), ("update", veg_item.id))
 
         # --- TURNO 5: delete ---------------------------------------------- #
         state = self.consolidate(
@@ -308,7 +308,7 @@ class MetadataRewriteTest(unittest.TestCase):
 
     Riscrivere il documento con add_texts farebbe ricalcolare l'embedding: una
     chiamata di rete al modello, sul cluster, per cambiare un campo scalare. E
-    succede a ogni redundant, update, contradict o delete che colpisca un item
+    succede a ogni redundant, update o delete che colpisca un item
     gia' in archivio.
     """
 

@@ -790,14 +790,10 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
 
 
 class LanguageRuleTest(MemoryServiceTestCase):
-    """La lingua delle memorie non deve dipendere dal modello di turno.
+    """La query di ricerca segue la lingua delle memorie, non quella dell'utente.
 
-    Nessun prompt l'ha mai fissata: le memorie sono state in italiano finche' il
-    modello ha scelto cosi', e sono passate all'inglese - la lingua delle
-    istruzioni - al cambio di modello, senza che una riga cambiasse. La regola
-    serve in due punti perche' le lingue che devono coincidere sono due: quella
-    in cui le memorie vengono scritte e quella in cui vengono cercate. Fissarne
-    una sola sposta il disallineamento, non lo toglie.
+    Le memorie sono in inglese per scelta, le domande arrivano in italiano: una
+    query nella lingua sbagliata finisce piu' lontana dalla memoria da trovare.
     """
 
     tool_responses = {"retrieve_memory": {"query": "irrilevante", "k": 3}}
@@ -807,16 +803,6 @@ class LanguageRuleTest(MemoryServiceTestCase):
             if tool_name in invocation["tools"]:
                 return invocation["prompt"].lower()
         raise AssertionError(f"{tool_name} non e' mai stato invocato")
-
-    def test_the_fact_field_pins_the_language_of_the_facts(self):
-        self.assertIn("language the user spoke", consolidation_tool_schema())
-
-    def test_the_rule_says_which_of_the_two_languages_it_means(self):
-        # Al modello ne arrivano due insieme: l'italiano dell'utente e l'inglese
-        # delle istruzioni. "Scrivi nella lingua che ricevi" e' ambiguo proprio
-        # nel punto che conta, e l'inglese e' una lettura legittima.
-        self.assertIn("not the language of these instructions",
-                      consolidation_tool_schema())
 
     def test_the_query_follows_the_language_of_the_memories(self):
         # La query la scrive il modello, in una chiamata sua, e il confronto e'
@@ -943,6 +929,28 @@ class FactShapeTest(MemoryServiceTestCase):
         # Vietare senza dare un'alternativa lascia il modello a inventarsela:
         # il collegamento ha gia' un campo suo nello schema.
         self.assertIn("never in the text of the fact", consolidation_tool_schema())
+
+
+class SingleUpdateTest(unittest.TestCase):
+    """Update e contradict sono un'operazione sola: facevano la stessa cosa.
+
+    Passavano dallo stesso ramo di apply_memory_operations e cambiava solo
+    l'etichetta nel log, mentre il confine fra le due non era netto nemmeno per
+    chi annotava la conversazione di prova.
+    """
+
+    def test_the_tool_offers_no_contradict(self):
+        self.assertNotIn("contradict", consolidation_tool_schema())
+
+    def test_an_update_must_carry_over_what_is_still_true(self):
+        self.assertIn("keep everything from the old memory that is still true",
+                      consolidation_tool_schema())
+
+    def test_a_model_that_still_says_contradict_is_read_as_update(self):
+        from memory_service.consolidation import normalize_operation
+
+        self.assertEqual(normalize_operation("contradict"), "update")
+        self.assertEqual(normalize_operation("Contradiction"), "update")
 
 
 class NodeSamplingWiringTest(MemoryServiceTestCase):

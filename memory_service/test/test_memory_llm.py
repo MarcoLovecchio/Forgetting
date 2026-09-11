@@ -8,7 +8,7 @@ operazione, e stampa lo stato completo della memoria dopo il consolidamento:
     1. new         l'utente si presenta, i fatti sono tutti nuovi
     2. redundant   l'utente ripete un fatto gia' detto
     3. update      l'utente raffina un fatto (2000 -> 2200 calorie)
-    4. contradict  l'utente smentisce un fatto (non piu' vegetariana)
+    4. update      l'utente smentisce un fatto (non piu' vegetariana)
     5. delete      l'utente chiede esplicitamente di dimenticare il nome
     6. retrieve    l'utente fa una domanda e la risposta pesca dalla memoria
 
@@ -184,9 +184,9 @@ def test_memory_lifecycle_with_a_real_llm():
     print(f"  -> operazioni dello scambio 2: {_op_types(state, seen)}")
     seen = len(state["operation_log"])
 
-    # --- TURNO 4: contradict ------------------------------------------------ #
+    # --- TURNO 4: smentita -------------------------------------------------- #
     state = _turn(
-        agent, 4, "contradict", "l'utente smentisce un fatto gia' in memoria",
+        agent, 4, "update", "l'utente smentisce un fatto gia' in memoria",
         "Non sono piu' vegetariana, da questo mese mangio pesce.",
         "Capito, non sei piu' vegetariana.",
         consolidates="scambio 3, il nuovo obiettivo calorico",

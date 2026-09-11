@@ -40,11 +40,11 @@ response ha `memory_list`, `memory_ids` e `operation_log` con la stessa semantic
 Ogni entry di `operation_log` è il JSON di un `OperationLogEntry`:
 
 ```json
-{"op_type": "contradict", "item_id": "c8f90d30-...", "related_item_id": "7ca3ad4f-...",
+{"op_type": "update", "item_id": "c8f90d30-...", "related_item_id": "7ca3ad4f-...",
  "content": "L'utente mangia pesce", "timestamp": "2026-08-24T18:23:39.059368"}
 ```
 
-`op_type` è uno fra `create`, `redundant`, `update`, `contradict`, `delete`, `archive`.
+`op_type` è uno fra `create`, `redundant`, `update`, `delete`, `archive`, `evict`.
 
 Il log riporta **solo le operazioni della chiamata corrente**, non tutto lo
 storico: `state["operation_log"]` cresce per tutta la vita del nodo e `get_memory`
@@ -75,7 +75,7 @@ python memory_service/run_tests.py -v
 (`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
 
 `test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
-classificazione diversa (`new`, `redundant`, `update`, `contradict`, `delete`,
+classificazione diversa (`new`, `redundant`, `update`, `delete`,
 archiviazione, recupero) e stampa lo stato completo della memoria - core,
 messaggi, archivio con i metadata, recupero, operation log. `test_memory_agent.py`
 tiene invece i controlli unitari (limiti, tool call malformate, cache della

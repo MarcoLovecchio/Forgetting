@@ -14,11 +14,10 @@ operation    meaning                                        effect
 new          nothing similar is in memory                   a new item is created
 redundant    the same information is already stored         the existing item is
                                                             reinforced (updated_at)
-update       it adds detail to a fact already stored        the old item becomes
-                                                            "superseded", a new item
+update       it changes a fact already stored: more         the old item becomes
+             detail, a new value, or it was wrong           "superseded", a new item
                                                             takes its place, and the
                                                             operation log links them
-contradict   it contradicts a fact already stored           same as update
 delete       the user explicitly asked to forget a fact     the item becomes
                                                             "deleted"
 ===========  =============================================  =======================
@@ -44,7 +43,7 @@ from memory_service import backends
 ARCHIVE_CANDIDATES_K = 5
 
 MemoryStatus = Literal["active", "superseded", "deleted"]
-MemoryOperationType = Literal["new", "redundant", "update", "contradict", "delete"]
+MemoryOperationType = Literal["new", "redundant", "update", "delete"]
 
 ITEM_ID_LENGTH = 8
 
@@ -67,8 +66,7 @@ class CoreMemoryItem(BaseModel):
 class OperationLogEntry(BaseModel):
     """One consolidation decision, kept for inspection and evaluation."""
 
-    op_type: Literal["create", "redundant", "update", "contradict", "delete", "archive",
-                     "evict"]
+    op_type: Literal["create", "redundant", "update", "delete", "archive", "evict"]
     item_id: str
     related_item_id: Optional[str] = None
     content: Optional[str] = None
@@ -104,15 +102,14 @@ class InsertCoreMemories(BaseModel):
     - new: a genuinely new fact, unrelated to any memory you were given (no target_item_id).
     - redundant: it confirms a memory that is already stored, without changing it
       (target_item_id required).
-    - update: it refines or adds detail to a memory already stored, without contradicting
-      it (target_item_id required).
-    - contradict: it replaces a memory that is now wrong or outdated (target_item_id
-      required).
+    - update: it changes a memory already stored - it adds detail, gives a new value, or
+      shows the old one was wrong (target_item_id required). The fact REPLACES that memory,
+      so write it complete: keep everything from the old memory that is still true.
     - delete: use ONLY when the user explicitly asks to delete, forget, remove or stop storing
       a specific fact (target_item_id required).
 
     Do not use delete for facts that merely became less relevant or less interesting: use
-    update or contradict for those."""
+    update for those."""
 
     memories: List[MemoryOperation]
 
@@ -150,13 +147,14 @@ _OPERATION_ALIASES = {
     "redundant": "redundant", "reinforce": "redundant", "duplicate": "redundant",
     "confirm": "redundant",
     "update": "update", "refine": "update", "extend": "update",
-    "contradict": "contradict", "contradiction": "contradict", "replace": "contradict",
+    # contradict was merged into update: the alias keeps a model that still says it working.
+    "contradict": "update", "contradiction": "update", "replace": "update",
     "delete": "delete", "remove": "delete", "forget": "delete",
 }
 
 
 def normalize_operation(operation: Any) -> Optional[str]:
-    """Map what the LLM produced onto one of the five known operations."""
+    """Map what the LLM produced onto one of the four known operations."""
     if not isinstance(operation, str):
         return None
     return _OPERATION_ALIASES.get(operation.strip().lower())
@@ -373,13 +371,12 @@ def supersede_item(
     old_item: CoreMemoryItem,
     new_content: str,
     log: List[OperationLogEntry],
-    op_type: Literal["update", "contradict"] = "update",
 ) -> CoreMemoryItem:
     """Replace a core item with a newer version that points back at it."""
     _retire_item(old_item, "superseded")
     new_item = CoreMemoryItem(content=new_content)
     log.append(OperationLogEntry(
-        op_type=op_type, item_id=new_item.id,
+        op_type="update", item_id=new_item.id,
         related_item_id=old_item.id, content=new_content))
     return new_item
 
@@ -417,14 +414,13 @@ def supersede_archived_item(
     item_id: str,
     new_content: str,
     log: List[OperationLogEntry],
-    op_type: Literal["update", "contradict"] = "update",
 ) -> Optional[CoreMemoryItem]:
     """Flag an archived memory as superseded; the newer version starts in core memory."""
     if _rewrite_archive_metadata(item_id, status="superseded") is None:
         return None
     new_item = CoreMemoryItem(content=new_content)
     log.append(OperationLogEntry(
-        op_type=op_type, item_id=new_item.id,
+        op_type="update", item_id=new_item.id,
         related_item_id=item_id, content=new_content))
     return new_item
 
@@ -473,7 +469,7 @@ def apply_memory_operations(
     ones move to the archive - and a short summary used as the tool result.
     """
     items = list(core_memory)
-    counters = {"new": 0, "redundant": 0, "update": 0, "contradict": 0, "delete": 0}
+    counters = {"new": 0, "redundant": 0, "update": 0, "delete": 0}
 
     for raw_operation in operations or []:
         if not isinstance(raw_operation, dict):
@@ -522,8 +518,8 @@ def apply_memory_operations(
                 reinforce_item(target_item, log, fact)
             elif operation == "delete":
                 delete_item(target_item, log)
-            else:  # update | contradict
-                items.append(supersede_item(target_item, fact, log, op_type=operation))
+            else:  # update
+                items.append(supersede_item(target_item, fact, log))
             counters[operation] += 1
 
         else:
@@ -532,8 +528,8 @@ def apply_memory_operations(
                 reinforce_archived_item(target_id, log, fact)
             elif operation == "delete":
                 delete_archived_item(target_id, log)
-            else:  # update | contradict
-                new_item = supersede_archived_item(target_id, fact, log, op_type=operation)
+            else:  # update
+                new_item = supersede_archived_item(target_id, fact, log)
                 if new_item is not None:
                     items.append(new_item)
             counters[operation] += 1
