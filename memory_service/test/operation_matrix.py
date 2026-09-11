@@ -6,15 +6,18 @@ consolidamento ha fatto davvero. FAMA guarda lo stato della memoria su
 diciassette domande; questa guarda ogni singola decisione.
 
 L'unita' e' il messaggio, non l'operazione. Un messaggio che produce due `new`
-("mia sorella si chiama Chiara e vive a Milano") resta un new: quante memorie ne
-escono e' granularita', e si conta a parte come frammentazione. Un messaggio che
-produce tipi diversi finisce in "misto".
+resta un new: quante memorie ne escono e' granularita', e si conta a parte. Dove
+un messaggio porta due fatti ("mia sorella si chiama Chiara e vive a Milano") le
+ripetizioni sono previste, altrove sono frammentazione. Un messaggio che produce
+tipi diversi finisce in "misto".
 
-Dove piu' letture sono difendibili c'e' un insieme di alternative accettate, e le
-accuratezze sono due: stretta sull'etichetta, tollerante sull'insieme. Un `new`
-al posto di un `update` e' accettabile solo se la memoria vecchia resta vera (il
-mercoledi' si aggiunge al sabato), mai se il valore cambia: 2000 e 2200 attivi
-insieme sono una contraddizione in memoria.
+Dove piu' letture sono difendibili ci sono combinazioni accettate, e le
+accuratezze sono due: stretta sull'etichetta, tollerante sulle combinazioni. I
+tipi prodotti devono coincidere con una combinazione, non basta esserne una
+parte: al msg 52 un redundant da solo perde la chitarra. Un `new` al posto di un
+`update` e' accettabile solo se la memoria vecchia resta vera (il mercoledi' si
+aggiunge al sabato), mai se il valore cambia: 2000 e 2200 attivi insieme sono una
+contraddizione in memoria.
 
 Misura il tipo, non il bersaglio: un update giusto sulla memoria sbagliata qui
 risulta corretto.
@@ -56,20 +59,31 @@ _EXPECTED = {
 }
 _PRIMARY = {index: label for label, indices in _EXPECTED.items() for index in indices}
 
-ACCEPTED_ALSO: Dict[int, Tuple[str, ...]] = {
-    13: ("update",),           # "Argo e' un labrador": dettaglio sul cane del msg 12
-    15: ("update",),           # "corro la mattina presto": dettaglio sulla corsa
-    26: ("new",),              # "sette pazienti" letto come fatto sul lavoro
-    52: ("new", "redundant"),  # pianoforte confermato, chitarra nuova
-    58: ("update",),           # il nuoto al posto della corsa
-    66: ("new",),              # il mercoledi' si aggiunge, il sabato resta vero
-    69: ("new",),              # il part-time si aggiunge, la clinica resta vera
-    71: ("new",),              # l'olio si aggiunge, l'allergia resta vera
-    79: ("new",),              # i saggi si aggiungono, i romanzi storici restano
-    83: ("new",),              # la merenda si aggiunge, il pomeriggio resta vero
-    90: ("new",),              # cambia la ricetta, il piatto preferito resta
-    101: ("update",),          # "Milo e' un soriano": dettaglio sul gatto del msg 99
+ACCEPTED_ALSO: Dict[int, Tuple[Tuple[str, ...], ...]] = {
+    13: (("update",), ("new", "update")),   # "Argo e' un labrador": dettaglio sul cane del msg 12
+    15: (("update",),),                     # "corro la mattina presto": dettaglio sulla corsa
+    26: (("new",),),                        # "sette pazienti" letto come fatto sul lavoro
+    48: (("new", "update"),),               # niente caffe', e il perche': mi agitava
+    52: (("new",), ("new", "redundant")),   # pianoforte confermato, chitarra nuova
+    54: (("new", "update"),),               # niente corsa, e il ginocchio che cancella il 111
+    58: (("update",),),                     # il nuoto al posto della corsa
+    66: (("new",),),                        # il mercoledi' si aggiunge, il sabato resta vero
+    69: (("new",),),                        # il part-time si aggiunge, la clinica resta vera
+    71: (("new",),),                        # l'olio si aggiunge, l'allergia resta vera
+    79: (("new",),),                        # i saggi si aggiungono, i romanzi storici restano
+    83: (("new",),),                        # la merenda si aggiunge, il pomeriggio resta vero
+    90: (("new",),),                        # cambia la ricetta, il piatto preferito resta
+    94: (("new", "update"),),               # 1800 calorie, e il perche': dimagrire
+    101: (("update",), ("new", "update")),  # "Milo e' un soriano": dettaglio sul gatto del msg 99
 }
+
+# Dove piu' operazioni dello stesso tipo sono giuste, e non frammentazione.
+MULTIPLE_EXPECTED = (
+    18,   # sorella: il nome e la citta'
+    19,   # madre celiaca, e in casa senza glutine
+    106,  # la corsa ripresa e il ginocchio che sta meglio
+    112,  # tutti i familiari
+)
 
 
 def display(name: str) -> str:
@@ -77,10 +91,11 @@ def display(name: str) -> str:
     return _DISPLAY.get(name, name)
 
 
-def expected(index: int) -> Tuple[str, Tuple[str, ...]]:
-    """Etichetta principale e insieme accettato di un messaggio."""
+def expected(index: int) -> Tuple[str, Tuple[Tuple[str, ...], ...]]:
+    """Etichetta principale e combinazioni di tipi accettate di un messaggio."""
     primary = _PRIMARY.get(index, "new")
-    return primary, (primary,) + ACCEPTED_ALSO.get(index, ())
+    also = tuple(tuple(sorted(combination)) for combination in ACCEPTED_ALSO.get(index, ()))
+    return primary, ((primary,),) + also
 
 
 def consolidated_message(turn: int, maximum_historical_messages: int) -> int:
@@ -106,7 +121,8 @@ def row(index: int, op_types: Iterable[str]) -> Dict:
     """Il confronto di un messaggio, nella forma che si salva e si somma."""
     primary, accepted = expected(index)
     predicted, types, count = classify(op_types)
-    return {"index": index, "expected": primary, "accepted": list(accepted),
+    return {"index": index, "expected": primary,
+            "accepted": [list(combination) for combination in accepted],
             "predicted": predicted, "types": list(types), "count": count}
 
 
@@ -115,7 +131,7 @@ def is_strict(record: Dict) -> bool:
 
 
 def is_lenient(record: Dict) -> bool:
-    return (set(record["types"]) or {"none"}) <= set(record["accepted"])
+    return (list(record["types"]) or ["none"]) in record["accepted"]
 
 
 def matrix(records: Iterable[Dict]) -> Dict[str, Counter]:
@@ -150,14 +166,16 @@ def format_report(records: Sequence[Dict]) -> List[str]:
     total = len(records)
     strict = sum(is_strict(record) for record in records)
     lenient = sum(is_lenient(record) for record in records)
-    fragmented = sum(1 for record in records
-                     if record["predicted"] in CLASSES and record["count"] > 1)
+    repeated = [record for record in records if record["count"] > len(record["types"])]
+    fragmented = [record for record in repeated if record["index"] not in MULTIPLE_EXPECTED]
+    where = sorted({record["index"] for record in fragmented})
     lines.append("")
     if total:
         lines.append(f"  Accuratezza stretta {strict}/{total} ({strict / total:.1%}), "
                      f"tollerante {lenient}/{total} ({lenient / total:.1%})")
-    lines.append(f"  Frammentazione: {fragmented} messaggi con piu' operazioni "
-                 f"dello stesso tipo")
+    lines.append(f"  Frammentazione: {len(fragmented)} messaggi con piu' operazioni dello "
+                 f"stesso tipo" + (f" (msg {', '.join(map(str, where))})" if where else "")
+                 + f", piu' {len(repeated) - len(fragmented)} dove sono previste")
     return lines
 
 

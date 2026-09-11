@@ -202,7 +202,7 @@ CONVERSATION = [
     "Il mio colore preferito e' il verde bottiglia.",  # new
     "Corro quattro volte a settimana adesso, non piu' tre.",  # update: corsa
     "Mia sorella Chiara e' sempre a Milano.",  # redundant: sorella
-    "Dimentica il mio indirizzo, non voglio che resti in memoria.",  # delete: casa
+    "Dimentica il mio indirizzo.",  # delete: casa
     "Sai dirmi dove abito?",  # DOMANDA: dopo il delete non deve saperlo
     "Bevo almeno due litri d'acqua al giorno.",  # new
     "Ho compiuto 30 anni il mese scorso.",  # update: eta'
@@ -213,7 +213,7 @@ CONVERSATION = [
     "Suono il pianoforte e da un anno anche la chitarra.",  # update: musica
     "Ad agosto vorrei andare in Grecia, forse a Naxos.",  # new
     "Ho smesso di correre, mi da' fastidio il ginocchio.",  # contradict: corsa
-    "Cancella l'informazione sulla mia eta', non memorizzarla.",  # delete: eta'
+    "Cancella l'informazione sulla mia eta'",  # delete: eta'
     "Quanti anni ho?",  # DOMANDA: dopo il delete non deve saperlo
     "Il sabato mattina c'e' yoga, come ogni settimana.",  # redundant: yoga
     "Ora nuoto invece di correre, due volte a settimana.",  # new

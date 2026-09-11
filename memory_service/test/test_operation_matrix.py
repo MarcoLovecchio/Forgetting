@@ -59,13 +59,20 @@ class ExpectedTableTest(unittest.TestCase):
 
     def test_alternatives_are_real_classes_and_not_the_label_again(self):
         for index, also in om.ACCEPTED_ALSO.items():
-            self.assertNotIn(om.expected(index)[0], also, "msg %d" % index)
-            self.assertTrue(set(also) <= set(om.CLASSES), "msg %d" % index)
+            for combination in also:
+                self.assertNotEqual(tuple(combination), (om.expected(index)[0],), "msg %d" % index)
+                self.assertTrue(set(combination) <= set(om.CLASSES), "msg %d" % index)
 
-    def test_a_changed_value_never_accepts_new(self):
-        # 2000 e 2200 attivi insieme sarebbero una contraddizione in memoria.
-        for index in (29, 42, 59, 94, 105):
-            self.assertEqual(om.expected(index)[1], ("update",), "msg %d" % index)
+    def test_a_changed_value_always_needs_an_update(self):
+        # 2000 e 2200 attivi insieme sarebbero una contraddizione in memoria: un
+        # new passa solo accanto all'update che toglie il valore vecchio.
+        for index in (29, 42, 48, 54, 59, 94, 105):
+            for combination in om.expected(index)[1]:
+                self.assertIn("update", combination, "msg %d" % index)
+
+    def test_expected_repeats_are_on_facts(self):
+        for index in om.MULTIPLE_EXPECTED:
+            self.assertNotEqual(om.expected(index)[0], "none", "msg %d" % index)
 
 
 class ClassifyTest(unittest.TestCase):
@@ -112,6 +119,19 @@ class AccuracyTest(unittest.TestCase):
         self.assertTrue(not om.is_strict(tolerated) and om.is_lenient(tolerated))
         self.assertFalse(om.is_strict(wrong) or om.is_lenient(wrong))
         self.assertTrue(not om.is_strict(mixed) and om.is_lenient(mixed))
+
+    def test_the_types_must_match_a_combination_not_be_part_of_it(self):
+        self.assertFalse(om.is_lenient(om.row(52, ["redundant"])))         # chitarra persa
+        self.assertTrue(om.is_lenient(om.row(54, ["update", "create"])))   # corsa e ginocchio
+        self.assertFalse(om.is_lenient(om.row(54, ["create"])))            # corre e non corre
+
+    def test_repeats_are_fragmentation_only_where_not_expected(self):
+        text = "\n".join(om.format_report([
+            om.row(18, ["create", "create"]), om.row(19, ["create", "create"]),
+            om.row(112, ["delete", "delete"]), om.row(33, ["update", "update"]),
+            om.row(54, ["update", "create", "create"]), om.row(12, ["create"])]))
+        self.assertIn("Frammentazione: 2 messaggi con piu' operazioni dello stesso tipo "
+                      "(msg 33, 54), piu' 3 dove sono previste", text)
 
     def test_a_question_that_produced_nothing_is_right(self):
         self.assertTrue(om.is_strict(om.row(27, [])))
