@@ -32,7 +32,8 @@ Per questo qui i criteri si applicano **due volte**, agli stessi criteri e con
 la stessa formula, ma a due oggetti diversi:
 
     FAMA-risposta   sul testo composto da generate_answer
-    FAMA-memoria    sulle memorie attive al momento della domanda
+    FAMA-memoria    sulle memorie attive, appena consolidato il messaggio che
+                    precede la domanda (memory_snapshot_turn)
 
 Il secondo e' quello che parla della consolidation, ed e' deterministico: lo
 store e' strutturato, `status` distingue gia' l'attivo dal cancellato, non serve
@@ -204,12 +205,18 @@ def normalize(text) -> str:
     Serve a far coincidere le grafie che girano in questo test: "caffe'" della
     conversazione, "caffè" della risposta, "Caffe" di una memoria consolidata,
     "part-time" e "part time".
+
+    Gli a capo restano: nella memoria separano un fatto dall'altro, e
+    _CLAUSE_BREAK ci spezza sopra. Comprimerli come gli altri spazi fondeva lo
+    store in una proposizione sola, e un "no longer" in una memoria qualsiasi
+    faceva passare per superato ogni valore dell'archivio.
     """
     lowered = unicodedata.normalize("NFD", str(text or "").lower())
     stripped = "".join(ch for ch in lowered if unicodedata.category(ch) != _COMBINING)
     for separator in _SEPARATORS:
         stripped = stripped.replace(separator, " ")
-    return re.sub(r"\s+", " ", stripped).strip()
+    lines = (re.sub(r"\s+", " ", line).strip() for line in stripped.split("\n"))
+    return "\n".join(line for line in lines if line)
 
 
 def _pattern(variant: str) -> str:
@@ -246,10 +253,43 @@ def _clause_around(text: str, position: int) -> str:
     return text[start:end.start() if end else len(text)]
 
 
+# Una proposizione che segue il valore e comincia cosi' lo sta correggendo...
+_ADVERSATIVE = ("ma", "pero", "tuttavia", "eppure", "but", "however", "though", "yet")
+
+# ...purche' dica che e' finito: una negazione semplice non basta, "bevi caffe',
+# ma non alcolici" nega un'altra cosa.
+_CESSATION = ("piu", "smesso", "smettere", "eliminat*", "tolt*", "abbandonat*",
+              "rinunciat*", "anymore", "longer", "stop*", "quit*", "gave up")
+
+
+def _has_marker(clause: str, markers: Sequence[str]) -> bool:
+    return any(re.search(_pattern(marker), clause) for marker in markers)
+
+
+def _following_clause(text: str, position: int) -> str:
+    """La proposizione dopo quella del valore, se sta nella stessa frase.
+
+    Mai oltre un punto o un a capo: nella memoria ogni riga e' un fatto diverso.
+    """
+    end = _CLAUSE_BREAK.search(text, position)
+    if end is None or end.group() not in ",;:":
+        return ""
+    after = _CLAUSE_BREAK.search(text, end.end())
+    return text[end.end():after.start() if after else len(text)].strip()
+
+
 def _is_superseded(text: str, position: int) -> bool:
-    """Il valore in quella posizione e' nominato come superato o negato?"""
-    clause = _clause_around(text, position)
-    return any(re.search(_pattern(marker), clause) for marker in _SUPERSEDED_MARKERS)
+    """Il valore in quella posizione e' nominato come superato o negato?
+
+    Nella sua proposizione, oppure nella successiva se questa lo corregge:
+    "bevi solo caffe' la mattina, ma ora non lo prendi piu'" dice che il caffe'
+    e' finito, con la negazione dopo la virgola e un pronome al posto del nome.
+    """
+    if _has_marker(_clause_around(text, position), _SUPERSEDED_MARKERS):
+        return True
+    following = _following_clause(text, position)
+    return (following.split(" ", 1)[0] in _ADVERSATIVE
+            and _has_marker(following, _CESSATION))
 
 
 # --------------------------------------------------------------------------- #
@@ -268,10 +308,17 @@ class Criterion:
     variants: Tuple[str, ...]
     kind: str
     superseded_ok: bool = False
+    # Solo per recalls_some: i fatti fra cui scegliere, ognuno con le sue
+    # varianti, e quanti ne devono comparire.
+    groups: Tuple[Tuple[str, ...], ...] = ()
+    minimum: int = 1
 
     def satisfied(self, text: str) -> bool:
         """Il criterio e' rispettato da questo testo?"""
         haystack = normalize(text)
+        if self.kind == PRESENCE and self.groups:
+            found = sum(1 for group in self.groups if _occurrences(haystack, group))
+            return found >= self.minimum
         hits = _occurrences(haystack, self.variants)
         if self.kind == PRESENCE:
             return bool(hits)
@@ -283,6 +330,19 @@ class Criterion:
 def recalls(label: str, *variants: str) -> Criterion:
     """Criterio di presenza: questa informazione ci deve essere."""
     return Criterion(label, tuple(variants) or (label,), PRESENCE)
+
+
+def recalls_some(label: str, minimum: int, *facts) -> Criterion:
+    """Criterio di presenza per le domande aperte: almeno `minimum` di questi fatti.
+
+    Ogni fatto e' una variante o una tupla di varianti, e conta una volta sola
+    anche se compare in due lingue. generate_answer risponde in una o due frasi:
+    a "cosa sai della mia alimentazione?" sceglie lui quali fatti dire, e un
+    criterio che pretende quelli precisi misura la scelta, non la memoria.
+    """
+    groups = tuple((fact,) if isinstance(fact, str) else tuple(fact) for fact in facts)
+    variants = tuple(variant for group in groups for variant in group)
+    return Criterion(label, variants, PRESENCE, groups=groups, minimum=minimum)
 
 
 def forgets(label: str, *variants: str) -> Criterion:
@@ -461,6 +521,24 @@ def verdict(memory: Score, answer: Score, tolerance: float = 0.01) -> str:
     return "consolidation" if memory.leaked else "fuori memoria"
 
 
+def memory_snapshot_turn(question: int, maximum_historical_messages: int) -> int:
+    """Dopo l'insert di quale turno si fotografa la memoria per questa domanda.
+
+    Non al momento della domanda. Il consolidamento e' in ritardo per
+    costruzione: summarize_memories_node tiene gli ultimi
+    maximum_historical_messages messaggi e consolida quelli prima, e ogni turno
+    ne aggiunge due (la domanda e la risposta di generate_answer). Il messaggio
+    subito prima della domanda - quasi sempre l'update o il delete che la domanda
+    mette alla prova - al momento della domanda e' ancora solo nella
+    conversazione, e la memoria lo "manca" per definizione. Misurarla li'
+    misurava il ritardo, non la consolidation.
+
+    Con la finestra del test lungo (2 messaggi) e' l'insert del turno stesso
+    della domanda, che consolida il messaggio prima e non ancora la domanda.
+    """
+    return question + max(1, maximum_historical_messages // 2) - 1
+
+
 # --------------------------------------------------------------------------- #
 # Le diciassette domande
 # --------------------------------------------------------------------------- #
@@ -469,29 +547,29 @@ def verdict(memory: Score, answer: Score, tolerance: float = 0.01) -> str:
 # scritti guardando la catena causale del fatto fino a quel punto: cosa era vero
 # quando la domanda e' stata posta, e cosa aveva gia' smesso di esserlo.
 #
-# Sulle domande aperte (27, 117) i criteri di presenza sono i fatti salienti,
-# non tutti quelli detti: con core_memory_limit a 200 caratteri il resto sta in
-# archivio, e pretendere un elenco completo misurerebbe la lunghezza della
-# risposta invece della memoria.
+# Sulle domande aperte (27, 117) basta che la risposta dica almeno due fatti
+# veri fra quelli ancora validi, quali che siano: vedi recalls_some.
 
 QUESTIONS: Dict[int, EvaluationQuestion] = {
 
     27: EvaluationQuestion(
         27, "i fatti della presentazione, niente e' ancora superato",
         (
-            # "vegetarian*" prende sia "vegetariana" sia "vegetarian": dove le
-            # due lingue condividono la radice non serve una seconda voce.
-            recalls("vegetariana", "vegetarian*"),
-            recalls("allergia alle arachidi", "arachid*", "peanut*"),
-            recalls("obiettivo 2000 calorie", "2000"),
+            recalls_some(
+                "almeno due fatti sull'alimentazione", 2,
+                "vegetarian*", ("arachid*", "peanut*"), "2000", "protein*",
+                ("alcol*", "alcohol*"), ("caffe", "coffee"), ("te verde", "green tea"),
+                ("parmigian*", "parmesan"), ("liquirizia", "licorice", "liquorice"),
+                ("glutine", "gluten", "celiac*"), ("lattosio", "lactose"),
+            ),
         ),
     ),
 
     30: EvaluationQuestion(
         30, "msg 29 ha aggiornato le calorie da 2000 a 2200",
         (
-            recalls("obiettivo 2200", "2200"),
-            supersedes("vecchio obiettivo 2000", "2000"),
+            recalls("2200", "2200"),
+            supersedes("2000", "2000"),
         ),
     ),
 
@@ -565,9 +643,7 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     88: EvaluationQuestion(
         88, "msg 87 ha cancellato il lavoro: clinica, poi part-time, poi in proprio",
         (
-            # "in proprio" e non "proprio": da sola e' una parola comunissima,
-            # e ogni sua comparsa diventerebbe una fuga di memoria inventata.
-            # "clinic*" copre "clinica" e "clinic" in una voce sola.
+
             forgets("lavoro cancellato", "fisioterapist*", "physiotherap*",
                     "physical therap*", "clinic*", "in proprio", "part time",
                     "self employed", "own practice", "freelance*"),
@@ -579,10 +655,6 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         (
             recalls("chitarra", "chitarra", "guitar*"),
             recalls("jazz in vinile", "jazz", "vinil*", "vinyl*"),
-            # "piano" come parola intera serve all'inglese ("plays the piano").
-            # In italiano vorrebbe anche dire "progetto", ma qui non compare in
-            # quel senso, e comunque e' un supersedes: per contare come fuga
-            # dovrebbe anche non essere negato.
             supersedes("pianoforte abbandonato", "pianoforte", "piano"),
         ),
     ),
@@ -599,9 +671,6 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     103: EvaluationQuestion(
         103, "msg 102 ha cancellato la celiachia: prima la madre, poi il padre",
         (
-            # Non "celiac*": la domanda contiene gia' la parola, e una risposta
-            # che dice "non ho informazioni sulla celiachia" la ripete per forza.
-            # A non dover comparire e' il familiare.
             forgets("familiare celiaco cancellato", "padre", "madre", "papa",
                     "mamma", "father", "mother", "dad", "mom", "mum", "parent*"),
         ),
@@ -627,16 +696,19 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     117: EvaluationQuestion(
         117, "il quadro d'insieme: cosa e' sopravvissuto e cosa doveva sparire",
         (
-            recalls("si chiama Bianca", "bianca"),
-            recalls("allergia alle arachidi", "arachid*", "peanut*"),
-            recalls("il cane Argo", "argo"),
-            recalls("il gatto Milo", "milo"),
+            recalls_some(
+                "almeno due fatti sopravvissuti", 2,
+                "bianca", ("arachid*", "peanut*"), "argo", "milo",
+                ("pesce", "fish", "pescatarian*", "pescetarian*"), "protein*",
+                ("te verde", "green tea"), ("nuot*", "swim*"), ("parmigian*", "parmesan"),
+                ("chitarra", "guitar*"), ("jazz", "vinil*", "vinyl*"),
+                ("grecia", "greece", "naxos"), ("montagna", "mountain*"),
+                ("acqua", "water"), ("lingua dei segni", "sign language"),
+                ("bici*", "bike*", "bicycle*"),
+            ),
             forgets("nome della sorella", "chiara"),
             forgets("lavoro", "fisioterapist*", "physiotherap*",
                     "physical therap*", "clinic*"),
-            # Non "centro" ne' "costa": il primo e' troppo generico per un
-            # riassunto, il secondo e' un fatto nuovo del msg 89, posteriore
-            # alla cancellazione e quindi legittimo.
             forgets("indirizzo", "mondello", "palermo"),
         ),
     ),

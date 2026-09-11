@@ -108,8 +108,8 @@ class InsertCoreMemories(BaseModel):
       it (target_item_id required).
     - contradict: it replaces a memory that is now wrong or outdated (target_item_id
       required).
-    - delete: use ONLY when the user explicitly asks to forget, remove or stop storing a
-      specific fact (target_item_id required).
+    - delete: use ONLY when the user explicitly asks to delete, forget, remove or stop storing
+      a specific fact (target_item_id required).
 
     Do not use delete for facts that merely became less relevant or less interesting: use
     update or contradict for those."""

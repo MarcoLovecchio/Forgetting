@@ -67,9 +67,9 @@ Le diciassette domande sono anche i punti di valutazione di **FAMA** (Memora,
 arXiv:2604.20006): ognuna porta in fama.py dei criteri binari - cosa la risposta
 deve contenere, cosa non deve piu' contenere - e il resoconto ne ricava un
 punteggio. Lo calcola due volte, con gli stessi criteri: una sulla risposta, che
-e' la metrica del paper e misura tutta la catena, e una sulle memorie attive al
-momento della domanda, che non passa da nessun modello e misura la sola
-consolidation. Lo scarto fra le due dice quale nodo ha ceduto.
+e' la metrica del paper e misura tutta la catena, e una sulle memorie attive una
+volta consolidato il messaggio che precede la domanda, che non passa da nessun
+modello e misura la sola consolidation. Lo scarto fra le due dice quale nodo ha ceduto.
 
 Le assert sono strutturali (invarianti che devono valere qualunque cosa decida il
 modello), non sul contenuto: con un LLM vero pretendere una classificazione
@@ -350,8 +350,8 @@ def _active_memory_text(state, vector_store) -> str:
     significherebbe rimproverare alla consolidation di aver conservato la storia
     invece di averla dimenticata.
 
-    Va letto **prima** dell'insert, perche' e' lo stato da cui la risposta e'
-    stata composta: dopo il consolidamento della domanda sarebbe gia' un altro.
+    Va letto quando il messaggio che precede la domanda e' stato consolidato, non
+    al momento della domanda: vedi fama.memory_snapshot_turn.
     """
     lines = [item.content for item in get_active_items(state["core_memory"])]
     try:
@@ -365,6 +365,13 @@ def _active_memory_text(state, vector_store) -> str:
         if (metadata or {}).get("status") == "active":
             lines.append(str(content))
     return "\n".join(lines)
+
+
+def _score_memory(entries, state, vector_store):
+    """FAMA-memoria per le domande che aspettavano questo stato."""
+    memory = _active_memory_text(state, vector_store)
+    for entry in entries:
+        entry["on_memory"] = fama.score(fama.QUESTIONS[entry["index"]], memory)
 
 
 def _message_limit():
@@ -540,7 +547,8 @@ def _print_fama(answers):
     Le stesse due colonne di sempre non basterebbero: un numero solo sulla
     risposta somma consolidation, retrieval e generate_answer, e quando cala non
     dice quale dei tre ha ceduto. La colonna "memoria" applica gli stessi criteri
-    allo store al momento della domanda, dove non c'e' nessun modello di mezzo:
+    allo store appena consolidato il messaggio che precede la domanda, dove non
+    c'e' nessun modello di mezzo:
     e' li' che si legge se la consolidation ha fatto il suo lavoro.
 
     Il verdetto in fondo alla riga e' la lettura congiunta delle due:
@@ -582,9 +590,6 @@ def _print_fama(answers):
                f"{_cell(store['mpa'])}{_cell(store['faa'])}{store['fama']:>7.1f} |"
                f" su {reply['questions']} domande")
 
-    # Il punteggio dell'architettura. MPA e FAA della riga sopra non sono la
-    # media delle colonne: sono micro-medie sui criteri, come nel riferimento,
-    # quindi una domanda con sette criteri pesa per sette.
     safe_print("")
     safe_print(f"  --- PUNTEGGIO COMPLESSIVO ({reply['questions']} domande, "
                f"{reply['criteria']} criteri) ---")
@@ -601,12 +606,6 @@ def _print_fama(answers):
         safe_print(f"\n  Verdetti: {summary}")
 
     safe_print("")
-    safe_print("  Il conto e' quello del riferimento (model_based_evaluator.py), ma il")
-    safe_print("  numero non e' confrontabile con le tabelle del paper: altri dati, una")
-    safe_print("  persona invece di dieci, 17 domande invece di 150, altro giudice.")
-    safe_print("  Serve a confrontare questa architettura con se stessa, e nemmeno da")
-    safe_print("  una run sola: una domanda che cambia esito muove il totale di circa")
-    safe_print("  sei punti, e a temperature 1.0 l'esito cambia da solo.")
 
 
 def _print_node_costs(elapsed):
@@ -618,9 +617,6 @@ def _print_node_costs(elapsed):
     perche' il cluster era occupato - che e' quello che serve per tarare
     NODE_SAMPLING un nodo alla volta.
     """
-    # Differito come gli altri di memory_manager_llm: importarlo qui sopra
-    # tirerebbe dentro langgraph al momento della raccolta, e questo modulo deve
-    # potersi saltare quando lo stack non c'e'.
     from memory_service.memory_manager_llm import NODE_STATS
 
     if not NODE_STATS:
@@ -738,13 +734,9 @@ def test_long_term_interaction():
 
     _configure_langsmith()
     agent, config = _build_agent()
-    # I contatori sono di modulo: azzerarli qui significa misurare questa run e
-    # non quello che il processo ha fatto prima.
     from memory_service.memory_manager_llm import reset_node_stats
 
     reset_node_stats()
-    # Contato prima di iniettare: dopo non si distinguerebbe piu' quello che
-    # ha scritto questa run da quello che ha trovato.
     inherited = _archived_documents(config) or 0
     vector_store = backends.get_vector_store()
 
@@ -765,45 +757,39 @@ def test_long_term_interaction():
     answers = []
     started = time.time()
 
+    snapshot_due = {}
+
     for index, message in enumerate(messages, 1):
         try:
-            # Tutto quello che l'agente stampa finisce nel buffer: il resoconto
-            # arriva alla fine, non messaggio per messaggio.
             with contextlib.redirect_stdout(noise):
                 # --- come intent_recognition.listener_callback ---------------
-                # Un get_memory su OGNI messaggio, senza condizioni: e' il modo
-                # in cui la pipeline si procura il contesto. L'azzeramento di
-                # retrieved_memory lo fa il servizio, quindi qui non si tocca:
-                # farlo dal test nasconderebbe una regressione su quel punto.
                 state = agent.run_memory_agent("retrieve", query=message)
                 retrieved = state.get("retrieved_memory", "")
 
                 # --- la risposta la compone il servizio ----------------------
-                # generate_answer ha gia' appeso la domanda e la sua risposta a
-                # messages, quindi qui non si appende piu' niente: farlo
-                # duplicherebbe il turno.
                 answer = _last_answer(state)
-
-                # Fotografia della memoria attiva com'era quando la risposta e'
-                # stata composta: dopo l'insert non sarebbe piu' la stessa.
-                memory = (_active_memory_text(state, vector_store)
-                          if _is_question(index) else "")
 
                 # --- come explainability: send_update_request(input, risposta) -
                 agent.run_memory_agent("insert")
 
             if _is_question(index):
-                subject = fama.QUESTIONS[index]
-                answers.append({
+                entry = {
                     "index": index,
                     "question": message,
                     "answer": answer,
                     "retrieved": retrieved,
-                    "on_answer": fama.score(subject, answer),
-                    "on_memory": fama.score(subject, memory),
-                })
+                    "on_answer": fama.score(fama.QUESTIONS[index], answer),
+                    "on_memory": None,
+                }
+                answers.append(entry)
+                turn = fama.memory_snapshot_turn(index, config.maximum_historical_messages)
+                snapshot_due.setdefault(turn, []).append(entry)
         except Exception as error:
             failures.append((index, message, repr(error)))
+
+        # agent.state e non `state`: l'insert ha sostituito il dizionario.
+        if index in snapshot_due:
+            _score_memory(snapshot_due.pop(index), agent.state, vector_store)
 
         if index % PROGRESS_EVERY == 0 or index == len(messages):
             _print_progress(index, len(messages), agent)
@@ -812,6 +798,10 @@ def test_long_term_interaction():
 
     elapsed = time.time() - started
     state = agent.state
+
+    # Fotografie che cadevano oltre l'ultimo messaggio iniettato: stato finale.
+    for entries in snapshot_due.values():
+        _score_memory(entries, state, vector_store)
 
     _print_final_report(state, vector_store, config, len(messages), failures, elapsed,
                         answers, inherited)

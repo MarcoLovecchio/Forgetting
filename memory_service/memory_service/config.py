@@ -64,14 +64,12 @@ def load_environment(override: bool = False) -> list:
 
 NODE_SAMPLING: Dict[str, Dict[str, Any]] = {
     "retrieval": {"enable_thinking": False,
-                "temperature": 0.7, "top_p": 0.8,
-                "presence_penalty": 1.5,},
+                "temperature": 0.7, "top_p": 0.8,},
     "generate_answer": {"enable_thinking": False,
                         "temperature": 0.7, "top_p": 0.8,},
     "consolidation": {},
     "core_split": {"enable_thinking": False,
-                    "temperature": 0.7, "top_p": 0.8,
-                    "presence_penalty": 1.5,},
+                    "temperature": 0.7, "top_p": 0.8,},
 }
 
 

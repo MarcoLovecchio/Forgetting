@@ -188,6 +188,9 @@ class MatchingTest(unittest.TestCase):
         self.assertTrue(criterion.satisfied("Bevi il caffè la mattina."))
         self.assertTrue(criterion.satisfied("bevi il caffe' la mattina"))
 
+    def test_line_breaks_survive_normalization(self):
+        self.assertEqual(fama.normalize("Caffè  la\n\nmattina \n tè"), "caffe la\nmattina\nte")
+
     def test_a_trailing_star_matches_the_whole_family(self):
         criterion = fama.recalls("corsa", "corr*")
         self.assertTrue(criterion.satisfied("Corri tre volte a settimana."))
@@ -291,10 +294,69 @@ class DeleteVersusUpdateTest(unittest.TestCase):
         self.assertFalse(criterion.satisfied("The user now lives in Mondello."))
         self.assertFalse(criterion.satisfied("Adesso abiti a Mondello."))
 
+    def test_a_negation_in_one_memory_does_not_cover_another(self):
+        """Ogni memoria e' una riga, e ogni riga una proposizione a se'.
+
+        Prima gli a capo diventavano spazi e lo store una proposizione sola: il
+        "no longer" del pianoforte copriva il caffe' ancora attivo, e
+        FAMA-memoria dava 1.00 a un archivio che non aveva dimenticato niente.
+        """
+        criterion = fama.supersedes("caffe'", "caffe", "coffee")
+        self.assertFalse(criterion.satisfied(
+            "The user no longer plays the piano\nThe user drinks coffee every morning"))
+
+    def test_a_correction_after_but_supersedes_what_came_before(self):
+        criterion = fama.supersedes("caffe'", "caffe", "coffee")
+        self.assertTrue(criterion.satisfied(
+            "Di solito bevi solo caffè la mattina, ma ora non lo prendi più."))
+        self.assertTrue(criterion.satisfied(
+            "The user drank coffee in the morning, but not anymore."))
+
+    def test_a_but_that_negates_something_else_does_not(self):
+        criterion = fama.supersedes("caffe'", "caffe", "coffee")
+        self.assertFalse(criterion.satisfied("Bevi caffè la mattina, ma non alcolici."))
+        self.assertFalse(criterion.satisfied("Bevi caffè la mattina, e non più tè."))
+        self.assertFalse(criterion.satisfied("Bevi caffè la mattina. Ma non più tè."))
+
     def test_all_occurrences_must_be_acceptable_not_just_one(self):
         criterion = fama.supersedes("caffe'", "caffe")
         self.assertFalse(criterion.satisfied(
             "Non bevi più caffè. Il caffè lo prendi alle otto."))
+
+
+class OpenQuestionTest(unittest.TestCase):
+    """Le domande aperte vogliono alcuni fatti, non quei fatti."""
+
+    def setUp(self):
+        self.criterion = fama.recalls_some(
+            "alimentazione", 2,
+            "vegetarian*", ("arachid*", "peanut*"), "glutine", "lattosio")
+
+    def test_any_two_facts_are_enough(self):
+        self.assertTrue(self.criterion.satisfied(
+            "Cuoci senza glutine e sei intollerante al lattosio."))
+        self.assertTrue(self.criterion.satisfied("Sei vegetariana e allergica alle arachidi."))
+
+    def test_one_fact_is_not(self):
+        self.assertFalse(self.criterion.satisfied("Sei allergica alle arachidi."))
+
+    def test_one_fact_in_two_languages_counts_once(self):
+        self.assertFalse(self.criterion.satisfied("Allergica alle arachidi (peanuts)."))
+
+
+class SnapshotTimingTest(unittest.TestCase):
+    """La memoria si misura quando il messaggio prima della domanda e' consolidato."""
+
+    def test_with_the_long_run_window_it_is_the_question_turn(self):
+        self.assertEqual(fama.memory_snapshot_turn(45, 2), 45)
+
+    def test_a_wider_window_pushes_it_later(self):
+        self.assertEqual(fama.memory_snapshot_turn(45, 4), 46)
+        self.assertEqual(fama.memory_snapshot_turn(45, 6), 47)
+
+    def test_it_never_goes_before_the_question(self):
+        self.assertEqual(fama.memory_snapshot_turn(45, 1), 45)
+        self.assertEqual(fama.memory_snapshot_turn(45, 0), 45)
 
 
 class VerdictTest(unittest.TestCase):
@@ -334,11 +396,7 @@ class CriteriaTableTest(unittest.TestCase):
 
     def test_every_question_in_the_conversation_has_criteria(self):
         """Una domanda senza criteri sparirebbe dal conto senza dirlo.
-
-        Il punto interrogativo non basta a trovarle tutte: il msg 117
-        ("Riassumi tutto quello che sai di me.") chiede alla memoria di
-        parlare esattamente come le altre, e non ne ha uno. E' la ragione per
-        cui la tabella, e non la punteggiatura, decide cosa viene valutato.
+        Il punto interrogativo non basta a trovarle tutte
         """
         messages = conversation()
         asked = {number for number, message in enumerate(messages, 1)
@@ -362,6 +420,10 @@ class CriteriaTableTest(unittest.TestCase):
                 for variant in criterion.variants:
                     self.assertTrue(fama.normalize(variant).strip("* "),
                                     "variante vuota in %s" % criterion.label)
+                if criterion.groups:
+                    self.assertTrue(1 <= criterion.minimum <= len(criterion.groups),
+                                    "%s chiede piu' fatti di quelli che elenca"
+                                    % criterion.label)
 
     def test_deletes_are_hard_and_updates_are_soft(self):
         """La distinzione fra forgets e supersedes non e' decorativa.
@@ -417,6 +479,28 @@ class CriteriaTableTest(unittest.TestCase):
         self.assertEqual(set(right), set(fama.QUESTIONS))
 
         for index, answer in right.items():
+            scored = fama.score(fama.QUESTIONS[index], answer)
+            self.assertEqual(
+                scored.fama, 1.0,
+                "domanda %d: FAMA %.2f su una risposta giusta - mancanti %s, "
+                "trapelati %s" % (index, scored.fama, scored.missed, scored.leaked))
+
+    def test_the_right_answers_of_a_real_run_score_one(self):
+        """Risposte giuste di una run vera, parola per parola, che FAMA bocciava.
+
+        27 diceva tre fatti veri diversi da quelli pretesi; 49 correggeva il
+        caffe' nella proposizione dopo, con un pronome.
+        """
+        run = {
+            27: "So che cuoci senza glutine a casa tua, sei leggermente intollerante "
+                "al lattosio e sei allergico alle arachidi, che è un'allergia grave.",
+            30: "Il tuo obiettivo calorico giornaliero è 2200 calorie.",
+            40: "Ora segui una dieta che include il pesce, dato che sei passata dal "
+                "vegetarianesimo, ma mantieni comunque l'obiettivo di 2200 calorie al giorno.",
+            45: "Non so dove abiti, poiché non è tra le informazioni che tengo a mente.",
+            49: "Di solito bevi solo caffè la mattina, ma ora non lo prendi più.",
+        }
+        for index, answer in run.items():
             scored = fama.score(fama.QUESTIONS[index], answer)
             self.assertEqual(
                 scored.fama, 1.0,
@@ -487,6 +571,7 @@ class CriteriaTableTest(unittest.TestCase):
     def test_the_wrong_answers_are_caught(self):
         """L'altro lato: le risposte che il test lungo ha visto davvero sbagliare."""
         wrong = {
+            27: "Sei allergica alle arachidi.",  # un fatto solo: ne servono due
             30: "Il tuo obiettivo è di 2000 calorie.",
             45: "Abiti a Mondello, in provincia di Palermo.",
             49: "La mattina bevi il caffè.",
