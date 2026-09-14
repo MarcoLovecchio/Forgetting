@@ -73,6 +73,7 @@ ACCEPTED_ALSO: Dict[int, Tuple[Tuple[str, ...], ...]] = {
     79: (("new",),),                        # i saggi si aggiungono, i romanzi storici restano
     83: (("new",),),                        # la merenda si aggiunge, il pomeriggio resta vero
     90: (("new",),),                        # cambia la ricetta, il piatto preferito resta
+    93: (("update",),),                     # "ma non carne" aggiunge un dettaglio alla dieta
     94: (("new", "update"),),               # 1800 calorie, e il perche': dimagrire
     101: (("update",), ("new", "update")),  # "Milo e' un soriano": dettaglio sul gatto del msg 99
 }
@@ -81,6 +82,7 @@ ACCEPTED_ALSO: Dict[int, Tuple[Tuple[str, ...], ...]] = {
 MULTIPLE_EXPECTED = (
     18,   # sorella: il nome e la citta'
     19,   # madre celiaca, e in casa senza glutine
+    96,   # l'ora in cui va a dormire e quella della sveglia
     106,  # la corsa ripresa e il ginocchio che sta meglio
     112,  # tutti i familiari
 )

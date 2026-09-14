@@ -100,18 +100,21 @@ class InsertCoreMemories(BaseModel):
     For each fact you find in the messages, classify it against the memories you are given
     as `id: content` pairs:
     - new: a genuinely new fact, unrelated to any memory you were given (no target_item_id).
-    - redundant: it confirms a memory that is already stored, without changing it
-      (target_item_id required).
-    - update: it changes a memory already stored - it adds detail, gives a new value, or
-      shows the old one was wrong (target_item_id required). The fact REPLACES that memory,
+    - redundant: the stored memory already says everything the user said: its text would not
+      change (target_item_id required).
+    - update: the stored memory has to change to include what the user said - a new value, a
+      correction, or one more detail (target_item_id required). The fact REPLACES that memory,
       so write it complete: keep everything from the old memory that is still true.
     - delete: use ONLY when the user explicitly asks to delete, forget, remove or stop storing
-      a specific fact (target_item_id required).
+      a specific fact (target_item_id required). Write as fact the text of the memory being
+      deleted, not the request.
 
     Do not use delete for facts that merely became less relevant or less interesting: use
     update for those."""
 
-    memories: List[MemoryOperation]
+    memories: List[MemoryOperation] = Field(description=(
+        "Empty for a question, small talk, or a request to forget something that is not "
+        "among the known memories."))
 
 
 class MemorySplitDecision(BaseModel):
@@ -147,7 +150,6 @@ _OPERATION_ALIASES = {
     "redundant": "redundant", "reinforce": "redundant", "duplicate": "redundant",
     "confirm": "redundant",
     "update": "update", "refine": "update", "extend": "update",
-    # contradict was merged into update: the alias keeps a model that still says it working.
     "contradict": "update", "contradiction": "update", "replace": "update",
     "delete": "delete", "remove": "delete", "forget": "delete",
 }

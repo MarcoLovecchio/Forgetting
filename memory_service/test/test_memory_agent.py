@@ -849,8 +849,8 @@ class ExtractionStanceTest(MemoryServiceTestCase):
         # delete che quel messaggio doveva provocare.
         prompt = self.consolidation_prompt()
 
-        self.assertIn("A question produces no operations at all", prompt)
-        self.assertIn("not a new memory about the request", prompt)
+        self.assertIn("Return an empty list", prompt)
+        self.assertIn("Never store the request itself.", prompt)
 
     def test_the_known_memories_are_an_index_not_a_source(self):
         # "A question stores nothing" non bastava: un redundant non memorizza
@@ -861,10 +861,8 @@ class ExtractionStanceTest(MemoryServiceTestCase):
         # che e' il campo su cui poggerebbe un eventuale segnale di ritenzione.
         prompt = self.consolidation_prompt()
 
-        self.assertIn(
-            "The known memories are there to be pointed at, not to be confirmed.",
-            prompt)
-        self.assertIn("gets no operation", prompt)
+        self.assertIn("not even a redundant", prompt)
+        self.assertIn("A known memory the user did not refer to gets no operation.", prompt)
 
     def consolidation_prompt(self):
         self.agent.state["messages"] = self.conversation(8)
@@ -887,13 +885,20 @@ class ExtractionStanceTest(MemoryServiceTestCase):
         for invocation in self.llm.invocations:
             if "InsertCoreMemories" in invocation["tools"]:
                 prompt = invocation["prompt"]
-                self.assertIn(
-                    "Never emit two operations with the same fact text.", prompt)
-                self.assertIn(
-                    "Facts that are always true together belong in a single memory.",
-                    prompt)
+                self.assertIn("Two operations never share the same fact text.", prompt)
+                self.assertIn("Facts that are always true together belong in one memory.",
+                              prompt)
                 return
         raise AssertionError("il consolidamento non e' mai stato invocato")
+
+    def test_the_known_memories_are_one_per_line(self):
+        # Come dizionario Python erano una riga sola di graffe e virgolette.
+        item = CoreMemoryItem(content="The user is allergic to peanuts.")
+        self.agent.state["core_memory"] = [item]
+        prompt = self.consolidation_prompt()
+
+        self.assertIn("\n%s: The user is allergic to peanuts.\n" % item.id, prompt)
+        self.assertNotIn("{'", prompt)
 
     def test_the_prompt_frames_facts_as_something_to_classify(self):
         # Sopra la finestra di cinque, altrimenti il consolidamento non parte.

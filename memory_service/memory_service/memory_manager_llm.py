@@ -274,6 +274,7 @@ def generate_answer(state: AgentState):
          When the sources disagree, the newest wins:
          - if the user recently gave a new value, answer with the new value;
          - if the user recently told you something no fact mentions, you know it: answer with it;
+         - if the user has just retracted a piece of previous information, answer with what they retracted;
          - if the user recently asked you to forget something, you no longer know it: say that
            you do not keep that information anymore, even if a fact or a memory still contains it.
 
@@ -329,49 +330,57 @@ def summarize_memories_node(state: AgentState):
     user_messages, assistant_messages = split_by_speaker(exceeding_messages)
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a tool that extracts new facts about the user and classifies
-        each one against the memories the assistant already has, given to you as id: content
-        pairs coming from both core and archival memory.
+        ("system", """You are a tool that extracts facts about the user and classifies each one
+        against the memories the assistant already has, given to you as id: content pairs
+        coming from both core and archival memory.
+        For each fact you extract, decide which operation applies; the operations are
+        defined with the tool you must call.
 
-        Facts about the user come only from what the USER said. The assistant's replies are
-        given separately, as context to make sense of a short answer like "yes, that one",
-        and are never themselves a source of facts.
+        Work in this order.
 
-        For each fact you extract, decide which operation applies and reference the id of
-        the memory it concerns; the operations themselves are defined with the tool you
-        must call. Only include facts that are relevant and likely to be referenced in
-        future interactions.
+        1. What kind of message is it?
+           - It only asks a question, greets or makes small talk: there is nothing to store.
+             Return an empty list - that is the correct answer, not a failure.
+           - It asks to forget, delete or stop storing something: find the known memory it
+             refers to - by name or by category - and emit a delete on it, with that memory's text as the fact.
+             If no known memory matches, return an empty list. Never store the request itself.
+           - It tells something about the user: go on with step 2.
 
-        What the user is doing with their words is never itself a fact.
-        A question produces no operations at all - not even a redundant.
-        Asking to forget something is a delete on the memory it names,
-        not a new memory about the request.
+        2. For each piece of information, look among the known memories for one about the
+           same subject.
+           - None: new.
+           - One exists and its text already says everything the user said: redundant.
+           - One exists but its text would have to change to include what the user said - a
+             new value, a correction, or one more detail: update, written as the complete new
+             memory.
 
-        The known memories are there to be pointed at, not to be confirmed.
-        A memory the user did not mention in this exchange gets no operation.
-
-        Never emit two operations with the same fact text. If one thing the user
-        said concerns two stored memories, choose the one it belongs to.
-        Facts that are always true together belong in a single memory."""),
+        Facts come only from what the USER said: the assistant's replies are context, and a
+        fact that appears only there gets no operation - not even a redundant.
+        A known memory the user did not refer to gets no operation.
+        Facts that are always true together belong in one memory.
+        Two operations never share the same fact text."""),
         ("human", """For context only, what the assistant replied - do NOT extract facts from here:
 
 {assistant_messages}
+
+Known memories (id: content):
+{core_memory}
 
 What the user said - this is where the facts come from:
 
 {user_messages}
 
-Known memories (id: content) are: {core_memory}.
-Focus on preferences, opinions, or personal facts mentioned by the user.""")
+First decide what kind of message this is. For a question, an empty list is the answer.""")
     ])
     summarizer_llm = get_llm("consolidation").bind_tools(
         [InsertCoreMemories], tool_choice=REQUIRED)
     chain = prompt | summarizer_llm
     core_memories = build_candidate_memories(state["core_memory"], user_messages)
+    known_memories = "\n".join(f"{item_id}: {content}" for item_id, content in core_memories.items())
     response = _timed("consolidation", lambda: chain.invoke({
         "user_messages": user_messages,
         "assistant_messages": assistant_messages or "(none)",
-        "core_memory": core_memories,
+        "core_memory": known_memories or "(none)",
     }))
     print(f"\tSummarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response], "messages": state["messages"][-keep:]}  # Keep only the last N messages
