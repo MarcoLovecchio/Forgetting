@@ -127,16 +127,16 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from langchain_core.messages import AIMessage  # noqa: E402
+from langchain_core.messages import AIMessage
 
-from memory_service import backends  # noqa: E402
-from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
-from memory_service.consolidation import ARCHIVE_CANDIDATES_K, get_active_items  # noqa: E402
+from memory_service import backends
+from memory_service.config import NODE_SAMPLING, MemoryConfig
+from memory_service.consolidation import ARCHIVE_CANDIDATES_K, get_active_items
 
-import fama  # noqa: E402
-from live_model import live_stack_unavailable  # noqa: E402
-import operation_matrix  # noqa: E402
-from snapshot import SEPARATOR, safe_print  # noqa: E402
+import fama
+from live_model import live_stack_unavailable
+import operation_matrix
+from snapshot import SEPARATOR, safe_print
 
 
 pytestmark = pytest.mark.skipif(
@@ -146,7 +146,6 @@ pytestmark = pytest.mark.skipif(
 
 PROGRESS_EVERY = 10
 ID_WIDTH = 8
-
 
 # --------------------------------------------------------------------------- #
 # La conversazione: 117 messaggi dell'utente (100 fatti e 17 domande)
@@ -316,12 +315,9 @@ def _build_agent():
     chroma_path = os.getenv("MEMORY_LONGRUN_CHROMA_PATH")
     config = dataclasses.replace(
         MemoryConfig.from_environment(),
-        maximum_historical_messages=2,  # ogni messaggio fa scattare il consolidamento
-        # Fissata, non ereditata: senza la risposta del servizio questo test non
-        # ha niente da misurare, e un MEMORY_GENERATE_ANSWER=false nell'ambiente
-        # lo svuoterebbe in silenzio.
+        maximum_historical_messages=2,
         generate_answer=True,
-        core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "200")),
+        core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "400")),
         collection_name=os.getenv("MEMORY_LONGRUN_COLLECTION", "longterm_test_archive"),
         **({"chroma_path": os.path.abspath(chroma_path)} if chroma_path else {}),
     )

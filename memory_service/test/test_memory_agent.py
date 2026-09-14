@@ -505,11 +505,18 @@ class AnswerPromptTest(MemoryServiceTestCase):
         # memoria. Su una run vera, alla domanda "sai dirmi dove abito?" posta
         # subito dopo "dimentica il mio indirizzo", il modello aveva entrambi
         # davanti e ha risposto con l'indirizzo.
+        # Alla domanda sulle calorie, con il 2200 non ancora consolidato, aveva
+        # invece risposto che nessun fatto ne parlava.
         prompt = self.answer_prompt()
 
-        self.assertIn("correct or retract what the facts or the recalled memories say",
-                      prompt)
-        self.assertIn("the conversation wins over the stored fact", prompt)
+        self.assertIn("When the sources disagree, the newest wins", prompt)
+        self.assertIn("you know it: answer with it", prompt)
+        self.assertIn("you do not keep that information anymore", prompt)
+        facts = prompt.index("Facts kept at hand:")
+        recalled = prompt.index("Memories recalled from the archive for this question:")
+        last = prompt.index("Last messages (Human is the user, AI is you):")
+        self.assertLess(facts, recalled)
+        self.assertLess(recalled, last)
         # I blocchi nel prompt sono tre e hanno etichette diverse: la regola deve
         # nominare anche quello d'archivio, perche' e' li' che stava l'indirizzo
         # da dimenticare a msg 45 - e quell'etichetta ne afferma pure la

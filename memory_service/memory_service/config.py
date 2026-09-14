@@ -107,7 +107,7 @@ class MemoryConfig:
 
     # Agent behaviour
     node_name: str = "memory_agent"
-    maximum_historical_messages: int = 4
+    maximum_historical_messages: int = 2
     core_memory_limit: int = 400
     generate_answer: bool = True
 
