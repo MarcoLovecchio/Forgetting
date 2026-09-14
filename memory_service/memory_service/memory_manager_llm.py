@@ -153,11 +153,10 @@ def empty_node(state: AgentState) -> AgentState:
 
 # Tool to retrieve memories from the archive
 @tool
-def retrieve_memory(query: str, k: int = 3) -> str:
+def retrieve_memory(query: str, k: int = 5) -> str:
     """Retrieve relevant memories from the archival vector store based on a query.
     Returns up to k relevant memories.
     Think about the best value of k based on the complexity of the query."""
-    # Superseded and deleted memories are tombstones: they must not come back.
     results = retrieve_active_archival_memories(query, k)
     print(results)
     return results
@@ -271,12 +270,18 @@ def generate_answer(state: AgentState):
          3. What the user said in the last messages - the NEWEST information you have. Memory
             is updated with a delay, so these messages are not in the facts or the memories yet.
 
-         When the sources disagree, the newest wins:
-         - if the user recently gave a new value, answer with the new value;
+         When the sources disagree about the same fact, the newest wins:
+         - if the user recently gave a new value, answer with the new value only;
          - if the user recently told you something no fact mentions, you know it: answer with it;
          - if the user has just retracted a piece of previous information, answer with what they retracted;
          - if the user recently asked you to forget something, you no longer know it: say that
            you do not keep that information anymore, even if a fact or a memory still contains it.
+
+         A recent message changes only the fact it talks about: everything else you know on the
+         same topic is still true. When the question asks for several things answer with every 
+         item that is still true, from all the sources.
+         Say directly what is true now: never state an outdated value and then correct it,
+         and never repeat a forgotten fact.
 
          Answer in one or two sentences, in the language the user wrote in. If none of the
          sources contains the answer, say so plainly instead of inventing it.
@@ -339,15 +344,18 @@ def summarize_memories_node(state: AgentState):
         Work in this order.
 
         1. What kind of message is it?
-           - It only asks a question, greets or makes small talk: there is nothing to store.
-             Return an empty list - that is the correct answer, not a failure.
+           - It contains no information about the user at all - only a question, a greeting
+             or small talk: return an empty list.
+             A greeting or a question that also tells something about the user ("Hi, my name
+             is Bianca") is information: go on with step 2.
            - It asks to forget, delete or stop storing something: find the known memory it
              refers to - by name or by category - and emit a delete on it, with that memory's text as the fact.
              If no known memory matches, return an empty list. Never store the request itself.
            - It tells something about the user: go on with step 2.
 
         2. For each piece of information, look among the known memories for one about the
-           same subject.
+           same fact. Two facts that can change independently are two memories, even on the
+           same topic.
            - None: new.
            - One exists and its text already says everything the user said: redundant.
            - One exists but its text would have to change to include what the user said - a
@@ -370,7 +378,7 @@ What the user said - this is where the facts come from:
 
 {user_messages}
 
-First decide what kind of message this is. For a question, an empty list is the answer.""")
+First decide what kind of message this is, then store every piece of information about the user it contains.""")
     ])
     summarizer_llm = get_llm("consolidation").bind_tools(
         [InsertCoreMemories], tool_choice=REQUIRED)

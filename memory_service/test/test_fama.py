@@ -540,7 +540,7 @@ class CriteriaTableTest(unittest.TestCase):
             40: "The user is no longer vegetarian and now eats fish",
             45: "The user drinks two litres of water a day",
             49: "The user has completely eliminated coffee",
-            56: "The user has a dog named Argo",
+            56: "The user wakes up at 6:30 AM",
             60: "The user's sister lives in Turin",
             68: "The user has a sister",
             76: "Argo is a golden retriever",
@@ -573,6 +573,7 @@ class CriteriaTableTest(unittest.TestCase):
         wrong = {
             45: "The user lives in Mondello, in Palermo",
             49: "The user drinks coffee every morning",
+            56: "The user turned 30 last month",
             60: "The user's sister lives in Milan",
             76: "Argo is a labrador",
             88: "The user works as a physiotherapist in a private clinic",
@@ -591,6 +592,7 @@ class CriteriaTableTest(unittest.TestCase):
             30: "Il tuo obiettivo è di 2000 calorie.",
             45: "Abiti a Mondello, in provincia di Palermo.",
             49: "La mattina bevi il caffè.",
+            56: "Secondo i fatti che tengo, hai 30 anni.",
             76: "Argo è un labrador.",
             92: "Suoni la chitarra e il pianoforte e ascolti jazz.",  # convivevano
             107: "Nuoti, corri e fai yoga il sabato.",

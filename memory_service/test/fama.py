@@ -621,8 +621,11 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     56: EvaluationQuestion(
         56, "msg 55 ha cancellato l'eta': prima 29, poi 30",
         (
-            forgets("eta' cancellata", "30", "29",
-                    "trenta", "ventinove", "thirty", "twenty nine"),
+            # Mai il numero da solo: "6:30" diventa "6 30", e la sveglia passava per l'eta'.
+            forgets("eta' cancellata", "30 anni", "29 anni", "30 year*", "29 year*",
+                    "is 30", "is 29", "turned 30", "turned 29", "aged 30", "age of 30",
+                    "trent anni", "trentanni", "ventinove anni",
+                    "thirty year*", "twenty nine year*"),
         ),
     ),
 

@@ -509,7 +509,7 @@ class AnswerPromptTest(MemoryServiceTestCase):
         # invece risposto che nessun fatto ne parlava.
         prompt = self.answer_prompt()
 
-        self.assertIn("When the sources disagree, the newest wins", prompt)
+        self.assertIn("When the sources disagree about the same fact, the newest wins", prompt)
         self.assertIn("you know it: answer with it", prompt)
         self.assertIn("you do not keep that information anymore", prompt)
         facts = prompt.index("Facts kept at hand:")
@@ -522,6 +522,15 @@ class AnswerPromptTest(MemoryServiceTestCase):
         # da dimenticare a msg 45 - e quell'etichetta ne afferma pure la
         # pertinenza ("recalled for this question").
         self.assertIn("among the facts or among the recalled memories", prompt)
+
+    def test_a_recent_message_changes_only_its_own_fact(self):
+        # Dopo "ho chiuso con il pianoforte", in cinque run su cinque la chitarra
+        # recuperata dall'archivio spariva dalla risposta.
+        prompt = self.answer_prompt()
+
+        self.assertIn("A recent message changes only the fact it talks about", prompt)
+        self.assertIn("answer with every item that", prompt)
+        self.assertIn("never state an outdated value and then correct it", prompt)
 
     def test_both_kinds_of_conflict_are_named_after_the_question(self):
         # Con il ragionamento acceso bastava il principio nel system message.
@@ -849,8 +858,16 @@ class ExtractionStanceTest(MemoryServiceTestCase):
         # delete che quel messaggio doveva provocare.
         prompt = self.consolidation_prompt()
 
-        self.assertIn("Return an empty list", prompt)
+        self.assertIn("return an empty list", prompt)
+        # "Ciao, mi chiamo Bianca." letto come saluto: il nome non era stato salvato.
+        self.assertIn("A greeting or a question that also tells something about the user", prompt)
         self.assertIn("Never store the request itself.", prompt)
+
+    def test_facts_that_change_independently_are_not_merged(self):
+        # Corsa e nuoto in una memoria sola: riscritta al msg 106, il nuoto e' sparito.
+        prompt = self.consolidation_prompt()
+
+        self.assertIn("Two facts that can change independently are two memories", prompt)
 
     def test_the_known_memories_are_an_index_not_a_source(self):
         # "A question stores nothing" non bastava: un redundant non memorizza
@@ -936,6 +953,10 @@ class FactShapeTest(MemoryServiceTestCase):
     def test_the_field_asks_for_the_current_state_not_the_change(self):
         self.assertIn("State what is true now, not what changed",
                       consolidation_tool_schema())
+
+    def test_the_fact_is_written_in_english(self):
+        # In una run l'archivio intero era "Il user beve...", "Il user suona...".
+        self.assertIn("in English", consolidation_tool_schema())
 
     def test_the_lineage_goes_in_its_own_field(self):
         # Vietare senza dare un'alternativa lascia il modello a inventarsela:

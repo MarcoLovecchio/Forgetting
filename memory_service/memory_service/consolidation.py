@@ -82,8 +82,9 @@ class MemoryOperation(BaseModel):
     """
 
     fact: str = Field(description=(
-        "The fact itself. Write it about the user, in the third person, never as a copy "
-        "of the sentence the user wrote. State what is true now, not what changed."))
+        "The fact itself, in English whatever language the user spoke. Write it about the "
+        "user, in the third person, never as a copy of the sentence the user wrote. State "
+        "what is true now, not what changed."))
     operation: MemoryOperationType
     target_item_id: Optional[str] = Field(
         default=None,
@@ -316,7 +317,7 @@ def serialize_retrieved_for_response(retrieved) -> List[str]:
     return [line for line in text.splitlines() if line.strip()]
 
 
-def retrieve_active_archival_memories(query: str, k: int = 3) -> str:
+def retrieve_active_archival_memories(query: str, k: int = 5) -> str:
     """Archive lookup for the retrieval path, tombstones excluded."""
     results = search_archive(query, k=k)
     if not results:

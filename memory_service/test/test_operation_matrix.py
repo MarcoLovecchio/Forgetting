@@ -129,9 +129,9 @@ class AccuracyTest(unittest.TestCase):
         text = "\n".join(om.format_report([
             om.row(18, ["create", "create"]), om.row(19, ["create", "create"]),
             om.row(112, ["delete", "delete"]), om.row(33, ["update", "update"]),
-            om.row(54, ["update", "create", "create"]), om.row(12, ["create"])]))
+            om.row(42, ["update", "create", "create"]), om.row(12, ["create"])]))
         self.assertIn("Frammentazione: 2 messaggi con piu' operazioni dello stesso tipo "
-                      "(msg 33, 54), piu' 3 dove sono previste", text)
+                      "(msg 33, 42), piu' 3 dove sono previste", text)
 
     def test_a_question_that_produced_nothing_is_right(self):
         self.assertTrue(om.is_strict(om.row(27, [])))

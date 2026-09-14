@@ -76,12 +76,18 @@ ACCEPTED_ALSO: Dict[int, Tuple[Tuple[str, ...], ...]] = {
     93: (("update",),),                     # "ma non carne" aggiunge un dettaglio alla dieta
     94: (("new", "update"),),               # 1800 calorie, e il perche': dimagrire
     101: (("update",), ("new", "update")),  # "Milo e' un soriano": dettaglio sul gatto del msg 99
+    110: (("update",), ("new",)),           # la mattina presto si era persa fra i msg 54, 58 e 106
+    112: (("none",),),                      # i familiari erano gia' stati cancellati ai msg 67 e 102
 }
 
 # Dove piu' operazioni dello stesso tipo sono giuste, e non frammentazione.
 MULTIPLE_EXPECTED = (
     18,   # sorella: il nome e la citta'
     19,   # madre celiaca, e in casa senza glutine
+    54,   # la corsa in due memorie, se il msg 15 e' diventato un new
+    80,   # lo yoga del sabato e del mercoledi', se il 66 e' diventato un new
+    84,   # la clinica e il part-time, se il 69 e' diventato un new
+    87,   # le stesse due memorie sul lavoro, da cancellare
     96,   # l'ora in cui va a dormire e quella della sveglia
     106,  # la corsa ripresa e il ginocchio che sta meglio
     112,  # tutti i familiari
