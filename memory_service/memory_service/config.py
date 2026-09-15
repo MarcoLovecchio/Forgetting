@@ -109,6 +109,7 @@ class MemoryConfig:
     node_name: str = "memory_agent"
     maximum_historical_messages: int = 2
     core_memory_limit: int = 400
+    archive_memory_limit: int = 50
     generate_answer: bool = True
 
     # Archival memory (ChromaDB)
@@ -132,6 +133,7 @@ class MemoryConfig:
             node_name=node_name,
             maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES", 4),
             core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", 400),
+            archive_memory_limit=_env_int("MEMORY_ARCHIVE_LIMIT", 50),
             generate_answer=_env_bool("MEMORY_GENERATE_ANSWER", True),
             chroma_path=os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db")),
             collection_name=os.getenv("MEMORY_COLLECTION_NAME", "memory_archive"),

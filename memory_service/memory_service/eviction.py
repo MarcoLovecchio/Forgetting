@@ -9,6 +9,11 @@ Questo modulo li toglie davvero. Per ora con un solo criterio, lo status, e
 nessuna eccezione: tutto cio' che e' `superseded` o `deleted` esce dalla
 collezione. Altri criteri verranno aggiunti qui.
 
+Il secondo criterio sara' il limite dell'archivio, archive_memory_limit
+(MEMORY_ARCHIVE_LIMIT): un numero di memorie attive che non blocca nessun
+inserimento e si controlla qui, alla fine del turno. Per ora archive_over_limit
+dice solo di quanto e' superato, senza togliere niente.
+
 Cosa tocca e cosa no
 --------------------
 Solo l'archivio. La core memory non contiene mai tombstone - e' un invariante:
@@ -110,3 +115,23 @@ def evict_archived_tombstones(log: List[OperationLogEntry]) -> List[str]:
     for doc_id, content in tombstones:
         log.append(OperationLogEntry(op_type="evict", item_id=doc_id, content=content))
     return ids
+
+
+def archive_over_limit(limit: int) -> int:
+    """Di quante memorie attive l'archivio supera il limite: 0 se lo rispetta.
+
+    Conta solo le attive, perche' i tombstone escono comunque per status. Non
+    rimuove niente. Non solleva mai: se lo store non risponde stampa e
+    restituisce 0, cosi' un conteggio mancato non fa togliere memorie.
+    """
+    try:
+        result = backends.get_vector_store().get(where={"status": "active"}) or {}
+    except Exception as error:
+        print(f"\tArchive limit not checked, archive lookup failed: {error}")
+        return 0
+
+    active = len(result.get("ids") or [])
+    excess = max(0, active - limit)
+    if excess:
+        print(f"\tArchive over its limit: {active} active memories, limit {limit}")
+    return excess

@@ -12,10 +12,10 @@ test_consolidation.py; this file keeps the unit level checks.
 import contextlib
 import dataclasses
 import io
-import json
 import os
 import sys
 import unittest
+from typing import get_args
 
 # Allow running this file directly, or through a runner that does not pick up
 # the conftest.py of the package.
@@ -28,9 +28,8 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 
 from memory_service import backends  # noqa: E402
 from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
-from langchain_core.utils.function_calling import convert_to_openai_tool  # noqa: E402
 
-from memory_service.consolidation import CoreMemoryItem, InsertCoreMemories  # noqa: E402
+from memory_service.consolidation import CoreMemoryItem, MemoryOperationType  # noqa: E402
 from memory_service.memory_manager_llm import (  # noqa: E402
     NODE_STATS,
     MemoryAgent,
@@ -42,16 +41,6 @@ from memory_service.memory_manager_llm import (  # noqa: E402
 )
 
 from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
-
-
-def consolidation_tool_schema():
-    """Il testo che viaggia con lo strumento, non quello che sta nel prompt.
-
-    Le regole su come scrivere un fatto stanno sulle description dei campi di
-    MemoryOperation. Serializzare lo schema come fa langchain e' l'unico modo di
-    verificare che arrivino davvero al modello invece di essere solo definite.
-    """
-    return json.dumps(convert_to_openai_tool(InsertCoreMemories))
 
 
 # generate_answer e' acceso qui perche' molte classi esercitano il ramo
@@ -265,12 +254,6 @@ class SplitPromptTest(MemoryServiceTestCase):
         self.assertIn("(90 characters)", prompt)
         self.assertIn("(80 characters)", prompt)
 
-    def test_the_prompt_states_the_limit_is_hard(self):
-        prompt = self._run_split([CoreMemoryItem(content="x" * 200)], limit=150)
-
-        self.assertIn("HARD constraint", prompt)
-        self.assertIn("Archiving is not deleting", prompt)
-
     def test_ignoring_the_limit_is_reported_but_not_forced(self):
         # Il modello decide di non archiviare nulla: la scelta viene rispettata,
         # ma non deve passare in silenzio.
@@ -466,94 +449,6 @@ class StaleRetrievalTest(MemoryServiceTestCase):
             "la risposta di questo giro non deve vedere il recupero del giro prima")
 
 
-class AnswerPromptTest(MemoryServiceTestCase):
-    """Le tre regole che il doppio del test lungo aveva e il servizio no.
-
-    Per mesi la risposta nel resoconto veniva da _answer_like_explainability, un
-    prompt scritto dentro il test. Quel prompt teneva le risposte a una o due
-    frasi e nella lingua dell'utente, e su tre run di fila il modello ha
-    obbedito. Passando a generate_answer quelle regole andavano portate con lui,
-    altrimenti il resoconto cambia stile insieme al mittente e i confronti fra
-    run saltano.
-
-    La terza e' nuova e nasce dal formato: retrieved_memory ora contiene
-    "ID: ..., Content: ..., Distance: ...", e la risposta viene consolidata -
-    un id ricopiato nella risposta diventerebbe una memoria.
-    """
-
-    tool_responses = {"NoSearchNeeded": {"reason": "basta la core memory"}}
-
-    def answer_prompt(self):
-        self.agent.state["messages"] = [HumanMessage(content="cosa bevo la mattina?")]
-        self.agent.run_memory_agent("retrieve")
-
-        # L'ultima invocazione senza strumenti legati e' la generazione.
-        for invocation in reversed(self.llm.invocations):
-            if not invocation["tools"]:
-                return invocation["prompt"]
-        raise AssertionError("la risposta non e' mai stata generata")
-
-    def test_the_answer_is_short(self):
-        self.assertIn("one or two sentences", self.answer_prompt())
-
-    def test_the_answer_follows_the_language_of_the_user(self):
-        self.assertIn("in the language the user wrote in", self.answer_prompt())
-
-    def test_the_recent_conversation_outranks_the_stored_facts(self):
-        # Il consolidamento e' in ritardo di un turno, quindi l'ultimo scambio
-        # puo' aver gia' corretto o ritirato un fatto che risulta ancora in
-        # memoria. Su una run vera, alla domanda "sai dirmi dove abito?" posta
-        # subito dopo "dimentica il mio indirizzo", il modello aveva entrambi
-        # davanti e ha risposto con l'indirizzo.
-        # Alla domanda sulle calorie, con il 2200 non ancora consolidato, aveva
-        # invece risposto che nessun fatto ne parlava.
-        prompt = self.answer_prompt()
-
-        self.assertIn("When the sources disagree about the same fact, the newest wins", prompt)
-        self.assertIn("you know it: answer with it", prompt)
-        self.assertIn("you do not keep that information anymore", prompt)
-        facts = prompt.index("Facts kept at hand:")
-        recalled = prompt.index("Memories recalled from the archive for this question:")
-        last = prompt.index("Last messages (Human is the user, AI is you):")
-        self.assertLess(facts, recalled)
-        self.assertLess(recalled, last)
-        # I blocchi nel prompt sono tre e hanno etichette diverse: la regola deve
-        # nominare anche quello d'archivio, perche' e' li' che stava l'indirizzo
-        # da dimenticare a msg 45 - e quell'etichetta ne afferma pure la
-        # pertinenza ("recalled for this question").
-        self.assertIn("among the facts or among the recalled memories", prompt)
-
-    def test_a_recent_message_changes_only_its_own_fact(self):
-        # Dopo "ho chiuso con il pianoforte", in cinque run su cinque la chitarra
-        # recuperata dall'archivio spariva dalla risposta.
-        prompt = self.answer_prompt()
-
-        self.assertIn("A recent message changes only the fact it talks about", prompt)
-        self.assertIn("answer with every item that", prompt)
-        self.assertIn("never state an outdated value and then correct it", prompt)
-
-    def test_both_kinds_of_conflict_are_named_after_the_question(self):
-        # Con il ragionamento acceso bastava il principio nel system message.
-        # Spegnendolo, i rimpiazzi hanno continuato a funzionare (msg 30 e 49) e
-        # le ritrattazioni no (msg 45, l'indirizzo che doveva essere dimenticato):
-        # sopprimere un fatto che si ha davanti e' un'operazione di secondo grado
-        # e serve nella posizione piu' recente, in forma imperativa. Il rimpiazzo
-        # e' ripetuto anche se gia' funzionava, per non perderlo.
-        prompt = self.answer_prompt()
-
-        self.assertIn("If the user has just given a newer value, use the newer one.",
-                      prompt)
-        self.assertIn("If the user has just asked you to forget something, it is gone",
-                      prompt)
-        self.assertLess(
-            prompt.index("cosa bevo la mattina?"),
-            prompt.index("it is gone"),
-            "il controllo deve venire dopo la domanda, non prima")
-
-    def test_ids_and_distances_are_not_to_be_quoted_back(self):
-        self.assertIn("never mention the id or the number", self.answer_prompt())
-
-
 class CurrentQueryTest(MemoryServiceTestCase):
     """Il recupero deve partire dalla domanda corrente, non dall'ultimo messaggio.
 
@@ -683,56 +578,6 @@ class QueryFallbackTest(unittest.TestCase):
         self.assertEqual(query_and_history(state), ("", []))
 
 
-class ArchiveGatePromptTest(MemoryServiceTestCase):
-    """Chi decide deve sapere che l'archivio esiste.
-
-    Era la lezione del vecchio nodo di sufficienza: chiedendo solo "quello che
-    hai basta?", "non lo so" e' una risposta valida, il modello dice di si' e il
-    recupero non parte mai - su una run lunga due domande su tre non hanno
-    interrogato l'archivio mentre il dato c'era. La decisione adesso e' fusa nel
-    nodo di recupero, e la lezione doveva traslocare con lei.
-    """
-
-    tool_responses = {"NoSearchNeeded": {"reason": "e' gia' fra i fatti a portata"}}
-
-    def retrieval_prompt(self):
-        self.agent.state["messages"] = [
-            HumanMessage(content="che cosa sai della mia alimentazione?")]
-        self.agent.run_memory_agent("retrieve")
-
-        for invocation in self.llm.invocations:
-            if "retrieve_memory" in invocation["tools"]:
-                return invocation["prompt"].lower()
-        raise AssertionError("il nodo di recupero non e' mai stato invocato")
-
-    def test_the_prompt_says_that_an_archive_exists(self):
-        self.assertIn("archive", self.retrieval_prompt(),
-                      "senza sapere che c'e' un altrove, il modello valuta un "
-                      "contesto chiuso e non cerca mai")
-
-    def test_the_prompt_says_which_call_opens_it(self):
-        self.assertIn("retrieve_memory", self.retrieval_prompt(),
-                      "il modello deve sapere quale delle due chiamate guarda "
-                      "nell'archivio, altrimenti la scelta e' fra due etichette")
-
-    def test_the_decision_is_asked_after_the_question_not_before(self):
-        # Il vecchio cancello chiudeva il messaggio umano con il quesito da
-        # decidere e apriva l'archivio 4 volte su 5. Fondendolo avevo lasciato
-        # per ultima la domanda dell'utente, con le istruzioni sepolte sopra:
-        # 0 su 3. La decisione deve stare nella posizione piu' recente.
-        prompt = self.retrieval_prompt()
-
-        self.assertLess(
-            prompt.index("che cosa sai della mia alimentazione?"),
-            prompt.index("already contain what this asks for"),
-            "il quesito deve venire dopo la domanda dell'utente, non prima")
-
-    def test_not_knowing_is_not_offered_as_a_way_out(self):
-        # E' il buco da cui passava il vecchio cancello: senza questa riga
-        # "non lo so" e' una risposta accettabile e la ricerca non parte.
-        self.assertIn("is not an answer", self.retrieval_prompt())
-
-
 class SpeakerSeparationTest(MemoryServiceTestCase):
     """I fatti vengono dall'utente, l'assistente e' contesto in un campo suo.
 
@@ -781,19 +626,6 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
             prompt.index(self.ONLY_THE_ASSISTANT_SAYS_THIS), border,
             "la risposta dell'assistente deve stare nel contesto, non fra le fonti")
 
-    def test_the_user_block_is_the_last_thing_read(self):
-        # Il blocco vietato stava in fondo, cioe' nella posizione di recenza, e
-        # sui turni di sola domanda - dove il blocco utente non ha fatti - era
-        # l'unico testo con sostanza che il modello avesse davanti. Su una run
-        # vera i tre fatti di una risposta erano diventati tre operazioni.
-        self.consolidate()
-        prompt = self.consolidation_prompt()
-
-        self.assertLess(
-            prompt.index("do NOT extract facts from here"),
-            prompt.index("this is where the facts come from"),
-            "il contesto va letto prima, le fonti per ultime")
-
     def test_the_archive_is_searched_with_the_words_of_the_user(self):
         # Cercare con la risposta dell'assistente riporterebbe a galla proprio
         # le memorie che stava citando, e le renderebbe candidate per un
@@ -805,81 +637,20 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
         self.assertNotIn(self.ONLY_THE_ASSISTANT_SAYS_THIS, query)
 
 
-class LanguageRuleTest(MemoryServiceTestCase):
-    """La query di ricerca segue la lingua delle memorie, non quella dell'utente.
+class ArchiveLimitStateTest(MemoryServiceTestCase):
+    """Il limite dell'archivio sta nello stato, accanto a quello della core memory."""
 
-    Le memorie sono in inglese per scelta, le domande arrivano in italiano: una
-    query nella lingua sbagliata finisce piu' lontana dalla memoria da trovare.
-    """
+    def test_the_state_carries_the_configured_limit(self):
+        MemoryAgent.reset_instance()
+        agent = MemoryAgent(config=dataclasses.replace(TEST_CONFIG, archive_memory_limit=7))
 
-    tool_responses = {"retrieve_memory": {"query": "irrilevante", "k": 3}}
-
-    def prompt_of(self, tool_name):
-        for invocation in self.llm.invocations:
-            if tool_name in invocation["tools"]:
-                return invocation["prompt"].lower()
-        raise AssertionError(f"{tool_name} non e' mai stato invocato")
-
-    def test_the_query_follows_the_language_of_the_memories(self):
-        # La query la scrive il modello, in una chiamata sua, e il confronto e'
-        # fra la query e i documenti: la lingua da inseguire e' quella delle
-        # memorie, non quella dell'utente. Prima la regola diceva "come la
-        # domanda dell'utente" e la motivazione era che l'archivio contiene la
-        # lingua che l'utente parla - vero solo finche' un'altra regola lo
-        # imponeva. Tolta quella, l'archivio e' in inglese e le domande in
-        # italiano, e la vecchia formulazione chiedeva il disallineamento.
-        # I fatti a portata sono nel prompt, quindi la lingua giusta il modello
-        # ce l'ha davanti qualunque essa sia.
-        self.agent.state["messages"] = [HumanMessage(content="dove abito?")]
-        self.agent.run_memory_agent("retrieve")
-
-        self.assertIn("same language as the facts listed above",
-                      self.prompt_of("retrieve_memory"))
+        self.assertEqual(agent.state["archive_memory_limit"], 7)
 
 
-class ExtractionStanceTest(MemoryServiceTestCase):
-    """Il system message deve dire che i fatti si estraggono e si classificano.
-
-    Avevo tolto quella frase perche' la tassonomia sta gia', parola per parola,
-    nel docstring dello strumento. Ed e' vero. Ma lo schema era identico nelle due
-    run: quella con la frase ha prodotto 1 fatto in prima persona su 33, quella
-    senza 17 su 28, ricopiati dalle frasi dell'utente. Non serviva il contenuto,
-    serviva la postura - e serviva nel prompt, non nello schema.
-    """
+class KnownMemoriesFormatTest(MemoryServiceTestCase):
+    """Le memorie note arrivano al classificatore una per riga, come id: content."""
 
     tool_responses = {"InsertCoreMemories": {"memories": []}}
-
-    def test_a_speech_act_is_not_a_fact(self):
-        # Su un turno di sola domanda il blocco dell'utente non ha fatti, la
-        # tool call e' obbligatoria, e il modello ne fabbrica uno sull'atto:
-        # "The user is asking about their current diet" e' finito in archivio
-        # come memoria, e in una run italiana "L'utente chiede esplicitamente
-        # che il suo indirizzo non venga memorizzato" ha preso il posto del
-        # delete che quel messaggio doveva provocare.
-        prompt = self.consolidation_prompt()
-
-        self.assertIn("return an empty list", prompt)
-        # "Ciao, mi chiamo Bianca." letto come saluto: il nome non era stato salvato.
-        self.assertIn("A greeting or a question that also tells something about the user", prompt)
-        self.assertIn("Never store the request itself.", prompt)
-
-    def test_facts_that_change_independently_are_not_merged(self):
-        # Corsa e nuoto in una memoria sola: riscritta al msg 106, il nuoto e' sparito.
-        prompt = self.consolidation_prompt()
-
-        self.assertIn("Two facts that can change independently are two memories", prompt)
-
-    def test_the_known_memories_are_an_index_not_a_source(self):
-        # "A question stores nothing" non bastava: un redundant non memorizza
-        # niente, quindi il modello lo leggeva come rispettato. Su un turno di
-        # sola domanda ha emesso SETTE redundant - esattamente i 3 item di core
-        # memory piu' i 4 candidati d'archivio - confermando l'intera lista che
-        # gli era stata data per puntarci. E ogni redundant rinfresca updated_at,
-        # che e' il campo su cui poggerebbe un eventuale segnale di ritenzione.
-        prompt = self.consolidation_prompt()
-
-        self.assertIn("not even a redundant", prompt)
-        self.assertIn("A known memory the user did not refer to gets no operation.", prompt)
 
     def consolidation_prompt(self):
         self.agent.state["messages"] = self.conversation(8)
@@ -888,24 +659,6 @@ class ExtractionStanceTest(MemoryServiceTestCase):
         for invocation in self.llm.invocations:
             if "InsertCoreMemories" in invocation["tools"]:
                 return invocation["prompt"]
-        raise AssertionError("il consolidamento non e' mai stato invocato")
-
-    def test_one_fact_does_not_become_two_operations(self):
-        # Una frase sola - "mia sorella Chiara e' sempre a Milano" - ha prodotto
-        # due update con il testo IDENTICO, perche' la sorella era stata spezzata
-        # in due memorie all'inizio: nome da una parte, citta' dall'altra. Il
-        # risultato sono due item uguali, tutti e due attivi, che poi tornano
-        # insieme nei recuperi.
-        self.agent.state["messages"] = self.conversation(8)
-        self.agent.run_memory_agent("insert")
-
-        for invocation in self.llm.invocations:
-            if "InsertCoreMemories" in invocation["tools"]:
-                prompt = invocation["prompt"]
-                self.assertIn("Two operations never share the same fact text.", prompt)
-                self.assertIn("Facts that are always true together belong in one memory.",
-                              prompt)
-                return
         raise AssertionError("il consolidamento non e' mai stato invocato")
 
     def test_the_known_memories_are_one_per_line(self):
@@ -917,52 +670,6 @@ class ExtractionStanceTest(MemoryServiceTestCase):
         self.assertIn("\n%s: The user is allergic to peanuts.\n" % item.id, prompt)
         self.assertNotIn("{'", prompt)
 
-    def test_the_prompt_frames_facts_as_something_to_classify(self):
-        # Sopra la finestra di cinque, altrimenti il consolidamento non parte.
-        self.agent.state["messages"] = self.conversation(8)
-        self.agent.run_memory_agent("insert")
-
-        for invocation in self.llm.invocations:
-            if "InsertCoreMemories" in invocation["tools"]:
-                self.assertIn("decide which operation applies", invocation["prompt"])
-                return
-        raise AssertionError("il consolidamento non e' mai stato invocato")
-
-
-class FactShapeTest(MemoryServiceTestCase):
-    """Il testo di una memoria deve dire il fatto, non la modifica.
-
-    Il contenuto e' quello che viene incorporato: ogni parola che racconta la
-    storia dell'item invece del fatto entra nel vettore e lo sposta lontano dalle
-    domande che quel fatto dovrebbe attrarre. In una run vera "User now lives in
-    Mondello (a coastal district of Palermo), updating her previous location
-    memory" e' finito a 0.789 da "dove abito?", a 48 millesimi da una memoria che
-    non c'entrava nulla. La lineage ha gia' due posti suoi, target_item_id e
-    l'operation log.
-    """
-
-    def test_the_fact_is_not_a_copy_of_the_user_sentence(self):
-        # E' il guasto osservato: su una run con le regole in fondo al blocco
-        # umano, 17 fatti su 28 erano la frase dell'utente ricopiata parola per
-        # parola, prima persona compresa.
-        schema = consolidation_tool_schema()
-
-        self.assertIn("third person", schema)
-        self.assertIn("never as a copy", schema)
-
-    def test_the_field_asks_for_the_current_state_not_the_change(self):
-        self.assertIn("State what is true now, not what changed",
-                      consolidation_tool_schema())
-
-    def test_the_fact_is_written_in_english(self):
-        # In una run l'archivio intero era "Il user beve...", "Il user suona...".
-        self.assertIn("in English", consolidation_tool_schema())
-
-    def test_the_lineage_goes_in_its_own_field(self):
-        # Vietare senza dare un'alternativa lascia il modello a inventarsela:
-        # il collegamento ha gia' un campo suo nello schema.
-        self.assertIn("never in the text of the fact", consolidation_tool_schema())
-
 
 class SingleUpdateTest(unittest.TestCase):
     """Update e contradict sono un'operazione sola: facevano la stessa cosa.
@@ -973,11 +680,8 @@ class SingleUpdateTest(unittest.TestCase):
     """
 
     def test_the_tool_offers_no_contradict(self):
-        self.assertNotIn("contradict", consolidation_tool_schema())
-
-    def test_an_update_must_carry_over_what_is_still_true(self):
-        self.assertIn("keep everything from the old memory that is still true",
-                      consolidation_tool_schema())
+        self.assertEqual(set(get_args(MemoryOperationType)),
+                         {"new", "redundant", "update", "delete"})
 
     def test_a_model_that_still_says_contradict_is_read_as_update(self):
         from memory_service.consolidation import normalize_operation

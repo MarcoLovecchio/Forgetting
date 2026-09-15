@@ -33,6 +33,7 @@ class AgentState(TypedDict):
     current_interaction: Literal["insert", "retrieve"]
     maximum_historical_messages: int
     core_memory_limit: int
+    archive_memory_limit: int
     generate_answer: bool
 
 
@@ -492,6 +493,7 @@ class MemoryAgent():
                 "messages": [],
                 "maximum_historical_messages": self.config.maximum_historical_messages,
                 "core_memory_limit": self.config.core_memory_limit,
+                "archive_memory_limit": self.config.archive_memory_limit,
                 "generate_answer": self.config.generate_answer,
                 "retrieved_memory": "",
                 "current_query": "",

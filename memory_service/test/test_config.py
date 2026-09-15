@@ -23,6 +23,7 @@ class EnvironmentTestCase(unittest.TestCase):
         "EMBEDDING_CONFIG",
         "MEMORY_MAX_HISTORICAL_MESSAGES",
         "MEMORY_CORE_MEMORY_LIMIT",
+        "MEMORY_ARCHIVE_LIMIT",
         "MEMORY_GENERATE_ANSWER",
         "MEMORY_CHROMA_PATH",
         "MEMORY_COLLECTION_NAME",
@@ -62,6 +63,7 @@ class ConfigTest(EnvironmentTestCase):
         self.assertEqual(config.maximum_historical_messages, 4,
                          "pari, per non tagliare a meta' uno scambio")
         self.assertEqual(config.core_memory_limit, 400)
+        self.assertEqual(config.archive_memory_limit, 50)
         self.assertEqual(config.collection_name, "memory_archive")
         self.assertEqual(config.llm_config, {})
 
@@ -70,12 +72,14 @@ class ConfigTest(EnvironmentTestCase):
         # Un valore che non coincide con il default, altrimenti il test
         # passerebbe anche se la variabile venisse ignorata.
         os.environ["MEMORY_CORE_MEMORY_LIMIT"] = "777"
+        os.environ["MEMORY_ARCHIVE_LIMIT"] = "123"
         os.environ["MEMORY_COLLECTION_NAME"] = "other_archive"
 
         config = MemoryConfig.from_environment()
 
         self.assertEqual(config.maximum_historical_messages, 9)
         self.assertEqual(config.core_memory_limit, 777)
+        self.assertEqual(config.archive_memory_limit, 123)
         self.assertEqual(config.collection_name, "other_archive")
 
     def test_invalid_numbers_fall_back_to_the_defaults(self):

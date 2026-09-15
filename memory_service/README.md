@@ -303,6 +303,7 @@ d'ambiente (lette da `.env` / `.config`):
 | `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `4` | messaggi mantenuti prima del riassunto. **Tenerlo pari**: con un numero dispari la coda della finestra è una risposta dell'assistente, e ogni consolidamento riceve la fine di uno scambio più l'inizio del successivo invece di una coppia (utente, assistente) intera |
 | `MEMORY_CORE_MEMORY_LIMIT` | `400` | caratteri massimi della core memory |
+| `MEMORY_ARCHIVE_LIMIT` | `50` | memorie **attive** in archivio oltre le quali interviene eviction. Non blocca l'inserimento: viene controllato alla fine del turno (`eviction.archive_over_limit`, non ancora collegata) |
 | `MEMORY_GENERATE_ANSWER` | `false` | se il ramo `retrieve` debba anche **comporre una risposta** all'utente. **Spenta di default**: nessun campo del servizio la restituisce — l'archivio arriva al chiamante tramite `retrieved_memories` — quindi finiva solo in `last_messages` come un turno che l'utente non ha mai letto. Tenendola spenta si risparmia una chiamata per ogni `retrieve`, resta una coppia (utente, assistente) per scambio invece di tre messaggi, e la memoria smette di citare sé stessa dentro il consolidamento. `true` la riaccende |
 | `MEMORY_CHROMA_PATH` | `./chroma_db` | cartella dell'archivio (risolta in path assoluto) |
 | `MEMORY_COLLECTION_NAME` | `memory_archive` | collezione ChromaDB |

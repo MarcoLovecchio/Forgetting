@@ -31,6 +31,7 @@ from memory_service.consolidation import (  # noqa: E402
 )
 from memory_service.eviction import (  # noqa: E402
     EVICTED_STATUSES,
+    archive_over_limit,
     evict_archived_tombstones,
 )
 
@@ -226,6 +227,49 @@ class WhenTheStoreFailsTest(EvictionTestCase):
         self.assertIn(gone.id, self.store.documents)
         self.assertEqual(len(self.log), before,
                          "il log registra solo cio' che e' successo davvero")
+
+    def test_an_unreadable_store_is_never_over_the_limit(self):
+        # Senza un conteggio non si deve togliere niente.
+        self.use(UnreadableStore)
+        self.archive("ha un cane di nome Argo")
+
+        self.assertEqual(archive_over_limit(0), 0)
+
+
+class ArchiveLimitTest(EvictionTestCase):
+    """Il limite conta le memorie attive e dice di quanto e' superato."""
+
+    def test_within_the_limit_there_is_no_excess(self):
+        for fact in ("ha un cane di nome Argo", "ha un gatto di nome Milo"):
+            self.archive(fact)
+
+        self.assertEqual(archive_over_limit(2), 0)
+
+    def test_the_excess_is_how_many_active_memories_are_over(self):
+        for fact in ("ha un cane", "ha un gatto", "corre la mattina", "nuota"):
+            self.archive(fact)
+
+        self.assertEqual(archive_over_limit(1), 3)
+
+    def test_tombstones_do_not_count(self):
+        # Escono comunque per status: contarli farebbe scattare il limite per
+        # memorie che non valgono piu'.
+        self.archive("ha un cane di nome Argo")
+        delete_item(CoreMemoryItem(content="vive a Mondello"), self.log)
+        supersede_item(CoreMemoryItem(content="obiettivo 2000 calorie"),
+                       "obiettivo 2200 calorie", self.log)
+
+        self.assertEqual(archive_over_limit(1), 0)
+
+    def test_checking_removes_nothing(self):
+        kept = [self.archive(fact) for fact in ("ha un cane", "ha un gatto")]
+        self.log = []
+
+        archive_over_limit(0)
+
+        self.assertCountEqual(self.store.documents, kept)
+        self.assertEqual(self.store.deletes, [])
+        self.assertEqual(self.log, [])
 
 
 if __name__ == "__main__":
