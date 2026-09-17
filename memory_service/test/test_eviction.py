@@ -1,4 +1,5 @@
-"""Eviction: le memorie superate e cancellate escono davvero dall'archivio.
+"""Eviction: le memorie superate e cancellate escono davvero dall'archivio, e
+oltre il limite escono le attive con lo score piu' basso.
 
 Offline, sullo stesso doppio di Chroma degli altri test. I tombstone sono
 prodotti dalle funzioni vere di consolidation - supersede_item, delete_item,
@@ -8,9 +9,14 @@ giorno cambia il modo in cui vengono marcati, questi test se ne accorgono.
 Esecuzione: python memory_service/run_tests.py -v
 """
 
+import contextlib
+import dataclasses
+import io
+import math
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta
 from typing import get_args
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,9 +39,14 @@ from memory_service.eviction import (  # noqa: E402
     EVICTED_STATUSES,
     archive_over_limit,
     evict_archived_tombstones,
+    eviction_score,
+    prune_archive,
+    prune_count,
+    time_decay_term,
 )
+from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
 
-from fakes import FakeVectorStore  # noqa: E402
+from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
 
 
 EVICTION_CONFIG = MemoryConfig(
@@ -47,6 +58,8 @@ EVICTION_CONFIG = MemoryConfig(
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
 )
+
+NOW = datetime(2026, 9, 17, 12, 0)
 
 
 class EvictionTestCase(unittest.TestCase):
@@ -63,9 +76,11 @@ class EvictionTestCase(unittest.TestCase):
     def tearDown(self):
         backends.reset()
 
-    def archive(self, content, status="active"):
+    def archive(self, content, status="active", days_old=None, now=NOW):
         """Un item in archivio, come lo lascia il core split."""
         item = CoreMemoryItem(content=content, status=status)
+        if days_old is not None:
+            item.updated_at = now - timedelta(days=days_old)
         archive_items([item])
         return item.id
 
@@ -235,6 +250,21 @@ class WhenTheStoreFailsTest(EvictionTestCase):
 
         self.assertEqual(archive_over_limit(0), 0)
 
+    def test_an_unreadable_store_prunes_nothing(self):
+        self.use(UnreadableStore)
+        old = self.archive("ha un cane di nome Argo", days_old=30)
+
+        self.assertEqual(prune_archive(self.log, 0, EVICTION_CONFIG, now=NOW), [])
+        self.assertIn(old, self.store.documents)
+
+    def test_a_failed_prune_logs_nothing(self):
+        self.use(StuckStore)
+        old = self.archive("ha un cane di nome Argo", days_old=30)
+
+        self.assertEqual(prune_archive(self.log, 0, EVICTION_CONFIG, now=NOW), [])
+        self.assertIn(old, self.store.documents)
+        self.assertEqual(self.log, [])
+
 
 class ArchiveLimitTest(EvictionTestCase):
     """Il limite conta le memorie attive e dice di quanto e' superato."""
@@ -270,6 +300,213 @@ class ArchiveLimitTest(EvictionTestCase):
         self.assertCountEqual(self.store.documents, kept)
         self.assertEqual(self.store.deletes, [])
         self.assertEqual(self.log, [])
+
+
+class TimeDecayTermTest(unittest.TestCase):
+    """Il termine di decadimento: una Weibull sul tempo da updated_at."""
+
+    def worth(self, **age):
+        return time_decay_term((NOW - timedelta(**age)).isoformat(), NOW)
+
+    def test_a_memory_touched_now_is_worth_one(self):
+        self.assertEqual(self.worth(hours=0), 1.0)
+
+    def test_the_decided_curve_shape_0_5_scale_7_days(self):
+        self.assertAlmostEqual(self.worth(days=1), 0.6853, places=4)
+        self.assertAlmostEqual(self.worth(days=7), 1 / math.e, places=4)
+        self.assertAlmostEqual(self.worth(days=30), 0.1262, places=4)
+
+    def test_older_is_always_worth_less(self):
+        ages = [timedelta(0), timedelta(hours=1), timedelta(days=1), timedelta(days=7),
+                timedelta(days=30), timedelta(days=365)]
+        values = [time_decay_term((NOW - age).isoformat(), NOW) for age in ages]
+
+        self.assertEqual(values, sorted(values, reverse=True))
+        self.assertEqual(len(set(values)), len(values))
+
+    def test_a_timestamp_in_the_future_is_worth_one(self):
+        # Un orologio spostato non deve dare piu' di 1.
+        self.assertEqual(self.worth(hours=-5), 1.0)
+
+    def test_an_unreadable_timestamp_has_no_value(self):
+        for updated_at in (None, "", "ieri", "2026-09-17T10:00:00+00:00"):
+            with self.subTest(updated_at=updated_at):
+                self.assertIsNone(time_decay_term(updated_at, NOW))
+
+
+class EvictionScoreTest(unittest.TestCase):
+    """La combinazione dei termini accesi."""
+
+    def test_with_only_time_decay_on_the_score_is_that_term(self):
+        updated_at = (NOW - timedelta(days=3)).isoformat()
+
+        self.assertEqual(eviction_score({"updated_at": updated_at}, EVICTION_CONFIG, NOW),
+                         time_decay_term(updated_at, NOW))
+
+    def test_with_every_term_off_there_is_no_score(self):
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
+
+        self.assertIsNone(eviction_score({"updated_at": NOW.isoformat()}, config, NOW))
+
+    def test_a_term_that_cannot_be_computed_leaves_no_score(self):
+        self.assertIsNone(eviction_score({}, EVICTION_CONFIG, NOW))
+
+
+class PruneCountTest(unittest.TestCase):
+    """Quante ne escono: il 10% delle attive, arrotondato per eccesso."""
+
+    def test_ten_percent_rounded_up(self):
+        for active, expected in ((0, 0), (1, 1), (5, 1), (50, 5), (51, 6)):
+            with self.subTest(active=active):
+                self.assertEqual(prune_count(active), expected)
+
+    def test_an_exact_quota_is_not_rounded_up_by_floating_point(self):
+        # 100 * 0.07 fa 7.000000000000001.
+        self.assertEqual(prune_count(100, fraction=0.07), 7)
+
+
+class PruneArchiveTest(EvictionTestCase):
+    """Oltre il limite escono le attive con lo score piu' basso, e solo quelle."""
+
+    def prune(self, limit, config=EVICTION_CONFIG):
+        return prune_archive(self.log, limit, config, now=NOW)
+
+    def test_within_the_limit_nothing_leaves(self):
+        for days in range(3):
+            self.archive(f"fatto {days}", days_old=days)
+
+        self.assertEqual(self.prune(limit=3), [])
+        self.assertEqual(self.store.deletes, [])
+
+    def test_over_the_limit_the_oldest_leave_first(self):
+        ids = {days: self.archive(f"fatto {days}", days_old=days) for days in range(11)}
+
+        removed = self.prune(limit=10)
+
+        self.assertCountEqual(removed, [ids[10], ids[9]], "il 10% di 11, per eccesso, e' 2")
+        self.assertEqual(len(self.store.documents), 9)
+
+    def test_the_quota_is_ten_percent_of_the_active_not_the_excess(self):
+        ids = {days: self.archive(f"fatto {days}", days_old=days) for days in range(20)}
+
+        removed = self.prune(limit=19)
+
+        self.assertCountEqual(removed, [ids[19], ids[18]], "eccedenza 1, ma ne escono 2")
+
+    def test_each_pruned_memory_is_logged_with_its_score(self):
+        old = self.archive("ha un cane di nome Argo", days_old=30)
+        self.archive("ha un gatto di nome Milo", days_old=0)
+
+        self.prune(limit=1)
+
+        self.assertEqual(len(self.log), 1)
+        entry = self.log[0]
+        self.assertEqual((entry.op_type, entry.item_id, entry.content),
+                         ("prune", old, "ha un cane di nome Argo"))
+        self.assertAlmostEqual(entry.score, 0.1262, places=4)
+
+    def test_a_memory_without_a_readable_timestamp_is_never_pruned(self):
+        self.store.add_texts(texts=["senza data"], ids=["undated"],
+                             metadatas=[{"status": "active", "updated_at": "non una data"}])
+        dated = self.archive("ha un cane di nome Argo", days_old=0)
+
+        self.assertEqual(self.prune(limit=1), [dated])
+        self.assertEqual(self.store.status_of("undated"), "active")
+
+    def test_with_every_term_off_nothing_leaves(self):
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
+        for days in range(3):
+            self.archive(f"fatto {days}", days_old=days * 30)
+
+        self.assertEqual(self.prune(limit=0, config=config), [])
+        self.assertEqual(self.store.deletes, [])
+        self.assertEqual(self.log, [])
+
+
+class WiredIntoTheAgentTest(EvictionTestCase):
+    """In fondo a run_memory_agent, solo dopo un insert e solo a switch acceso."""
+
+    def setUp(self):
+        super().setUp()
+        self.llm = ScriptedChatModel(tool_responses={}, default_content="ok")
+        backends.configure(llm=self.llm)
+        self.use_agent(eviction=True)
+
+    def tearDown(self):
+        MemoryAgent.reset_instance()
+        super().tearDown()
+
+    def use_agent(self, **overrides):
+        config = dataclasses.replace(EVICTION_CONFIG, **overrides)
+        backends.configure(config=config)
+        MemoryAgent.reset_instance()
+        self.agent = MemoryAgent(config=config)
+
+    def insert(self, memories):
+        self.llm.script({"InsertCoreMemories": {"memories": memories}})
+        self.agent.append_message("un messaggio qualsiasi", "user")
+        self.agent.append_message("ok", "assistant")
+        return self.agent.run_memory_agent("insert")
+
+    def remember_then_forget(self):
+        state = self.insert([{"fact": "vive a Mondello", "operation": "new"}])
+        item = state["core_memory"][0]
+        self.insert([{"fact": "vive a Mondello", "operation": "delete",
+                      "target_item_id": item.id}])
+        return item
+
+    def test_the_tombstone_of_this_insert_leaves_in_the_same_insert(self):
+        item = self.remember_then_forget()
+
+        self.assertIsNone(self.store.status_of(item.id))
+        operations = self.agent.last_operations()
+        self.assertEqual([(entry.op_type, entry.item_id) for entry in operations],
+                         [("delete", item.id), ("evict", item.id)],
+                         "la voce evict esce nella stessa risposta di update_memory")
+
+    def test_with_the_switch_off_the_tombstone_stays(self):
+        self.use_agent(eviction=False)
+
+        item = self.remember_then_forget()
+
+        self.assertEqual(self.store.status_of(item.id), "deleted")
+        self.assertNotIn("evict", [entry.op_type for entry in self.agent.state["operation_log"]])
+
+    def test_a_retrieve_removes_nothing(self):
+        self.use_agent(eviction=True, archive_memory_limit=0)
+        gone = CoreMemoryItem(content="vive a Mondello")
+        delete_item(gone, self.log)
+        old = self.archive("ha un cane di nome Argo", days_old=30, now=datetime.now())
+
+        self.agent.run_memory_agent("retrieve", query="Dove abito?")
+
+        self.assertEqual(self.store.status_of(gone.id), "deleted")
+        self.assertEqual(self.store.status_of(old), "active")
+
+    def test_over_the_limit_the_oldest_memory_is_pruned_in_the_same_insert(self):
+        self.use_agent(eviction=True, archive_memory_limit=1)
+        old = self.archive("ha un cane di nome Argo", days_old=30, now=datetime.now())
+        recent = self.archive("ha un gatto di nome Milo", days_old=0, now=datetime.now())
+
+        self.insert([])
+
+        self.assertIsNone(self.store.status_of(old))
+        self.assertEqual(self.store.status_of(recent), "active")
+        operations = self.agent.last_operations()
+        self.assertEqual([(entry.op_type, entry.item_id) for entry in operations],
+                         [("prune", old)])
+
+    def test_with_every_term_off_nothing_active_is_removed(self):
+        self.use_agent(eviction=True, eviction_time_decay=False, archive_memory_limit=0)
+        kept = self.archive("ha un cane di nome Argo", days_old=30, now=datetime.now())
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.insert([])
+
+        self.assertIn("Archive over its limit", output.getvalue(), "il limite viene controllato")
+        self.assertEqual(self.store.status_of(kept), "active")
+        self.assertEqual(self.store.deletes, [])
 
 
 if __name__ == "__main__":

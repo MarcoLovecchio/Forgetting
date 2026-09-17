@@ -110,6 +110,9 @@ class MemoryConfig:
     maximum_historical_messages: int = 2
     core_memory_limit: int = 400
     archive_memory_limit: int = 50
+    # Code only: from_environment does not read these, on purpose.
+    eviction: bool = False
+    eviction_time_decay: bool = True
     generate_answer: bool = True
 
     # Archival memory (ChromaDB)

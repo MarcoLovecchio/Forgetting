@@ -26,7 +26,10 @@ Items that stop being active (superseded or deleted) are written to the archive
 as tombstones and dropped from core memory: ``core_memory`` in the agent state
 only ever holds active items, while the history survives a restart. The same is
 true when an item is moved to the archive by the core/archival split - the whole
-item is archived, so status, lineage and timestamps are never lost.
+item is archived, so status, lineage and timestamps are never lost. The one
+exception is MemoryConfig.eviction: when it is on, the tombstones leave the
+archive at the end of every insert, and so do the active memories with the
+lowest score when the archive is over its limit (see eviction.py).
 
 Eviction - deciding what to move out of core memory when the character budget is
 exceeded - is deliberately not handled here.
@@ -66,10 +69,11 @@ class CoreMemoryItem(BaseModel):
 class OperationLogEntry(BaseModel):
     """One consolidation decision, kept for inspection and evaluation."""
 
-    op_type: Literal["create", "redundant", "update", "delete", "archive", "evict"]
+    op_type: Literal["create", "redundant", "update", "delete", "archive", "evict", "prune"]
     item_id: str
     related_item_id: Optional[str] = None
     content: Optional[str] = None
+    score: Optional[float] = None
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

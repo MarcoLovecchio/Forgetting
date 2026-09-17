@@ -43,8 +43,8 @@ DEFAULT_RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 _DISPLAY = {"none": "nessuna", MIXED: "misto"}
 
 # Voci del log che non sono una classificazione: lo spostamento del core split e
-# la rimozione dei tombstone. Il log scrive "create" dove lo strumento dice "new".
-_NOT_CLASSIFIED = ("archive", "evict")
+# le rimozioni dell'eviction. Il log scrive "create" dove lo strumento dice "new".
+_NOT_CLASSIFIED = ("archive", "evict", "prune")
 _LOG_TO_CLASS = {"create": "new"}
 
 # Dai commenti di CONVERSATION: contradict conta come update, domande e

@@ -16,10 +16,7 @@ from typing import Any, Dict, Optional
 from memory_service.config import NODE_SAMPLING, MemoryConfig
 
 _config: Optional[MemoryConfig] = None
-# Un modello per nodo: le impostazioni possono differire, quindi le istanze pure.
 _llm: Dict[str, Any] = {}
-# Il doppio iniettato dai test sta in una variabile sua e non nella cache: serve
-# ogni nodo, compresi quelli che nessuno ha ancora chiesto.
 _injected_llm: Any = None
 _vector_store: Any = None
 
@@ -42,8 +39,6 @@ def configure(llm: Any = None, vector_store: Any = None,
     global _config, _injected_llm, _vector_store
     if config is not None:
         _config = config
-        # I modelli in cache sono costruiti da questa configurazione: tenerli
-        # significherebbe restituire istanze tarate su quella precedente.
         _llm.clear()
     if llm is not None:
         _injected_llm = llm
@@ -100,10 +95,6 @@ def _require_model_config(model_config: dict, variable: str, node_name: str) -> 
     return model_config["model_provider"]
 
 
-# The OpenAI SDK refuses to build a client without a key - it raises at
-# construction, not at the first call - even against a server that never checks
-# one. A self-hosted OpenAI compatible endpoint is exactly that case, so a
-# placeholder stands in for the key that does not exist.
 PLACEHOLDER_API_KEY = "EMPTY"
 
 
@@ -120,9 +111,6 @@ def _api_key(config: MemoryConfig, provider: str) -> Optional[str]:
     return PLACEHOLDER_API_KEY if provider == "openai" else None
 
 
-# Sampling parameters the OpenAI API understands directly. They are read from
-# the LLM_CONFIG entry, so tuning them never requires touching the code; what is
-# absent is left to the server default.
 _SAMPLING_PARAMETERS = ("temperature", "top_p", "presence_penalty",
                         "frequency_penalty", "max_tokens")
 
@@ -131,37 +119,19 @@ def _extra_body(settings: dict) -> dict:
     """Options an OpenAI compatible server accepts but the OpenAI API does not."""
     extra: dict = {}
     if "top_k" in settings:
-        # Not an OpenAI parameter, but vLLM and sglang honour it, and Qwen's
-        # recommended settings rely on it to cut the tail of the distribution.
         extra["top_k"] = settings["top_k"]
 
-    # Absent means "leave it to the server": None is not False, and deciding
-    # on the server's behalf is not the same as not deciding.
     thinking = settings.get("enable_thinking")
     if thinking is not None:
-        # Qwen switches reasoning through its chat template, not through a
-        # sampling parameter.
         extra["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
     return extra
 
 
 def _build_llm(config: MemoryConfig, overrides: Optional[dict] = None) -> Any:
-    # Imported here so that the package can be imported without langchain's
-    # provider extras installed.
     from langchain.chat_models import init_chat_model
 
     provider = _require_model_config(config.llm_config, "LLM_CONFIG", config.node_name)
-
-    # Le sovrascritture del nodo si fondono qui, una volta sola. Da qui in giu'
-    # nessuno sa piu' che esistono, e soprattutto la divisione fra parametri di
-    # primo livello ed extra_body resta in un posto solo: legare extra_body alla
-    # singola chiamata avrebbe sostituito l'intero dizionario, portandosi via
-    # top_k insieme al resto.
     settings = {**config.llm_config, **(overrides or {})}
-    # Un None toglie il parametro invece di impostarlo a None: e' il modo per
-    # far tornare un singolo nodo al default del server. Senza questo passaggio
-    # arriverebbe temperature=None al costruttore, che non e' la stessa cosa che
-    # non passarlo. False e 0 sopravvivono, come devono.
     settings = {name: value for name, value in settings.items() if value is not None}
 
     parameters = {
@@ -172,14 +142,12 @@ def _build_llm(config: MemoryConfig, overrides: Optional[dict] = None) -> Any:
         if name in settings:
             parameters[name] = settings[name]
 
-    # extra_body exists on ChatOpenAI and would be an unknown argument elsewhere.
     if provider == "openai":
         extra_body = _extra_body(settings)
         if extra_body:
             parameters["extra_body"] = extra_body
 
-    # Endpoint of the model server. Passed only when configured, so the hosted
-    # providers keep using their own default.
+    # Endpoint of the model server
     if config.base_url:
         parameters["base_url"] = config.base_url
 
@@ -209,13 +177,6 @@ def _build_embeddings(config: MemoryConfig) -> Any:
         parameters = {
             "model": model_name,
             "api_key": _api_key(config, provider),
-            # By default OpenAIEmbeddings does not send the text: it tokenizes
-            # it first, and for a model tiktoken does not know it silently falls
-            # back to cl100k_base - OpenAI's vocabulary. The token ids of one
-            # vocabulary read as different words in another, so the server would
-            # embed noise and return it without complaining. Sending the strings
-            # and letting the server tokenize is the only correct option outside
-            # OpenAI's own models.
             "check_embedding_ctx_length": False,
         }
         if config.embedding_base_url:
@@ -249,8 +210,6 @@ def distance_mismatch(collection_metadata: Optional[dict]) -> Optional[str]:
 
 
 def _build_vector_store(config: MemoryConfig) -> Any:
-    # Same reasoning as above: chromadb and the embedding provider are only
-    # needed when the archival memory is actually used.
     import chromadb
     from chromadb.errors import NotFoundError
     from langchain_chroma import Chroma

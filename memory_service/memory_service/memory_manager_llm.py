@@ -22,6 +22,7 @@ from memory_service.consolidation import (
     retrieve_active_archival_memories,
     serialize_core_memory_for_prompt,
 )
+from memory_service.eviction import evict_archived_tombstones, prune_archive
 
 class AgentState(TypedDict):
     messages: list
@@ -557,6 +558,11 @@ class MemoryAgent():
               f"{len(get_active_items(self.state['core_memory']))} active core memories")
         self.state = memory_agent.invoke(self.state)
         self.state["tool_calls"] = []
+
+        if interaction_mode == "insert" and self.config.eviction:
+            evict_archived_tombstones(self.state["operation_log"])
+            prune_archive(self.state["operation_log"], self.state["archive_memory_limit"],
+                          self.config)
 
         return self.state
 

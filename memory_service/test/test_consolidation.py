@@ -56,6 +56,7 @@ LIFECYCLE_CONFIG = MemoryConfig(
     generate_answer=True,  # il turno 7 guarda la risposta del ramo retrieve
     maximum_historical_messages=1,
     core_memory_limit=2000,
+    eviction=False,  # questi test guardano i tombstone in archivio
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
@@ -375,8 +376,8 @@ class ArchiveSearchTest(unittest.TestCase):
     """Il filtro sulle attive lo fa lo store, dentro l'indice.
 
     Chiedere k documenti e scartare dopo quelli non attivi ne restituisce meno
-    di k, e il divario peggiora col tempo perche' i tombstone non vengono mai
-    rimossi: il classificatore si ritroverebbe senza candidati proprio su un
+    di k, e il divario peggiora col tempo perche' con l'eviction spenta i tombstone
+    non vengono mai rimossi: il classificatore si ritroverebbe senza candidati su un
     archivio molto usato, senza che niente segnali il problema.
     """
 

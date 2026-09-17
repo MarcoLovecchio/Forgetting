@@ -81,6 +81,7 @@ class ClassifyTest(unittest.TestCase):
     def test_create_is_new_and_the_split_is_not_a_classification(self):
         self.assertEqual(om.classify(["create", "archive"]), ("new", ("new",), 1))
         self.assertEqual(om.classify(["evict"]), ("none", (), 0))
+        self.assertEqual(om.classify(["update", "prune"]), ("update", ("update",), 1))
 
     def test_two_new_are_one_new_counted_twice(self):
         self.assertEqual(om.classify(["create", "create"]), ("new", ("new",), 2))

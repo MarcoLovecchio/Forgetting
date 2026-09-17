@@ -244,7 +244,7 @@ CONVERSATION = [
     "Non lavoro piu' in clinica, mi sono messa in proprio.",  # contradict: lavoro
     "Sto pensando a un secondo cane per fare compagnia ad Argo.",  # new
     "Vado a dormire molto piu' tardi ora, verso l'una.",  # contradict: sonno
-    "Rimuovi il dato sul lavoro che faccio, e' privato.",  # delete: lavoro
+    "Rimuovi il dato sul lavoro che faccio.",  # delete: lavoro
     "Che lavoro faccio?",  # DOMANDA: dopo il delete non deve saperlo
     "Non uso i social network, li ho cancellati l'anno scorso.",  # new
     "La parmigiana la faccio senza formaggio adesso.",  # update: piatto
@@ -265,7 +265,7 @@ CONVERSATION = [
     "In realta' Milo ha tre anni, mi sono sbagliata.",  # update: eta' del gatto
     "Ho ripreso a correre, il ginocchio sta meglio.",  # contradict: corsa
     "Che sport faccio in questo periodo?",  # DOMANDA: corsa ripresa piu' nuoto
-    "Non memorizzare piu' quante calorie punto, per ora.",  # delete: calorie
+    "Non memorizzare piu' quante calorie punto.",  # delete: calorie
     "Dimentica il mio colore preferito, non serve.",  # delete: colore
     "Corro sempre la mattina presto, come sempre.",  # redundant: orario corsa
     "Dimentica il fastidio al ginocchio di cui ti parlavo.",  # delete: ginocchio
@@ -454,9 +454,10 @@ def _print_operation_log(log):
         return
 
     for number, entry in enumerate(log, 1):
+        score = f" | score {entry.score:.3f}" if entry.score is not None else ""
         safe_print(f"  {number:>3}  {entry.op_type:<10} | item {_short(entry.item_id)}"
                    f" | related {_short(entry.related_item_id)}"
-                   f" | {_clock(entry.timestamp)} | {entry.content}")
+                   f" | {_clock(entry.timestamp)}{score} | {entry.content}")
 
 
 def _print_core_memory(state):
@@ -765,23 +766,28 @@ def _assert_state_is_consistent(state):
         assert item.updated_at >= item.created_at
 
 
-def _assert_everything_that_left_core_is_in_the_archive(state, vector_store):
-    """Nessun item deve sparire: se esce dalla core memory, sta nell'archivio."""
+def _assert_everything_that_left_core_is_archived_or_evicted(state, vector_store):
+    """Nessun item sparisce senza traccia: se esce dalla core memory, sta
+    nell'archivio oppure ha una voce evict o prune nel log. Vale con l'eviction
+    accesa e spenta."""
     expected = set()
+    evicted = set()
     for entry in state["operation_log"]:
         if entry.op_type in ("delete", "archive"):
             expected.add(entry.item_id)
         elif entry.op_type == "update" and entry.related_item_id:
             expected.add(entry.related_item_id)
+        elif entry.op_type in ("evict", "prune"):
+            evicted.add(entry.item_id)
 
     if not expected:
         return 0
 
     found = set(vector_store.get(ids=sorted(expected)).get("ids") or [])
-    missing = sorted(expected - found)
+    missing = sorted(expected - found - evicted)
     assert not missing, (
-        f"{len(missing)} item usciti dalla core memory non si trovano in archivio: "
-        f"{missing[:5]}")
+        f"{len(missing)} item usciti dalla core memory non sono in archivio "
+        f"e non risultano rimossi dall'eviction: {missing[:5]}")
     return len(expected)
 
 
@@ -881,7 +887,7 @@ def test_long_term_interaction():
         "probabilmente il server non risponde o la configurazione e' sbagliata")
     assert state["operation_log"], "una sessione lunga deve aver prodotto delle operazioni"
     _assert_state_is_consistent(state)
-    _assert_everything_that_left_core_is_in_the_archive(state, vector_store)
+    _assert_everything_that_left_core_is_archived_or_evicted(state, vector_store)
 
     expected_questions = questions_in(messages)
     assert len(answers) == expected_questions - len(
