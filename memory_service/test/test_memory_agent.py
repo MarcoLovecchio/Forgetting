@@ -848,6 +848,42 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
                          "non cercare deve essere una risposta, non un silenzio")
 
 
+class RetrievalModeTest(MemoryServiceTestCase):
+    """Fuori da decide la ricerca in archivio avviene sempre: cambia chi scrive la query."""
+
+    tool_responses = {"retrieve_memory": {"query": "black tea", "k": 2}}
+    default_content = "Bevi te nero il pomeriggio."
+
+    def run_retrieve(self, mode):
+        config = dataclasses.replace(TEST_CONFIG, retrieval_mode=mode)
+        backends.configure(config=config)
+        MemoryAgent.reset_instance()
+        agent = MemoryAgent(config=config)
+        agent.state["messages"] = [HumanMessage(content="ciao"), AIMessage(content="ciao!")]
+        self.archive({"memory_a": "User likes black tea in the afternoon"})
+        return agent.run_memory_agent("retrieve", query="cosa bevo il pomeriggio?")
+
+    def test_with_the_model_query_searching_is_the_only_way_out(self):
+        spy = ToolChoiceSpy(self, self.llm)
+
+        state = self.run_retrieve("always_llm_query")
+
+        self.assertEqual(spy.calls, {"retrieve_memory": "required"}, "NoSearchNeeded non c'e'")
+        self.assertEqual(self.vector_store.searches[0]["query"], "black tea",
+                         "la query la scrive il modello")
+        self.assertEqual(self.vector_store.searches[0]["k"], 2)
+        self.assertIn("black tea", state["retrieved_memory"])
+
+    def test_with_the_raw_query_the_model_is_not_asked(self):
+        state = self.run_retrieve("always_raw_query")
+
+        self.assertEqual(self.llm.bound_tool_names(), [], "solo la risposta, nessuna decisione")
+        self.assertEqual(self.vector_store.searches, [
+            {"query": "cosa bevo il pomeriggio?", "k": 5, "filter": {"status": "active"}}])
+        self.assertIn("black tea", state["retrieved_memory"])
+        self.assertEqual(self.vector_store.metadatas["memory_a"]["n_retrieve"], 1)
+
+
 class AppendMessageTest(MemoryServiceTestCase):
     def test_messages_are_typed_after_their_sender(self):
         self.agent.append_message("hello", "user")

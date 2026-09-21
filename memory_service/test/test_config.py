@@ -27,6 +27,7 @@ class EnvironmentTestCase(unittest.TestCase):
         "MEMORY_EVICTION",
         "MEMORY_EVICTION_TIME_DECAY",
         "MEMORY_EVICTION_TIME_DECAY_FIELD",
+        "MEMORY_RETRIEVAL_MODE",
         "MEMORY_GENERATE_ANSWER",
         "MEMORY_CHROMA_PATH",
         "MEMORY_COLLECTION_NAME",
@@ -95,6 +96,13 @@ class ConfigTest(EnvironmentTestCase):
         self.assertFalse(config.eviction)
         self.assertTrue(config.eviction_time_decay)
         self.assertEqual(config.eviction_time_decay_field, "updated_at")
+
+    def test_the_retrieval_mode_is_set_only_in_the_code(self):
+        os.environ["MEMORY_RETRIEVAL_MODE"] = "always_raw_query"
+
+        config = MemoryConfig.from_environment()
+
+        self.assertEqual(config.retrieval_mode, "decide", "il default e' il comportamento di prima")
 
     def test_invalid_numbers_fall_back_to_the_defaults(self):
         os.environ["MEMORY_MAX_HISTORICAL_MESSAGES"] = "not a number"

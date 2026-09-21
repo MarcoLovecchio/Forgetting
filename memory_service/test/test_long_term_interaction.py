@@ -705,6 +705,7 @@ def _save_run(config, records, elapsed):
         "model": config.llm_config.get("model_name"),
         "window": config.maximum_historical_messages,
         "core_memory_limit": config.core_memory_limit,
+        "retrieval_mode": config.retrieval_mode,
         "archive_candidates_k": ARCHIVE_CANDIDATES_K,
         "node_sampling": NODE_SAMPLING,
         "seconds": round(elapsed, 1),
@@ -727,6 +728,7 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
                f"di cui {len(answers)} domande")
     safe_print(f"Durata: {elapsed:.1f}s")
     safe_print(f"Modello: {config.llm_config.get('model_name')}")
+    safe_print(f"Recupero: {config.retrieval_mode}")
     safe_print(f"Archivio: {config.chroma_path} / {config.collection_name}")
     if inherited:
         safe_print(f"\033[33mATTENZIONE: l'archivio conteneva gia' {inherited} documenti "

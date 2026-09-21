@@ -35,6 +35,7 @@ class AgentState(TypedDict):
     maximum_historical_messages: int
     core_memory_limit: int
     archive_memory_limit: int
+    retrieval_mode: Literal["decide", "always_llm_query", "always_raw_query"]
     generate_answer: bool
 
 
@@ -160,11 +161,9 @@ def retrieve_memory(query: str, k: int = 5) -> str:
     print(results)
     return results
 
-# Define the retrieval node
-def retrieval_node(state: AgentState):
-    print("\tRetrieval node activated")
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You decide whether the assistant already has what it needs, and when
+# retrieval_mode "decide": the model chooses between searching and NoSearchNeeded.
+DECIDE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You decide whether the assistant already has what it needs, and when
          it does not, you search its archival memory.
 
          Facts kept at hand: {core_memory}
@@ -184,18 +183,54 @@ def retrieval_node(state: AgentState):
          archive is written in that same language, which is not necessarily the one the
          user is speaking right now. A query in the wrong language lands further from the
          memory it should find."""),
-        ("human", """{input}
+    ("human", """{input}
 
 Do the facts kept at hand already contain what this asks for? If they do, call
 NoSearchNeeded. If they do not, or you are not sure, call retrieve_memory: the answer may
 be in the archive, and not looking is how it gets missed."""),
-    ])
+])
 
-    llm_with_tools = get_llm("retrieval").bind_tools(
-        [retrieve_memory, NoSearchNeeded], tool_choice=REQUIRED)
+# retrieval_mode "always_llm_query": the search always happens, the model writes query and k.
+SEARCH_ONLY_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You search the assistant's archival memory.
 
-    chain = prompt | llm_with_tools
+         Facts kept at hand: {core_memory}
+
+         Your previous interactions:
+
+         {previous_messages}
+
+         Those facts are only the memories kept always at hand. Everything older or less
+         frequently used lives in an ARCHIVE that is not listed above and that
+         retrieve_memory searches.
+
+         Write the search query in the same language as the facts listed above: the
+         archive is written in that same language, which is not necessarily the one the
+         user is speaking right now. A query in the wrong language lands further from the
+         memory it should find."""),
+    ("human", """{input}
+
+Call retrieve_memory to search the archive for what this asks for."""),
+])
+
+
+# Define the retrieval node
+def retrieval_node(state: AgentState):
+    print("\tRetrieval node activated")
     user_query, history = query_and_history(state)
+
+    if state["retrieval_mode"] == "always_raw_query":
+        # No model call: the question is the query, and k is retrieve_memory's default.
+        search = {"name": "retrieve_memory", "args": {"query": user_query},
+                  "id": "raw_query", "type": "tool_call"}
+        return {"tool_calls": state["tool_calls"] + [AIMessage(content="", tool_calls=[search])]}
+
+    if state["retrieval_mode"] == "always_llm_query":
+        prompt, tools = SEARCH_ONLY_PROMPT, [retrieve_memory]
+    else:
+        prompt, tools = DECIDE_PROMPT, [retrieve_memory, NoSearchNeeded]
+
+    chain = prompt | get_llm("retrieval").bind_tools(tools, tool_choice=REQUIRED)
     response = _timed("retrieval", lambda: chain.invoke(
         {"input": user_query,
          "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
@@ -491,6 +526,7 @@ class MemoryAgent():
                 "maximum_historical_messages": self.config.maximum_historical_messages,
                 "core_memory_limit": self.config.core_memory_limit,
                 "archive_memory_limit": self.config.archive_memory_limit,
+                "retrieval_mode": self.config.retrieval_mode,
                 "generate_answer": self.config.generate_answer,
                 "retrieved_memory": "",
                 "current_query": "",

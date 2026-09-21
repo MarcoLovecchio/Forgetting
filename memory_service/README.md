@@ -100,7 +100,7 @@ colcon test --packages-select memory_service
 `test/test_tool_calling_gate.py` è il **gate da superare prima di tutto il
 resto**: verifica che il modello configurato produca tool call valide per gli
 schemi veri (`InsertCoreMemories`, `SplitCoreAndArchivalMemory`,
-`InformationSufficiency`) e che ricopi gli id esattamente. Sono due fallimenti
+`retrieve_memory` / `NoSearchNeeded`) e che ricopi gli id esattamente. Sono due fallimenti
 diversi e li misura separatamente, perché portano a rimedi diversi: la struttura
 sbagliata si cura con lo structured output vincolato, gli id sbagliati con
 l'aliasing dei prompt. Ogni controllo è ripetuto più volte, perché con un LLM una
@@ -198,11 +198,11 @@ Due cose da sapere, verificate sui sorgenti:
   di emettere la chiamata — misurato dal gate: 9 volte su 10, non 10. Dove una
   tool call è l'unico esito sensato quella decima volta è **perdita silenziosa di
   dati**: il nodo non salva niente e i messaggi vengono tagliati lo stesso. Per
-  questo `InsertCoreMemories`, `InformationSufficiency` e
-  `SplitCoreAndArchivalMemory` sono legate con `tool_choice="required"`. Non si
-  perde flessibilità: il modello può sempre restituire una lista vuota.
-  `retrieve_memory` **non** è forzata, perché lì decidere di non recuperare è una
-  risposta valida.
+  questo `InsertCoreMemories` e `SplitCoreAndArchivalMemory` sono legate con
+  `tool_choice="required"`. Non si perde flessibilità: il modello può sempre
+  restituire una lista vuota. Sul ramo di recupero `retrieve_memory` e
+  `NoSearchNeeded` sono legate insieme, anch'esse con `required`: non cercare resta
+  possibile, ma è una risposta che si vede e non un silenzio.
 - **`api_key_env` parte vuota apposta.** Se restasse `GROQ_API_KEY` come prima,
   quella chiave — che nel `.env` c'è, perché serve agli altri cinque nodi
   dell'architettura — finirebbe nell'header `Authorization` verso il cluster. Con
@@ -311,6 +311,17 @@ d'ambiente (lette da `.env` / `.config`):
 | `MEMORY_CHROMA_PATH` | `./chroma_db` | cartella dell'archivio (risolta in path assoluto) |
 | `MEMORY_COLLECTION_NAME` | `memory_archive` | collezione ChromaDB |
 | `MEMORY_ENV_FILE` | — | percorso esplicito del file di ambiente |
+
+`retrieval_mode` non ha variabile d'ambiente e si cambia solo in `config.py`. Decide
+se la ricerca in archivio del ramo `retrieve` è una scelta del modello:
+
+- `decide` (default): il modello sceglie fra `retrieve_memory` e `NoSearchNeeded`;
+- `always_llm_query`: si cerca sempre, il modello scrive solo la query e `k`;
+- `always_raw_query`: si cerca sempre con la domanda dell'utente così com'è e
+  `k = 5`, senza chiamare il modello.
+
+In tutte e tre un recupero incrementa `n_retrieve` delle memorie restituite. Il test
+lungo stampa e salva la modalità della run.
 
 `.env` e `.config` vengono cercati risalendo le directory a partire dalla
 working directory e dalla posizione del pacchetto. Se il nodo viene lanciato da
