@@ -19,8 +19,6 @@ def to_string_list(values):
     from an LLM are not always strings (some providers return a list of content
     blocks).
     """
-    if not values:
-        return []
     return [value if isinstance(value, str) else str(value) for value in values]
 
 
@@ -44,7 +42,7 @@ class MemoryServer(Node):
         filtering and same order, so a client can zip them and refer to a
         specific memory afterwards.
         """
-        core_memory = state.get("core_memory", [])
+        core_memory = state["core_memory"]
         response.memory_list = to_string_list(serialize_core_memory_for_prompt(core_memory))
         response.memory_ids = to_string_list(serialize_core_memory_ids(core_memory))
 

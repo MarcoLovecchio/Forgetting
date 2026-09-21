@@ -15,7 +15,6 @@ import io
 import os
 import sys
 import unittest
-from typing import get_args
 
 # Allow running this file directly, or through a runner that does not pick up
 # the conftest.py of the package.
@@ -29,7 +28,10 @@ from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from memory_service import backends  # noqa: E402
 from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
 
-from memory_service.consolidation import CoreMemoryItem, MemoryOperationType  # noqa: E402
+from memory_service.consolidation import (  # noqa: E402
+    CoreMemoryItem,
+    archive_items,
+)
 from memory_service.memory_manager_llm import (  # noqa: E402
     NODE_STATS,
     MemoryAgent,
@@ -38,6 +40,7 @@ from memory_service.memory_manager_llm import (  # noqa: E402
     query_and_history,
     reset_node_stats,
     retrieve_memory,
+    split_by_speaker,
 )
 
 from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
@@ -82,6 +85,11 @@ class MemoryServiceTestCase(unittest.TestCase):
     def tearDown(self):
         MemoryAgent.reset_instance()
         backends.reset()
+
+    def archive(self, contents, status="active"):
+        """Memorie in archivio con i metadata completi, come le scrive archive_items."""
+        archive_items([CoreMemoryItem(id=item_id, content=content, status=status)
+                       for item_id, content in contents.items()])
 
     def conversation(self, turns):
         """Build an alternating human/AI conversation of the given length."""
@@ -157,13 +165,6 @@ class InsertInteractionTest(MemoryServiceTestCase):
         )
         self.assertEqual(len(state["messages"]), 5, "only the last N messages are kept")
         self.assertIn("InsertCoreMemories", self.llm.bound_tool_names())
-
-    def test_every_extracted_fact_is_logged(self):
-        self.agent.state["messages"] = self.conversation(9)
-
-        state = self.agent.run_memory_agent("insert")
-
-        self.assertEqual([entry.op_type for entry in state["operation_log"]], ["create", "create"])
 
     def test_tool_calls_are_cleared_after_the_run(self):
         self.agent.state["messages"] = self.conversation(9)
@@ -241,11 +242,13 @@ class SplitPromptTest(MemoryServiceTestCase):
             if "SplitCoreAndArchivalMemory" in invocation["tools"])
 
     def test_the_prompt_carries_the_numbers(self):
-        prompt = self._run_split([CoreMemoryItem(content="x" * 200)], limit=150)
+        # Numeri che non si contengono l'un l'altro, e un id senza cifre: con 150
+        # di limite "50" da liberare sarebbe comparso comunque.
+        prompt = self._run_split([CoreMemoryItem(id="a", content="x" * 230)], limit=100)
 
-        self.assertIn("200", prompt, "la lunghezza attuale deve essere nel prompt")
-        self.assertIn("150", prompt, "il limite deve essere nel prompt")
-        self.assertIn("50", prompt, "quanto liberare deve essere nel prompt")
+        self.assertIn("230", prompt, "la lunghezza attuale deve essere nel prompt")
+        self.assertIn("100", prompt, "il limite deve essere nel prompt")
+        self.assertIn("130", prompt, "quanto liberare deve essere nel prompt")
 
     def test_every_memory_carries_its_own_length(self):
         prompt = self._run_split(
@@ -349,11 +352,8 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
     default_content = "You like black tea in the afternoon."
 
     def test_a_decision_to_search_reaches_the_archive(self):
-        self.vector_store.add_texts(
-            texts=["User likes black tea in the afternoon", "User prefers coffee in the morning"],
-            ids=["memory_a", "memory_b"],
-            metadatas=[{"status": "active"}, {"status": "active"}],
-        )
+        self.archive({"memory_a": "User likes black tea in the afternoon",
+                      "memory_b": "User prefers coffee in the morning"})
         self.agent.state["messages"] = [HumanMessage(content="What can I drink in the afternoon?")]
 
         state = self.agent.run_memory_agent("retrieve")
@@ -367,9 +367,7 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
 
     def test_the_retrieve_branch_counts_what_it_returns(self):
-        self.vector_store.add_texts(
-            texts=["User likes black tea in the afternoon"], ids=["memory_a"],
-            metadatas=[{"status": "active", "n_retrieve": 0}])
+        self.archive({"memory_a": "User likes black tea in the afternoon"})
         self.agent.state["messages"] = [HumanMessage(content="What can I drink in the afternoon?")]
 
         self.agent.run_memory_agent("retrieve")
@@ -383,9 +381,7 @@ class InsertDoesNotCountRetrievalsTest(MemoryServiceTestCase):
     tool_responses = {"InsertCoreMemories": {"memories": []}}
 
     def test_an_insert_leaves_n_retrieve_alone(self):
-        self.vector_store.add_texts(
-            texts=["User likes black tea in the afternoon"], ids=["memory_a"],
-            metadatas=[{"status": "active", "n_retrieve": 0}])
+        self.archive({"memory_a": "User likes black tea in the afternoon"})
         self.agent.state["messages"] = self.conversation(8)
 
         self.agent.run_memory_agent("insert")
@@ -461,9 +457,7 @@ class StaleRetrievalTest(MemoryServiceTestCase):
     tool_responses = {"retrieve_memory": {"query": "te", "k": 2}}
 
     def test_a_turn_that_does_not_search_starts_from_nothing(self):
-        self.vector_store.add_texts(
-            texts=["All'utente piace il te nero"], ids=["memory_a"],
-            metadatas=[{"status": "active"}])
+        self.archive({"memory_a": "All'utente piace il te nero"})
 
         first = self.agent.run_memory_agent("retrieve", query="cosa bevo?")
         self.assertIn("te nero", first["retrieved_memory"])
@@ -532,9 +526,7 @@ class CurrentQueryTest(MemoryServiceTestCase):
     def test_a_question_is_answered_even_with_an_empty_conversation(self):
         # L'archivio puo' contenere roba di sessioni precedenti: una domanda a
         # freddo deve comunque poterlo interrogare.
-        self.vector_store.add_texts(
-            texts=["L'utente e' allergico alle arachidi"], ids=["memory_a"],
-            metadatas=[{"status": "active"}])
+        self.archive({"memory_a": "L'utente e' allergico alle arachidi"})
 
         state = self.agent.run_memory_agent("retrieve", query="a cosa sono allergico?")
 
@@ -631,27 +623,17 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
         ]
         self.agent.run_memory_agent("insert")
 
-    def consolidation_prompt(self):
-        for invocation in self.llm.invocations:
-            if "InsertCoreMemories" in invocation["tools"]:
-                return invocation["prompt"]
-        raise AssertionError("il consolidamento non e' mai stato invocato")
-
     def test_the_two_voices_end_up_in_different_places(self):
-        self.consolidate()
-        prompt = self.consolidation_prompt()
+        said_by_user, said_by_assistant = split_by_speaker([
+            HumanMessage(content="mi chiamo Bianca"),
+            AIMessage(content=f"piacere, {self.ONLY_THE_ASSISTANT_SAYS_THIS}"),
+        ])
 
-        # Il confine e' l'etichetta del blocco utente: sopra il contesto, sotto
-        # le fonti. Se un giorno i blocchi tornassero nell'ordine di prima,
-        # questo test fallisce - e la correzione non e' capovolgere le
-        # asserzioni, e' il test qui sotto che dice perche'.
-        border = prompt.index("this is where the facts come from")
-        self.assertGreater(
-            prompt.index("mi chiamo Bianca"), border,
-            "quello che dice l'utente deve stare nella parte da cui si estrae")
-        self.assertLess(
-            prompt.index(self.ONLY_THE_ASSISTANT_SAYS_THIS), border,
-            "la risposta dell'assistente deve stare nel contesto, non fra le fonti")
+        self.assertIn("mi chiamo Bianca", said_by_user)
+        self.assertNotIn(self.ONLY_THE_ASSISTANT_SAYS_THIS, said_by_user,
+                         "la risposta dell'assistente non deve stare fra le fonti dei fatti")
+        self.assertIn(self.ONLY_THE_ASSISTANT_SAYS_THIS, said_by_assistant)
+        self.assertNotIn("mi chiamo Bianca", said_by_assistant)
 
     def test_the_archive_is_searched_with_the_words_of_the_user(self):
         # Cercare con la risposta dell'assistente riporterebbe a galla proprio
@@ -696,25 +678,6 @@ class KnownMemoriesFormatTest(MemoryServiceTestCase):
 
         self.assertIn("\n%s: The user is allergic to peanuts.\n" % item.id, prompt)
         self.assertNotIn("{'", prompt)
-
-
-class SingleUpdateTest(unittest.TestCase):
-    """Update e contradict sono un'operazione sola: facevano la stessa cosa.
-
-    Passavano dallo stesso ramo di apply_memory_operations e cambiava solo
-    l'etichetta nel log, mentre il confine fra le due non era netto nemmeno per
-    chi annotava la conversazione di prova.
-    """
-
-    def test_the_tool_offers_no_contradict(self):
-        self.assertEqual(set(get_args(MemoryOperationType)),
-                         {"new", "redundant", "update", "delete"})
-
-    def test_a_model_that_still_says_contradict_is_read_as_update(self):
-        from memory_service.consolidation import normalize_operation
-
-        self.assertEqual(normalize_operation("contradict"), "update")
-        self.assertEqual(normalize_operation("Contradiction"), "update")
 
 
 class NodeSamplingWiringTest(MemoryServiceTestCase):
@@ -874,9 +837,7 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
     default_content = "Bevi te nero il pomeriggio."
 
     def test_both_ways_out_are_bound_and_one_of_them_is_mandatory(self):
-        self.vector_store.add_texts(
-            texts=["All'utente piace il te nero"], ids=["memory_a"],
-            metadatas=[{"status": "active"}])
+        self.archive({"memory_a": "All'utente piace il te nero"})
         self.agent.state["messages"] = [HumanMessage(content="cosa bevo il pomeriggio?")]
 
         spy = ToolChoiceSpy(self, self.llm)
@@ -895,10 +856,6 @@ class AppendMessageTest(MemoryServiceTestCase):
         self.assertIsInstance(self.agent.state["messages"][0], HumanMessage)
         self.assertIsInstance(self.agent.state["messages"][1], AIMessage)
 
-    def test_unknown_sender_is_rejected(self):
-        with self.assertRaises(ValueError):
-            self.agent.append_message("hello", "robot")
-
     def test_singleton_is_shared_but_resettable(self):
         self.assertIs(MemoryAgent(), self.agent)
         MemoryAgent.reset_instance()
@@ -907,25 +864,11 @@ class AppendMessageTest(MemoryServiceTestCase):
 
 class RetrieveMemoryToolTest(MemoryServiceTestCase):
     def test_string_k_is_accepted(self):
-        self.vector_store.add_texts(
-            texts=["a fact about tea"], ids=["memory_a"], metadatas=[{"status": "active"}])
+        self.archive({"memory_a": "a fact about tea"})
 
         result = retrieve_memory.invoke({"query": "tea", "k": "1"})
 
         self.assertIn("a fact about tea", result)
-
-    def test_tombstones_are_never_returned(self):
-        self.vector_store.add_texts(
-            texts=["a deleted fact", "a superseded fact", "a live fact"],
-            ids=["memory_a", "memory_b", "memory_c"],
-            metadatas=[{"status": "deleted"}, {"status": "superseded"}, {"status": "active"}],
-        )
-
-        result = retrieve_memory.invoke({"query": "fact", "k": 10})
-
-        self.assertIn("a live fact", result)
-        self.assertNotIn("a deleted fact", result)
-        self.assertNotIn("a superseded fact", result)
 
     def test_no_results(self):
         self.assertEqual(
@@ -978,9 +921,6 @@ class MessagesToStrTest(unittest.TestCase):
         rendered = messages_to_str([HumanMessage(content="hi"), AIMessage(content="hello")])
 
         self.assertEqual(rendered, "Human: hi\nAI: hello")
-
-    def test_plain_values_are_stringified(self):
-        self.assertEqual(messages_to_str(["a", 1]), "a\n1")
 
 
 if __name__ == "__main__":

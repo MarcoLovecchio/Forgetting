@@ -67,12 +67,9 @@ def messages_to_str(messages) -> str:
     """Convert a list of messages to a single string for prompt input."""
     if isinstance(messages, list):
         return "\n".join(messages_to_str(msg) for msg in messages)
-    elif isinstance(messages, HumanMessage):
+    if isinstance(messages, HumanMessage):
         return f"Human: {messages.content}"
-    elif isinstance(messages, AIMessage):
-        return f"AI: {messages.content}"
-    else:
-        return str(messages)
+    return f"AI: {messages.content}"
 
 
 REQUIRED = "required"
@@ -267,8 +264,7 @@ def generate_answer(state: AgentState):
          You are given three sources, from the oldest to the newest:
          1. Facts kept at hand - stored some time ago.
          2. Memories recalled from the archive for this question - stored some time ago. They
-            are listed as ID, Content and Distance: use only the content,
-            never mention the id or the number.
+            are listed as ID and Content: use only the content, never mention the id.
          3. What the user said in the last messages - the NEWEST information you have. Memory
             is updated with a delay, so these messages are not in the facts or the memories yet.
 
@@ -571,12 +567,10 @@ class MemoryAgent():
             self.state["messages"].append(
                 HumanMessage(content=message, additional_kwargs={}, response_metadata={})
             )
-        elif sender == "assistant":
+        else:
             self.state["messages"].append(
                 AIMessage(content=message, additional_kwargs={}, response_metadata={})
             )
-        else:
-            raise ValueError("Sender must be 'user' or 'assistant'")
 
 # Fill archive with fake memories
 # fake_memories = [

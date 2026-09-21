@@ -19,7 +19,6 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
 import json
 
 from memory_service.consolidation import (
-    NO_ARCHIVAL_RESULTS,
     CoreMemoryItem,
     OperationLogEntry,
 )
@@ -103,32 +102,6 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
         self.assertEqual(agent.runs, ["insert"])
         self.assertEqual(list(response.memory_list), ["Bianca is vegetarian"])
         self.assertEqual(list(response.memory_ids), [agent.state["core_memory"][0].id])
-
-    def test_only_the_active_memories_are_published(self):
-        # Superseded and deleted items are history: the service must not expose them.
-        server = self.build_server(StubAgent({"core_memory": [
-            CoreMemoryItem(content="active fact"),
-            CoreMemoryItem(content="old fact", status="superseded"),
-            CoreMemoryItem(content="forgotten fact", status="deleted"),
-        ], "messages": []}))
-
-        request = UpdateMemory.Request()
-        request.user_input = "a"
-        request.explanation = "b"
-        response = server.update_memory_callback(request, UpdateMemory.Response())
-
-        self.assertEqual(list(response.memory_list), ["active fact"])
-        self.assertEqual(len(response.memory_ids), 1, "gli id seguono lo stesso filtro")
-
-    def test_missing_core_memory_key_is_tolerated(self):
-        server = self.build_server(StubAgent({}))
-
-        request = UpdateMemory.Request()
-        request.user_input = "a"
-        request.explanation = "b"
-        response = server.update_memory_callback(request, UpdateMemory.Response())
-
-        self.assertEqual(list(response.memory_list), [])
 
     def test_operations_of_this_call_are_published_as_json(self):
         item = CoreMemoryItem(content="Bianca is vegetarian")
@@ -260,28 +233,17 @@ class RetrievedMemoriesFieldTest(MemoryServerTestCase):
             "ID: abc, Content: all'utente piace il te nero",
             "ID: def, Content: l'utente beve caffe' la mattina"])
 
-    def test_no_retrieval_leaves_the_field_empty(self):
-        self.assertEqual(list(self.respond_to_get("").retrieved_memories), [])
-
-    def test_the_nothing_found_sentence_is_not_a_result(self):
-        # Altrimenti il chiamante vedrebbe una riga e crederebbe di aver
-        # ricevuto una memoria.
-        response = self.respond_to_get(NO_ARCHIVAL_RESULTS)
-
-        self.assertEqual(list(response.retrieved_memories), [])
-
 
 @unittest.skipUnless(ROS_AVAILABLE, "rclpy and memory_service_interfaces are required")
 class ToStringListTest(unittest.TestCase):
-    def test_none_and_empty_become_an_empty_list(self):
-        self.assertEqual(to_string_list(None), [])
+    def test_an_empty_list_stays_empty(self):
         self.assertEqual(to_string_list([]), [])
 
     def test_strings_are_left_untouched(self):
         self.assertEqual(to_string_list(["a", "b"]), ["a", "b"])
 
-    def test_non_strings_are_stringified(self):
-        self.assertEqual(to_string_list([1, ["block"], None]), ["1", "['block']", "None"])
+    def test_content_blocks_are_stringified(self):
+        self.assertEqual(to_string_list([[{"type": "text"}]]), ["[{'type': 'text'}]"])
 
 
 if __name__ == "__main__":

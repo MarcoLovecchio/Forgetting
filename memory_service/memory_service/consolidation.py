@@ -296,45 +296,31 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     return archived
 
 
-def search_archive(query: str,
-                   k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str, float]]:
-    """The k active archival memories closest to a text.
-
-    Returns (id, content, distance) triples, lower meaning closer. The number is
-    the store's own, on the metric the collection was created with: cosine
-    distance for an archive built with backends.ARCHIVE_DISTANCE, which reads as
-    a fraction and in practice stays below 1. An archive created before that
-    setting measures Chroma's squared euclidean instead - exactly twice as large
-    for the same pair - and backends warns about it on startup.
-
-    Not converted to a 0-1 "relevance" here on purpose: the converted number
-    would read the same on both scales and hide which one produced it. What it is
-    for is choosing a threshold by looking at the values a real run produces.
-    """
+def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str]]:
+    """The k active archival memories closest to a text, as (id, content) pairs."""
     try:
         k = max(1, int(k))
     except (TypeError, ValueError):
         k = ARCHIVE_CANDIDATES_K
 
     try:
-        found = backends.get_vector_store().similarity_search_with_score(
+        found = backends.get_vector_store().similarity_search(
             query, k=k, filter={"status": "active"})
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
 
-    return [(doc.id, doc.page_content, float(distance)) for doc, distance in found]
+    return [(doc.id, doc.page_content) for doc in found]
 
 
 NO_ARCHIVAL_RESULTS = "No relevant active memories found."
 
 
-def serialize_retrieved_for_response(retrieved) -> List[str]:
+def serialize_retrieved_for_response(retrieved: str) -> List[str]:
     """Retrieved archival memories as a list, empty when nothing came back."""
-    text = str(retrieved or "").strip()
-    if not text or text == NO_ARCHIVAL_RESULTS:
+    if not retrieved or retrieved == NO_ARCHIVAL_RESULTS:
         return []
-    return [line for line in text.splitlines() if line.strip()]
+    return [line for line in retrieved.splitlines() if line.strip()]
 
 
 def record_retrievals(item_ids: Iterable[str]) -> None:
@@ -355,8 +341,8 @@ def record_retrievals(item_ids: Iterable[str]) -> None:
         now = datetime.now().isoformat()
         updated = []
         for metadata in metadatas:
-            metadata = dict(metadata or {})
-            metadata["n_retrieve"] = int(metadata.get("n_retrieve") or 0) + 1
+            metadata = dict(metadata)
+            metadata["n_retrieve"] += 1
             metadata["retrieved_at"] = now
             updated.append(metadata)
         if found_ids:
@@ -374,9 +360,8 @@ def retrieve_active_archival_memories(query: str, k: int = 5) -> str:
     results = search_archive(query, k=k)
     if not results:
         return NO_ARCHIVAL_RESULTS
-    record_retrievals(doc_id for doc_id, _, _ in results)
-    return "\n".join(f"ID: {doc_id}, Content: {content}, Distance: {distance:.3f}"
-                      for doc_id, content, distance in results)
+    record_retrievals(doc_id for doc_id, _ in results)
+    return "\n".join(f"ID: {doc_id}, Content: {content}" for doc_id, content in results)
 
 
 def build_candidate_memories(
@@ -387,7 +372,7 @@ def build_candidate_memories(
     """Memories the classifier may point at: the active core ones, plus the archival
     ones that look related to the text being consolidated."""
     candidates = serialize_core_memory_with_ids(core_memory)
-    for doc_id, content, _ in search_archive(query, k=k):
+    for doc_id, content in search_archive(query, k=k):
         if doc_id not in candidates:
             candidates[doc_id] = content
     return candidates
@@ -482,7 +467,7 @@ def supersede_archived_item(
     if archived is None:
         return None
     new_item = CoreMemoryItem(content=new_content,
-                              n_retrieve=int(archived["metadata"].get("n_retrieve") or 0))
+                              n_retrieve=archived["metadata"]["n_retrieve"])
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
         related_item_id=item_id, content=new_content))

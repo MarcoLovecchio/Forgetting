@@ -27,19 +27,14 @@ switch in MemoryConfig, come eviction.
                       timestamp, 1/e dopo 7 giorni. Il timestamp e'
                       updated_at, created_at o retrieved_at, secondo
                       eviction_time_decay_field: occupano lo stesso posto nella
-                      media, e se ne usa sempre uno solo. Un documento senza
-                      retrieved_at, scritto prima dei contatori, vale dalla
-                      creazione, come ogni memoria mai recuperata.
+                      media, e se ne usa sempre uno solo.
 
     retrieval_count_term
                       n_retrieve / n_max, con n_max il massimo fra le attive:
                       lineare e relativo all'archivio, come LFU e N_visit di
                       MemoryOS. Non ancora collegato a eviction_score.
 
-Una memoria di cui un termine acceso non si puo' calcolare - timestamp mancante
-o illeggibile - non e' candidata: un dato mancante non fa mai togliere quella
-memoria. Conta pero' fra le attive su cui si calcola la quota, che ricade sulle
-altre. Con tutti i termini spenti non esce niente.
+Con tutti i termini spenti non esce niente.
 
 Cosa tocca e cosa no
 --------------------
@@ -98,7 +93,6 @@ EVICTED_STATUSES = ("superseded", "deleted")
 PRUNE_FRACTION = 0.10
 DECAY_SHAPE = 0.5
 DECAY_SCALE_HOURS = 7 * 24
-TIME_DECAY_FIELDS = ("updated_at", "created_at", "retrieved_at")
 
 
 def _find_tombstones(store) -> List[Tuple[str, str]]:
@@ -173,54 +167,38 @@ def archive_over_limit(limit: int) -> int:
     return excess
 
 
-def time_decay_term(timestamp: Optional[str], now: datetime,
+def time_decay_term(timestamp: str, now: datetime,
                     scale_hours: float = DECAY_SCALE_HOURS,
-                    shape: float = DECAY_SHAPE) -> Optional[float]:
+                    shape: float = DECAY_SHAPE) -> float:
     """Weibull sul tempo trascorso da timestamp: 1 al momento, 1/e a scale_hours.
 
-    None se timestamp manca o non si legge, anche quando ha un fuso orario e now
-    no: i due datetime non si sottraggono. Un timestamp nel futuro - un orologio
-    spostato - vale 1, mai piu' di 1.
+    Un timestamp nel futuro vale 1, mai piu' di 1: succede davvero, perche' i
+    timestamp sono ora locale e a fine ora legale l'orologio torna indietro.
     """
-    try:
-        elapsed = now - datetime.fromisoformat(timestamp)
-    except (TypeError, ValueError):
-        return None
+    elapsed = now - datetime.fromisoformat(timestamp)
     hours = max(0.0, elapsed.total_seconds() / 3600)
     return math.exp(-((hours / scale_hours) ** shape))
 
 
-def retrieval_count_term(n_retrieve: Optional[int], n_max: Optional[int]) -> Optional[float]:
+def retrieval_count_term(n_retrieve: int, n_max: int) -> float:
     """Recuperi di una memoria rispetto alla piu' recuperata: n_retrieve / n_max.
 
-    Un n_retrieve mancante - documento scritto prima dei contatori - vale 0, come
-    una memoria mai recuperata. Se nessuna e' mai stata recuperata (n_max = 0)
-    vale 0 per tutte. None se un valore non si legge.
+    Se nessuna e' mai stata recuperata (n_max = 0) vale 0 per tutte.
     """
-    try:
-        count = int(n_retrieve or 0)
-        top = int(n_max or 0)
-    except (TypeError, ValueError):
-        return None
-    if top <= 0:
+    if n_max == 0:
         return 0.0
-    return min(1.0, max(0.0, count / top))
+    return n_retrieve / n_max
 
 
 def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optional[float]:
     """Media dei termini accesi, in [0, 1]: lo score piu' basso esce per primo.
 
-    None se nessun termine e' acceso, o se uno di quelli accesi non si calcola.
+    None se nessun termine e' acceso.
     """
     terms = []
     if config.eviction_time_decay:
-        field = config.eviction_time_decay_field
-        timestamp = metadata.get(field)
-        if timestamp is None and field == "retrieved_at":
-            # Scritto prima dei contatori: retrieved_at vale dalla creazione.
-            timestamp = metadata.get("created_at")
-        terms.append(time_decay_term(timestamp, now))
-    if not terms or None in terms:
+        terms.append(time_decay_term(metadata[config.eviction_time_decay_field], now))
+    if not terms:
         return None
     return sum(terms) / len(terms)
 
@@ -228,28 +206,24 @@ def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optio
 def prune_count(active: int, fraction: float = PRUNE_FRACTION) -> int:
     """Quante memorie escono su `active`: la frazione, arrotondata per eccesso.
     """
-    return math.ceil(round(active * fraction, 9))
+    return math.ceil(active * fraction)
 
 
 def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig,
                   now: Optional[datetime] = None) -> List[str]:
     """Oltre il limite, toglie le memorie attive con lo score piu' basso.
 
-    Ne toglie prune_count delle attive, scelte fra quelle che hanno uno score.
-    Restituisce gli id rimossi, e per ciascuno aggiunge al log una voce `prune`
-    con lo score. Come evict_archived_tombstones non solleva mai, e il log
-    registra solo le rimozioni riuscite.
+    Ne toglie prune_count delle attive; con tutti i termini spenti non ce n'e'
+    nessuna con uno score, e non esce niente. Restituisce gli id rimossi, e per
+    ciascuno aggiunge al log una voce `prune` con lo score. Come
+    evict_archived_tombstones non solleva se lo store fallisce, e il log registra
+    solo le rimozioni riuscite.
 
     Presuppone i tombstone gia' rimossi da evict_archived_tombstones, che nel
     memory manager gira subito prima. Il filtro `status: active` resta perche' e'
     lo stesso insieme su cui archive_over_limit conta le memorie.
     """
     if archive_over_limit(limit) == 0:
-        return []
-
-    field = config.eviction_time_decay_field
-    if config.eviction_time_decay and field not in TIME_DECAY_FIELDS:
-        print(f"\tPruning skipped, unknown time decay field: {field!r}")
         return []
 
     try:
@@ -266,7 +240,7 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
 
     scored = []
     for doc_id, content, metadata in zip(ids, documents, metadatas):
-        score = eviction_score(metadata or {}, config, now)
+        score = eviction_score(metadata, config, now)
         if score is not None:
             scored.append((score, doc_id, content))
     targets = sorted(scored)[:prune_count(len(ids))]

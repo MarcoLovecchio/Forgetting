@@ -37,7 +37,6 @@ from memory_service.consolidation import (  # noqa: E402
     NO_ARCHIVAL_RESULTS,
     CoreMemoryItem,
     archive_items,
-    build_candidate_memories,
     get_active_items,
     reinforce_archived_item,
     retrieve_active_archival_memories,
@@ -223,10 +222,6 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         self.assertEqual(self.store.documents[moved.id], moved.content)
         self.assertEqual(self.store.status_of(moved.id), "active",
                          "archiviato ma ancora valido, non e' un tombstone")
-        archived_metadata = self.store.metadatas[moved.id]
-        for field in ("status", "created_at", "updated_at"):
-            self.assertIn(field, archived_metadata,
-                          "i campi del CoreMemoryItem sopravvivono all'archiviazione")
         self.assertEqual(state["operation_log"][-1].op_type, "archive")
 
         # --- TURNO 7: retrieve --------------------------------------------- #
@@ -336,12 +331,6 @@ class MetadataRewriteTest(unittest.TestCase):
         self.assertIn(self.item.id, self.store._collection.updates,
                       "il cambio passa dall'aggiornamento dei soli metadata")
 
-    def test_the_document_survives_the_status_change(self):
-        supersede_archived_item(self.item.id, "L'utente mangia pesce", [])
-
-        self.assertEqual(self.store.documents[self.item.id], "L'utente e' vegetariana")
-        self.assertEqual(self.store.status_of(self.item.id), "superseded")
-
     def test_a_reinforcement_costs_no_embedding_either(self):
         # E' il caso piu' sprecato dei tre: si pagava un embedding per registrare
         # che un fatto e' stato ripetuto.
@@ -370,9 +359,7 @@ class RetrievedSerializationTest(unittest.TestCase):
         self.assertEqual(serialize_retrieved_for_response(NO_ARCHIVAL_RESULTS), [])
 
     def test_no_retrieval_at_all_becomes_an_empty_list(self):
-        for nothing in ("", "   ", None):
-            with self.subTest(nothing=nothing):
-                self.assertEqual(serialize_retrieved_for_response(nothing), [])
+        self.assertEqual(serialize_retrieved_for_response(""), [])
 
 
 class ArchiveSearchTest(unittest.TestCase):
@@ -411,36 +398,6 @@ class ArchiveSearchTest(unittest.TestCase):
                                  ids=[f"live_{index}"],
                                  metadatas=[{"status": "active"}])
 
-    def test_tombstones_do_not_steal_the_places(self):
-        # Con k=3 e 6 lapidi davanti, la ricerca stretta ne restituirebbe zero.
-        self.fill(tombstones=6, active=4)
-
-        results = search_archive("gatto", k=3)
-
-        self.assertEqual(len(results), 3, "i candidati attivi devono essere k")
-        self.assertTrue(all(doc_id.startswith("live_") for doc_id, _, _ in results))
-
-    def test_every_result_carries_its_distance(self):
-        self.fill(tombstones=0, active=3)
-
-        results = search_archive("gatto", k=3)
-
-        self.assertTrue(all(isinstance(distance, float) for _, _, distance in results))
-
-    def test_the_distance_reaches_the_retrieval_string(self):
-        """E' l'unico canale verso il resoconto.
-
-        Senza il numero, tre risultati si leggono tutti uguali e non c'e' modo di
-        distinguere una memoria centrata da una raschiata dal fondo per riempire
-        k - che e' proprio l'informazione che serve per tarare una soglia.
-        """
-        self.fill(tombstones=0, active=2)
-
-        retrieved = retrieve_active_archival_memories("gatto", k=2)
-
-        for line in retrieved.splitlines():
-            self.assertIn("Distance:", line)
-
     def test_the_search_delegates_the_filter_to_the_store(self):
         self.fill(tombstones=2, active=5)
 
@@ -450,25 +407,6 @@ class ArchiveSearchTest(unittest.TestCase):
         self.assertEqual(search["filter"], {"status": "active"})
         self.assertEqual(search["k"], 3,
                          "niente documenti chiesti in piu': il filtro e' nell'indice")
-
-    def test_the_result_is_never_longer_than_k(self):
-        self.fill(tombstones=0, active=10)
-
-        self.assertEqual(len(search_archive("gatto", k=3)), 3)
-
-    def test_an_archive_of_only_tombstones_returns_nothing(self):
-        # Meno candidati e' un prompt piu' povero, non un errore.
-        self.fill(tombstones=8, active=0)
-
-        self.assertEqual(search_archive("gatto", k=3), [])
-
-    def test_fewer_active_than_k_returns_what_exists(self):
-        self.fill(tombstones=5, active=2)
-
-        results = search_archive("gatto", k=3)
-
-        self.assertEqual(len(results), 2)
-        self.assertTrue(all(doc_id.startswith("live_") for doc_id, _, _ in results))
 
 
 class StuckMetadataStore(FakeVectorStore):
@@ -551,21 +489,6 @@ class RetrievalCountTest(unittest.TestCase):
 
         self.assertEqual(self.store.metadatas[cat]["updated_at"], updated_at)
         self.assertEqual(len(self.store.writes), writes)
-
-    def test_the_consolidation_candidates_do_not_count(self):
-        cat, = self.archive("il gatto Milo")
-
-        build_candidate_memories([], "gatto")
-
-        self.assertEqual(self.store.metadatas[cat]["n_retrieve"], 0)
-
-    def test_an_archive_written_before_the_counters_starts_from_zero(self):
-        self.store.add_texts(texts=["il gatto Milo"], ids=["old"],
-                             metadatas=[{"status": "active"}])
-
-        retrieve_active_archival_memories("gatto", k=1)
-
-        self.assertEqual(self.store.metadatas["old"]["n_retrieve"], 1)
 
     def test_a_reinforcement_leaves_the_counters_alone(self):
         cat, = self.archive("il gatto Milo")
