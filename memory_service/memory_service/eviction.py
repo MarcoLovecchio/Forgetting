@@ -22,11 +22,21 @@ Ogni termine e' una funzione a parte, con valori in [0, 1], alto vuol dire da
 tenere. eviction_score fa la media dei termini accesi; ogni termine ha il suo
 switch in MemoryConfig, come eviction.
 
-    time_decay_term   Weibull sul tempo da updated_at: exp(-(t/scala)^forma),
-                      forma 0.5 e scala 7 giorni. Vale 1 appena toccata, 1/e a
-                      7 giorni.
+    time_decay_term   Weibull sul tempo da un timestamp: exp(-(t/scala)^forma),
+                      forma 0.5 e scala 7 giorni. Vale 1 al momento del
+                      timestamp, 1/e dopo 7 giorni. Il timestamp e'
+                      updated_at, created_at o retrieved_at, secondo
+                      eviction_time_decay_field: occupano lo stesso posto nella
+                      media, e se ne usa sempre uno solo. Un documento senza
+                      retrieved_at, scritto prima dei contatori, vale dalla
+                      creazione, come ogni memoria mai recuperata.
 
-Una memoria di cui un termine acceso non si puo' calcolare - updated_at mancante
+    retrieval_count_term
+                      n_retrieve / n_max, con n_max il massimo fra le attive:
+                      lineare e relativo all'archivio, come LFU e N_visit di
+                      MemoryOS. Non ancora collegato a eviction_score.
+
+Una memoria di cui un termine acceso non si puo' calcolare - timestamp mancante
 o illeggibile - non e' candidata: un dato mancante non fa mai togliere quella
 memoria. Conta pero' fra le attive su cui si calcola la quota, che ricade sulle
 altre. Con tutti i termini spenti non esce niente.
@@ -88,6 +98,7 @@ EVICTED_STATUSES = ("superseded", "deleted")
 PRUNE_FRACTION = 0.10
 DECAY_SHAPE = 0.5
 DECAY_SCALE_HOURS = 7 * 24
+TIME_DECAY_FIELDS = ("updated_at", "created_at", "retrieved_at")
 
 
 def _find_tombstones(store) -> List[Tuple[str, str]]:
@@ -162,21 +173,38 @@ def archive_over_limit(limit: int) -> int:
     return excess
 
 
-def time_decay_term(updated_at: Optional[str], now: datetime,
+def time_decay_term(timestamp: Optional[str], now: datetime,
                     scale_hours: float = DECAY_SCALE_HOURS,
                     shape: float = DECAY_SHAPE) -> Optional[float]:
-    """Weibull sul tempo trascorso da updated_at: 1 appena toccata, 1/e a scale_hours.
+    """Weibull sul tempo trascorso da timestamp: 1 al momento, 1/e a scale_hours.
 
-    None se updated_at manca o non si legge, anche quando ha un fuso orario e now
-    no: i due datetime non si sottraggono. Un updated_at nel futuro - un orologio
+    None se timestamp manca o non si legge, anche quando ha un fuso orario e now
+    no: i due datetime non si sottraggono. Un timestamp nel futuro - un orologio
     spostato - vale 1, mai piu' di 1.
     """
     try:
-        elapsed = now - datetime.fromisoformat(updated_at)
+        elapsed = now - datetime.fromisoformat(timestamp)
     except (TypeError, ValueError):
         return None
     hours = max(0.0, elapsed.total_seconds() / 3600)
     return math.exp(-((hours / scale_hours) ** shape))
+
+
+def retrieval_count_term(n_retrieve: Optional[int], n_max: Optional[int]) -> Optional[float]:
+    """Recuperi di una memoria rispetto alla piu' recuperata: n_retrieve / n_max.
+
+    Un n_retrieve mancante - documento scritto prima dei contatori - vale 0, come
+    una memoria mai recuperata. Se nessuna e' mai stata recuperata (n_max = 0)
+    vale 0 per tutte. None se un valore non si legge.
+    """
+    try:
+        count = int(n_retrieve or 0)
+        top = int(n_max or 0)
+    except (TypeError, ValueError):
+        return None
+    if top <= 0:
+        return 0.0
+    return min(1.0, max(0.0, count / top))
 
 
 def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optional[float]:
@@ -186,7 +214,12 @@ def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optio
     """
     terms = []
     if config.eviction_time_decay:
-        terms.append(time_decay_term(metadata.get("updated_at"), now))
+        field = config.eviction_time_decay_field
+        timestamp = metadata.get(field)
+        if timestamp is None and field == "retrieved_at":
+            # Scritto prima dei contatori: retrieved_at vale dalla creazione.
+            timestamp = metadata.get("created_at")
+        terms.append(time_decay_term(timestamp, now))
     if not terms or None in terms:
         return None
     return sum(terms) / len(terms)
@@ -194,9 +227,6 @@ def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optio
 
 def prune_count(active: int, fraction: float = PRUNE_FRACTION) -> int:
     """Quante memorie escono su `active`: la frazione, arrotondata per eccesso.
-
-    Il round prima del ceil serve se si cambia la frazione: 100 * 0.07 in virgola
-    mobile fa 7.000000000000001, e senza ne uscirebbero 8.
     """
     return math.ceil(round(active * fraction, 9))
 
@@ -215,6 +245,11 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
     lo stesso insieme su cui archive_over_limit conta le memorie.
     """
     if archive_over_limit(limit) == 0:
+        return []
+
+    field = config.eviction_time_decay_field
+    if config.eviction_time_decay and field not in TIME_DECAY_FIELDS:
+        print(f"\tPruning skipped, unknown time decay field: {field!r}")
         return []
 
     try:

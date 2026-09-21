@@ -26,6 +26,7 @@ class EnvironmentTestCase(unittest.TestCase):
         "MEMORY_ARCHIVE_LIMIT",
         "MEMORY_EVICTION",
         "MEMORY_EVICTION_TIME_DECAY",
+        "MEMORY_EVICTION_TIME_DECAY_FIELD",
         "MEMORY_GENERATE_ANSWER",
         "MEMORY_CHROMA_PATH",
         "MEMORY_COLLECTION_NAME",
@@ -87,11 +88,13 @@ class ConfigTest(EnvironmentTestCase):
     def test_the_eviction_switches_are_set_only_in_the_code(self):
         os.environ["MEMORY_EVICTION"] = "true"
         os.environ["MEMORY_EVICTION_TIME_DECAY"] = "false"
+        os.environ["MEMORY_EVICTION_TIME_DECAY_FIELD"] = "created_at"
 
         config = MemoryConfig.from_environment()
 
         self.assertFalse(config.eviction)
         self.assertTrue(config.eviction_time_decay)
+        self.assertEqual(config.eviction_time_decay_field, "updated_at")
 
     def test_invalid_numbers_fall_back_to_the_defaults(self):
         os.environ["MEMORY_MAX_HISTORICAL_MESSAGES"] = "not a number"

@@ -39,7 +39,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from memory_service import backends
 
@@ -64,6 +64,20 @@ class CoreMemoryItem(BaseModel):
     status: MemoryStatus = "active"
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+    n_retrieve: int = 0
+    retrieved_at: datetime = Field(default_factory=datetime.now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_creation_instant(cls, data: Any) -> Any:
+        """created_at, updated_at and retrieved_at start from the same instant."""
+        if isinstance(data, dict):
+            data = dict(data)
+            created = data.setdefault("created_at", datetime.now())
+            data.setdefault("updated_at", created)
+            data.setdefault("retrieved_at", created)
+        return data
 
 
 class OperationLogEntry(BaseModel):
@@ -219,6 +233,8 @@ def archive_metadata(item: CoreMemoryItem) -> dict:
         "status": item.status,
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
+        "n_retrieve": item.n_retrieve,
+        "retrieved_at": item.retrieved_at.isoformat(),
     }
 
 
@@ -321,11 +337,44 @@ def serialize_retrieved_for_response(retrieved) -> List[str]:
     return [line for line in text.splitlines() if line.strip()]
 
 
+def record_retrievals(item_ids: Iterable[str]) -> None:
+    """Count a retrieval on archived memories: n_retrieve + 1, retrieved_at now.
+
+    Metadata only, like _rewrite_archive_metadata, so the vector stays where it
+    is; updated_at is left alone, it belongs to the writes. Never raises: a
+    missed count must not cost the user an answer.
+    """
+    ids = list(dict.fromkeys(item_ids))
+    if not ids:
+        return
+    try:
+        store = backends.get_vector_store()
+        found = store.get(ids=ids) or {}
+        found_ids = found.get("ids") or []
+        metadatas = found.get("metadatas") or [{}] * len(found_ids)
+        now = datetime.now().isoformat()
+        updated = []
+        for metadata in metadatas:
+            metadata = dict(metadata or {})
+            metadata["n_retrieve"] = int(metadata.get("n_retrieve") or 0) + 1
+            metadata["retrieved_at"] = now
+            updated.append(metadata)
+        if found_ids:
+            store._collection.update(ids=found_ids, metadatas=updated)
+    except Exception as error:
+        print(f"\tRetrieval not recorded: {error}")
+
+
 def retrieve_active_archival_memories(query: str, k: int = 5) -> str:
-    """Archive lookup for the retrieval path, tombstones excluded."""
+    """Archive lookup for the retrieval path, tombstones excluded.
+
+    The only search that counts as a retrieval: the candidates the classifier sees
+    during consolidation go through search_archive and are not recorded.
+    """
     results = search_archive(query, k=k)
     if not results:
         return NO_ARCHIVAL_RESULTS
+    record_retrievals(doc_id for doc_id, _, _ in results)
     return "\n".join(f"ID: {doc_id}, Content: {content}, Distance: {distance:.3f}"
                       for doc_id, content, distance in results)
 
@@ -379,9 +428,12 @@ def supersede_item(
     new_content: str,
     log: List[OperationLogEntry],
 ) -> CoreMemoryItem:
-    """Replace a core item with a newer version that points back at it."""
+    """Replace a core item with a newer version that points back at it.
+
+    The newer version inherits n_retrieve: it is the same fact, evolved.
+    """
     _retire_item(old_item, "superseded")
-    new_item = CoreMemoryItem(content=new_content)
+    new_item = CoreMemoryItem(content=new_content, n_retrieve=old_item.n_retrieve)
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
         related_item_id=old_item.id, content=new_content))
@@ -422,10 +474,15 @@ def supersede_archived_item(
     new_content: str,
     log: List[OperationLogEntry],
 ) -> Optional[CoreMemoryItem]:
-    """Flag an archived memory as superseded; the newer version starts in core memory."""
-    if _rewrite_archive_metadata(item_id, status="superseded") is None:
+    """Flag an archived memory as superseded; the newer version starts in core memory.
+
+    The newer version inherits n_retrieve, as in supersede_item.
+    """
+    archived = _rewrite_archive_metadata(item_id, status="superseded")
+    if archived is None:
         return None
-    new_item = CoreMemoryItem(content=new_content)
+    new_item = CoreMemoryItem(content=new_content,
+                              n_retrieve=int(archived["metadata"].get("n_retrieve") or 0))
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
         related_item_id=item_id, content=new_content))

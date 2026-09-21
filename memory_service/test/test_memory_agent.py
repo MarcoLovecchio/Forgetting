@@ -366,6 +366,33 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         self.assertIn("black tea", state["retrieved_memory"])
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
 
+    def test_the_retrieve_branch_counts_what_it_returns(self):
+        self.vector_store.add_texts(
+            texts=["User likes black tea in the afternoon"], ids=["memory_a"],
+            metadatas=[{"status": "active", "n_retrieve": 0}])
+        self.agent.state["messages"] = [HumanMessage(content="What can I drink in the afternoon?")]
+
+        self.agent.run_memory_agent("retrieve")
+
+        self.assertEqual(self.vector_store.metadatas["memory_a"]["n_retrieve"], 1)
+
+
+class InsertDoesNotCountRetrievalsTest(MemoryServiceTestCase):
+    """Il consolidamento cerca in archivio i candidati, ma non e' un recupero."""
+
+    tool_responses = {"InsertCoreMemories": {"memories": []}}
+
+    def test_an_insert_leaves_n_retrieve_alone(self):
+        self.vector_store.add_texts(
+            texts=["User likes black tea in the afternoon"], ids=["memory_a"],
+            metadatas=[{"status": "active", "n_retrieve": 0}])
+        self.agent.state["messages"] = self.conversation(8)
+
+        self.agent.run_memory_agent("insert")
+
+        self.assertTrue(self.vector_store.searches, "il consolidamento ha cercato i candidati")
+        self.assertEqual(self.vector_store.metadatas["memory_a"]["n_retrieve"], 0)
+
 
 class AnswerGenerationSwitchTest(MemoryServiceTestCase):
     """Il ramo retrieve puo' non comporre la risposta.

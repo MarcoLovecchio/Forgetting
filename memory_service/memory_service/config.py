@@ -15,7 +15,7 @@ entry, same API key, same Chroma path).
 import ast
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from dotenv import load_dotenv
 
@@ -113,6 +113,7 @@ class MemoryConfig:
     # Code only: from_environment does not read these, on purpose.
     eviction: bool = False
     eviction_time_decay: bool = True
+    eviction_time_decay_field: Literal["updated_at", "created_at", "retrieved_at"] = "updated_at"
     generate_answer: bool = True
 
     # Archival memory (ChromaDB)

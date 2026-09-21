@@ -42,6 +42,7 @@ from memory_service.eviction import (  # noqa: E402
     eviction_score,
     prune_archive,
     prune_count,
+    retrieval_count_term,
     time_decay_term,
 )
 from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
@@ -76,11 +77,16 @@ class EvictionTestCase(unittest.TestCase):
     def tearDown(self):
         backends.reset()
 
-    def archive(self, content, status="active", days_old=None, now=NOW):
+    def archive(self, content, status="active", days_old=None, now=NOW, created_days_old=None,
+                retrieved_days_old=None):
         """Un item in archivio, come lo lascia il core split."""
         item = CoreMemoryItem(content=content, status=status)
         if days_old is not None:
             item.updated_at = now - timedelta(days=days_old)
+        if created_days_old is not None:
+            item.created_at = now - timedelta(days=created_days_old)
+        if retrieved_days_old is not None:
+            item.retrieved_at = now - timedelta(days=retrieved_days_old)
         archive_items([item])
         return item.id
 
@@ -337,11 +343,38 @@ class TimeDecayTermTest(unittest.TestCase):
 class EvictionScoreTest(unittest.TestCase):
     """La combinazione dei termini accesi."""
 
-    def test_with_only_time_decay_on_the_score_is_that_term(self):
-        updated_at = (NOW - timedelta(days=3)).isoformat()
+    METADATA = {"created_at": (NOW - timedelta(days=60)).isoformat(),
+                "updated_at": (NOW - timedelta(days=3)).isoformat(),
+                "retrieved_at": (NOW - timedelta(days=20)).isoformat()}
 
-        self.assertEqual(eviction_score({"updated_at": updated_at}, EVICTION_CONFIG, NOW),
-                         time_decay_term(updated_at, NOW))
+    def test_by_default_the_decay_runs_on_updated_at(self):
+        self.assertEqual(eviction_score(self.METADATA, EVICTION_CONFIG, NOW),
+                         time_decay_term(self.METADATA["updated_at"], NOW))
+
+    def test_the_timestamps_share_one_slot(self):
+        # Mai una media fra timestamp: il termine e' uno, il selettore dice quale.
+        for field in ("updated_at", "created_at", "retrieved_at"):
+            with self.subTest(field=field):
+                config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field=field)
+                self.assertEqual(eviction_score(self.METADATA, config, NOW),
+                                 time_decay_term(self.METADATA[field], NOW))
+
+    def test_the_chosen_timestamp_missing_leaves_no_score(self):
+        # Gli altri timestamp ci sono, ma non fanno da ripiego.
+        for field in ("updated_at", "created_at"):
+            with self.subTest(field=field):
+                config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field=field)
+                others = {name: value for name, value in self.METADATA.items() if name != field}
+                self.assertIsNone(eviction_score(others, config, NOW))
+
+    def test_a_memory_written_before_the_counters_decays_from_creation(self):
+        # Senza retrieved_at vale quello di una memoria mai recuperata: la creazione.
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field="retrieved_at")
+        written_before = {"created_at": self.METADATA["created_at"],
+                          "updated_at": self.METADATA["updated_at"]}
+
+        self.assertEqual(eviction_score(written_before, config, NOW),
+                         time_decay_term(self.METADATA["created_at"], NOW))
 
     def test_with_every_term_off_there_is_no_score(self):
         config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
@@ -350,6 +383,40 @@ class EvictionScoreTest(unittest.TestCase):
 
     def test_a_term_that_cannot_be_computed_leaves_no_score(self):
         self.assertIsNone(eviction_score({}, EVICTION_CONFIG, NOW))
+
+
+class RetrievalCountTermTest(unittest.TestCase):
+    """Il termine dei recuperi: lineare, relativo alla memoria piu' recuperata."""
+
+    def test_the_count_over_the_most_retrieved(self):
+        for n_retrieve, expected in ((6, 1.0), (3, 0.5), (1, 1 / 6), (0, 0.0)):
+            with self.subTest(n_retrieve=n_retrieve):
+                self.assertAlmostEqual(retrieval_count_term(n_retrieve, 6), expected)
+
+    def test_the_same_count_is_worth_less_in_a_busier_archive(self):
+        self.assertEqual(retrieval_count_term(2, 4), 0.5)
+        self.assertEqual(retrieval_count_term(2, 8), 0.25)
+
+    def test_an_archive_never_retrieved_is_worth_zero_everywhere(self):
+        self.assertEqual(retrieval_count_term(0, 0), 0.0)
+
+    def test_a_memory_written_before_the_counters_counts_as_never_retrieved(self):
+        self.assertEqual(retrieval_count_term(None, 4), 0.0)
+
+    def test_the_term_stays_between_zero_and_one(self):
+        # n_max calcolato su un altro insieme non deve portarlo fuori scala.
+        self.assertEqual(retrieval_count_term(9, 4), 1.0)
+        self.assertEqual(retrieval_count_term(-1, 4), 0.0)
+
+    def test_an_unreadable_count_has_no_value(self):
+        self.assertIsNone(retrieval_count_term("tre", 4))
+        self.assertIsNone(retrieval_count_term(2, "molti"))
+
+    def test_it_does_not_enter_the_score_yet(self):
+        base = {"updated_at": (NOW - timedelta(days=3)).isoformat()}
+
+        self.assertEqual(eviction_score({**base, "n_retrieve": 0}, EVICTION_CONFIG, NOW),
+                         eviction_score({**base, "n_retrieve": 50}, EVICTION_CONFIG, NOW))
 
 
 class PruneCountTest(unittest.TestCase):
@@ -421,6 +488,44 @@ class PruneArchiveTest(EvictionTestCase):
         self.assertEqual(self.prune(limit=0, config=config), [])
         self.assertEqual(self.store.deletes, [])
         self.assertEqual(self.log, [])
+
+    def old_but_reinforced_and_untouched(self):
+        """Creata 60 giorni fa ma rinforzata ieri, e creata e toccata 10 giorni fa."""
+        return (self.archive("ha un cane di nome Argo", created_days_old=60, days_old=1),
+                self.archive("ha un gatto di nome Milo", created_days_old=10, days_old=10))
+
+    def test_on_updated_at_the_longest_untouched_leaves(self):
+        _, untouched = self.old_but_reinforced_and_untouched()
+
+        self.assertEqual(self.prune(limit=1), [untouched])
+
+    def test_on_created_at_the_oldest_leaves_even_if_reinforced(self):
+        old_but_reinforced, _ = self.old_but_reinforced_and_untouched()
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field="created_at")
+
+        self.assertEqual(self.prune(limit=1, config=config), [old_but_reinforced])
+
+    def test_on_retrieved_at_the_longest_unretrieved_leaves(self):
+        # Su updated_at e created_at uscirebbe la prima.
+        self.archive("ha un cane di nome Argo", created_days_old=60, days_old=1,
+                     retrieved_days_old=2)
+        unretrieved = self.archive("ha un gatto di nome Milo", created_days_old=10, days_old=0,
+                                   retrieved_days_old=30)
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field="retrieved_at")
+
+        self.assertEqual(self.prune(limit=1, config=config), [unretrieved])
+
+    def test_an_unknown_time_decay_field_prunes_nothing_and_says_so(self):
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field="updatedat")
+        for days in range(3):
+            self.archive(f"fatto {days}", days_old=days * 30)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(self.prune(limit=0, config=config), [])
+
+        self.assertIn("unknown time decay field", output.getvalue())
+        self.assertEqual(self.store.deletes, [])
 
 
 class WiredIntoTheAgentTest(EvictionTestCase):

@@ -22,6 +22,7 @@ import os
 import sys
 import time
 import unittest
+from datetime import datetime, timedelta
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
@@ -36,12 +37,14 @@ from memory_service.consolidation import (  # noqa: E402
     NO_ARCHIVAL_RESULTS,
     CoreMemoryItem,
     archive_items,
+    build_candidate_memories,
     get_active_items,
     reinforce_archived_item,
     retrieve_active_archival_memories,
     search_archive,
     serialize_retrieved_for_response,
     supersede_archived_item,
+    supersede_item,
 )
 from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
 
@@ -466,6 +469,137 @@ class ArchiveSearchTest(unittest.TestCase):
 
         self.assertEqual(len(results), 2)
         self.assertTrue(all(doc_id.startswith("live_") for doc_id, _, _ in results))
+
+
+class StuckMetadataStore(FakeVectorStore):
+    """Lo store che cerca, ma non riesce a riscrivere i metadata."""
+
+    def __init__(self):
+        super().__init__()
+
+        def refuse(*args, **kwargs):
+            raise RuntimeError("metadata bloccati")
+
+        self._collection.update = refuse
+
+
+class RetrievalCountTest(unittest.TestCase):
+    """n_retrieve e retrieved_at: si muovono solo con un recupero dall'archivio."""
+
+    def setUp(self):
+        self.store = FakeVectorStore()
+        backends.reset()
+        backends.configure(llm=ScriptedChatModel(tool_responses={}),
+                           vector_store=self.store, config=LIFECYCLE_CONFIG)
+
+    def tearDown(self):
+        backends.reset()
+
+    def archive(self, *contents):
+        # Nate ieri: un recupero adesso deve risultare piu' recente anche con un
+        # orologio a bassa risoluzione.
+        yesterday = datetime.now() - timedelta(days=1)
+        items = [CoreMemoryItem(content=content, created_at=yesterday, updated_at=yesterday)
+                 for content in contents]
+        archive_items(items)
+        return [item.id for item in items]
+
+    def counters(self, item_id):
+        metadata = self.store.metadatas[item_id]
+        return metadata.get("n_retrieve"), metadata.get("retrieved_at")
+
+    def test_a_new_item_starts_never_retrieved(self):
+        # Una data lontana: con "adesso" il confronto passerebbe anche per caso.
+        created = datetime(2026, 1, 1, 9, 30)
+        item = CoreMemoryItem(content="ha un gatto", created_at=created)
+
+        self.assertEqual(item.n_retrieve, 0)
+        self.assertEqual((item.updated_at, item.retrieved_at), (created, created))
+
+    def test_the_three_timestamps_start_from_one_instant(self):
+        item = CoreMemoryItem(content="ha un gatto")
+
+        self.assertEqual(item.updated_at, item.created_at)
+        self.assertEqual(item.retrieved_at, item.created_at)
+
+    def test_the_counters_travel_to_the_archive(self):
+        item = CoreMemoryItem(content="ha un gatto", n_retrieve=2)
+        archive_items([item])
+
+        self.assertEqual(self.counters(item.id), (2, item.created_at.isoformat()))
+
+    def test_every_returned_memory_counts_once_per_retrieval(self):
+        cat, dog, far = self.archive("il gatto Milo", "il gatto nero", "corre la mattina")
+        created = self.store.metadatas[cat]["retrieved_at"]
+
+        retrieve_active_archival_memories("gatto", k=2)
+        retrieve_active_archival_memories("gatto", k=2)
+
+        self.assertEqual(self.store.metadatas[cat]["n_retrieve"], 2)
+        self.assertEqual(self.store.metadatas[dog]["n_retrieve"], 2)
+        self.assertGreater(self.store.metadatas[cat]["retrieved_at"], created)
+        self.assertEqual(self.counters(far), (0, self.store.metadatas[far]["created_at"]),
+                         "non restituita, non conta")
+
+    def test_a_retrieval_is_not_a_write(self):
+        # updated_at e' il tempo delle scritture, e il vettore non si ricalcola.
+        cat, = self.archive("il gatto Milo")
+        updated_at = self.store.metadatas[cat]["updated_at"]
+        writes = len(self.store.writes)
+
+        retrieve_active_archival_memories("gatto", k=1)
+
+        self.assertEqual(self.store.metadatas[cat]["updated_at"], updated_at)
+        self.assertEqual(len(self.store.writes), writes)
+
+    def test_the_consolidation_candidates_do_not_count(self):
+        cat, = self.archive("il gatto Milo")
+
+        build_candidate_memories([], "gatto")
+
+        self.assertEqual(self.store.metadatas[cat]["n_retrieve"], 0)
+
+    def test_an_archive_written_before_the_counters_starts_from_zero(self):
+        self.store.add_texts(texts=["il gatto Milo"], ids=["old"],
+                             metadatas=[{"status": "active"}])
+
+        retrieve_active_archival_memories("gatto", k=1)
+
+        self.assertEqual(self.store.metadatas["old"]["n_retrieve"], 1)
+
+    def test_a_reinforcement_leaves_the_counters_alone(self):
+        cat, = self.archive("il gatto Milo")
+        retrieve_active_archival_memories("gatto", k=1)
+        before = self.counters(cat)
+
+        reinforce_archived_item(cat, [])
+
+        self.assertEqual(self.counters(cat), before)
+
+    def test_an_update_of_a_core_memory_inherits_n_retrieve(self):
+        old = CoreMemoryItem(content="obiettivo 2000 calorie", n_retrieve=3)
+
+        new = supersede_item(old, "obiettivo 2200 calorie", [])
+
+        self.assertEqual(new.n_retrieve, 3)
+        self.assertEqual(new.retrieved_at, new.created_at)
+
+    def test_an_update_of_an_archived_memory_inherits_n_retrieve(self):
+        cat, = self.archive("il gatto Milo ha due anni")
+        retrieve_active_archival_memories("gatto", k=1)
+        retrieve_active_archival_memories("gatto", k=1)
+
+        new = supersede_archived_item(cat, "il gatto Milo ha tre anni", [])
+
+        self.assertEqual(new.n_retrieve, 2)
+        self.assertEqual(new.retrieved_at, new.created_at)
+
+    def test_a_failed_count_does_not_cost_the_answer(self):
+        self.store = StuckMetadataStore()
+        backends.configure(vector_store=self.store)
+        self.archive("il gatto Milo")
+
+        self.assertIn("il gatto Milo", retrieve_active_archival_memories("gatto", k=1))
 
 
 if __name__ == "__main__":
