@@ -51,14 +51,15 @@ per tutta la vita del nodo e viaggia nella risposta del servizio.
 
 Quando gira
 -----------
-Solo se MemoryConfig.eviction e' acceso: e' spento di default e si cambia solo
-nel codice, nessuna variabile d'ambiente lo legge.
+Solo se MemoryConfig.eviction e' acceso: si cambia solo nel codice, nessuna
+variabile d'ambiente lo legge.
 
-Una volta per insert, in fondo a MemoryAgent.run_memory_agent, prima del return:
-dopo il consolidamento, che e' dove nascono superseded e deleted. Cosi' i
-tombstone di un turno spariscono nello stesso turno, e non c'e' concorrenza con
-la chiamata successiva sulla stessa collezione. Il ramo retrieve non la esegue:
-non produce tombstone e non aggiunge memorie.
+Una volta per insert, nel nodo evict_archive del grafo, in cui confluiscono tutte
+le uscite del ramo insert: dopo il consolidamento, che e' dove nascono superseded
+e deleted. Cosi' i tombstone di un turno spariscono nello stesso turno, e non c'e'
+concorrenza con la chiamata successiva sulla stessa collezione. Il ramo retrieve
+non la esegue: non produce tombstone e non aggiunge memorie. Il nodo legge gli
+switch dal runtime context, la MemoryConfig che run_memory_agent passa a invoke.
 
 Le voci evict e prune cadono dopo l'offset fissato all'inizio del run, quindi
 last_operations() le pubblica nella stessa risposta di update_memory.
@@ -116,7 +117,7 @@ def evict_archived_tombstones(log: List[OperationLogEntry]) -> List[str]:
 
     Restituisce gli id rimossi, e per ciascuno aggiunge al log una voce `evict`.
 
-    Non solleva mai: gira in coda a run_memory_agent, dentro la callback di
+    Non solleva mai: gira nell'ultimo nodo del ramo insert, dentro la callback di
     update_memory, e un'eccezione finirebbe nel suo except, che svuota la
     risposta anche quando il consolidamento e' andato a buon fine. Se lo store
     non risponde, stampa e non rimuove niente.

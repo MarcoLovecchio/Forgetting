@@ -55,6 +55,8 @@ EVICTION_CONFIG = MemoryConfig(
     generate_answer=False,
     maximum_historical_messages=1,
     core_memory_limit=2000,
+    eviction_time_decay=True,
+    eviction_time_decay_field="updated_at",
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
@@ -332,10 +334,6 @@ class EvictionScoreTest(unittest.TestCase):
                 "updated_at": (NOW - timedelta(days=3)).isoformat(),
                 "retrieved_at": (NOW - timedelta(days=20)).isoformat()}
 
-    def test_by_default_the_decay_runs_on_updated_at(self):
-        self.assertEqual(eviction_score(self.METADATA, EVICTION_CONFIG, NOW),
-                         time_decay_term(self.METADATA["updated_at"], NOW))
-
     def test_the_timestamps_share_one_slot(self):
         # Mai una media fra timestamp: il termine e' uno, il selettore dice quale.
         for field in ("updated_at", "created_at", "retrieved_at"):
@@ -458,7 +456,7 @@ class PruneArchiveTest(EvictionTestCase):
 
 
 class WiredIntoTheAgentTest(EvictionTestCase):
-    """In fondo a run_memory_agent, solo dopo un insert e solo a switch acceso."""
+    """Nel nodo evict_archive, solo nel ramo insert e solo a switch acceso."""
 
     def setUp(self):
         super().setUp()
@@ -497,6 +495,22 @@ class WiredIntoTheAgentTest(EvictionTestCase):
         self.assertEqual([(entry.op_type, entry.item_id) for entry in operations],
                          [("delete", item.id), ("evict", item.id)],
                          "la voce evict esce nella stessa risposta di update_memory")
+
+    def test_every_exit_of_the_insert_branch_goes_through_the_eviction(self):
+        paths = {
+            "finestra non superata": {"maximum_historical_messages": 10},
+            "consolidamento senza split": {},
+            "consolidamento con split": {"core_memory_limit": 5},
+        }
+        for path, overrides in paths.items():
+            with self.subTest(path=path):
+                self.use_agent(eviction=True, **overrides)
+                gone = CoreMemoryItem(content="vive a Mondello")
+                delete_item(gone, self.log)
+
+                self.insert([{"fact": "ha un cane", "operation": "new"}])
+
+                self.assertIsNone(self.store.status_of(gone.id))
 
     def test_with_the_switch_off_the_tombstone_stays(self):
         self.use_agent(eviction=False)

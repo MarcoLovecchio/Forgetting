@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END, START
+from langgraph.runtime import Runtime
 from langchain_core.messages import HumanMessage, AIMessage
 from typing import Dict, Any, Literal, Optional, TypedDict
 
@@ -477,9 +478,19 @@ Return one decision for every memory listed above.""")])
     return {"tool_calls": state["tool_calls"] + [response]}
 
 
-# Build the graph
-graph = StateGraph(AgentState)
+def eviction_node(state: AgentState, runtime: Runtime[MemoryConfig]):
+    """Fine del ramo insert: via i tombstone, poi il prune se l'archivio e' oltre il limite."""
+    config = runtime.context
+    if not config.eviction:
+        return {}
+    log = list(state["operation_log"])
+    evict_archived_tombstones(log)
+    prune_archive(log, state["archive_memory_limit"], config)
+    return {"operation_log": log}
 
+
+# Build the graph
+graph = StateGraph(AgentState, context_schema=MemoryConfig)
 
 graph.add_node("retrieve", retrieval_node)
 graph.add_node("execute_tool", tool_node)
@@ -494,16 +505,17 @@ graph.add_node("insert_memories", empty_node)
 graph.add_node("summarize_memories", summarize_memories_node)
 graph.add_node("summarize_core_memories", summarize_core_memories_node)
 graph.add_node("execute_insertion_tool", tool_node)
-# Dedicated node for the core/archival split
 graph.add_node("execute_core_split_tool", tool_node)
+graph.add_node("evict_archive", eviction_node)
 graph.add_edge("summarize_memories",  "execute_insertion_tool")
 graph.add_edge("summarize_core_memories",  "execute_core_split_tool")
-graph.add_edge("execute_core_split_tool", END)
+graph.add_edge("execute_core_split_tool", "evict_archive")
+graph.add_edge("evict_archive", END)
 
 graph.add_conditional_edges(START, interaction_type_node, {'insert': "insert_memories", 'retrieve': "retrieve"})
 
-graph.add_conditional_edges('insert_memories', exceed_memory_limit, {True: "summarize_memories", False: END})
-graph.add_conditional_edges('execute_insertion_tool', exceed_core_memory_limit, {True: "summarize_core_memories", False: END})
+graph.add_conditional_edges('insert_memories', exceed_memory_limit, {True: "summarize_memories", False: "evict_archive"})
+graph.add_conditional_edges('execute_insertion_tool', exceed_core_memory_limit, {True: "summarize_core_memories", False: "evict_archive"})
 
 # Compile the graph
 memory_agent = graph.compile()
@@ -588,14 +600,8 @@ class MemoryAgent():
 
         print(f"\t[{interaction_mode}] running with {len(self.state['messages'])} messages, "
               f"{len(get_active_items(self.state['core_memory']))} active core memories")
-        self.state = memory_agent.invoke(self.state)
+        self.state = memory_agent.invoke(self.state, context=self.config)
         self.state["tool_calls"] = []
-
-        if interaction_mode == "insert" and self.config.eviction:
-            evict_archived_tombstones(self.state["operation_log"])
-            prune_archive(self.state["operation_log"], self.state["archive_memory_limit"],
-                          self.config)
-
         return self.state
 
     def append_message(self, message: str, sender: Literal["user", "assistant"]):

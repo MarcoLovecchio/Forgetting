@@ -47,11 +47,12 @@ from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
 
 
 # generate_answer e' acceso qui perche' molte classi esercitano il ramo
-# retrieve fino alla risposta. Il valore di default - spento - e' coperto
-# da AnswerGenerationSwitchTest, che li verifica entrambi.
+# retrieve fino alla risposta.
 TEST_CONFIG = MemoryConfig(
     node_name="memory_agent",
     generate_answer=True,
+    retrieval_mode="decide",
+    eviction=False,
     maximum_historical_messages=5,
     core_memory_limit=150,
     chroma_path="/tmp/not-used",
@@ -414,7 +415,7 @@ class AnswerGenerationSwitchTest(MemoryServiceTestCase):
         state = agent.run_memory_agent("retrieve")
         return state, len(self.llm.invocations) - before
 
-    def test_by_default_the_answer_is_appended(self):
+    def test_switched_on_the_answer_is_appended(self):
         state, calls = self.run_retrieve(generate_answer=True)
 
         self.assertEqual(len(state["messages"]), 2, "domanda piu' risposta")

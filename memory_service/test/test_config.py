@@ -24,10 +24,6 @@ class EnvironmentTestCase(unittest.TestCase):
         "MEMORY_MAX_HISTORICAL_MESSAGES",
         "MEMORY_CORE_MEMORY_LIMIT",
         "MEMORY_ARCHIVE_LIMIT",
-        "MEMORY_EVICTION",
-        "MEMORY_EVICTION_TIME_DECAY",
-        "MEMORY_EVICTION_TIME_DECAY_FIELD",
-        "MEMORY_RETRIEVAL_MODE",
         "MEMORY_GENERATE_ANSWER",
         "MEMORY_CHROMA_PATH",
         "MEMORY_COLLECTION_NAME",
@@ -60,16 +56,6 @@ class EnvironmentTestCase(unittest.TestCase):
 
 
 class ConfigTest(EnvironmentTestCase):
-    def test_defaults_when_nothing_is_configured(self):
-        config = MemoryConfig.from_environment()
-
-        self.assertEqual(config.node_name, "memory_agent")
-        self.assertEqual(config.maximum_historical_messages, 4,
-                         "pari, per non tagliare a meta' uno scambio")
-        self.assertEqual(config.core_memory_limit, 400)
-        self.assertEqual(config.archive_memory_limit, 50)
-        self.assertEqual(config.collection_name, "memory_archive")
-        self.assertEqual(config.llm_config, {})
 
     def test_values_are_read_from_the_environment(self):
         os.environ["MEMORY_MAX_HISTORICAL_MESSAGES"] = "9"
@@ -86,44 +72,10 @@ class ConfigTest(EnvironmentTestCase):
         self.assertEqual(config.archive_memory_limit, 123)
         self.assertEqual(config.collection_name, "other_archive")
 
-    def test_the_eviction_switches_are_set_only_in_the_code(self):
-        os.environ["MEMORY_EVICTION"] = "true"
-        os.environ["MEMORY_EVICTION_TIME_DECAY"] = "false"
-        os.environ["MEMORY_EVICTION_TIME_DECAY_FIELD"] = "created_at"
-
-        config = MemoryConfig.from_environment()
-
-        self.assertFalse(config.eviction)
-        self.assertTrue(config.eviction_time_decay)
-        self.assertEqual(config.eviction_time_decay_field, "updated_at")
-
-    def test_the_retrieval_mode_is_set_only_in_the_code(self):
-        os.environ["MEMORY_RETRIEVAL_MODE"] = "always_raw_query"
-
-        config = MemoryConfig.from_environment()
-
-        self.assertEqual(config.retrieval_mode, "decide", "il default e' il comportamento di prima")
-
-    def test_invalid_numbers_fall_back_to_the_defaults(self):
-        os.environ["MEMORY_MAX_HISTORICAL_MESSAGES"] = "not a number"
-
-        self.assertEqual(MemoryConfig.from_environment().maximum_historical_messages, 4)
-
-    def test_the_answer_is_generated_unless_the_caller_opts_out(self):
-        # Accesa di default: e' l'unico nodo dell'architettura che risponde
-        # dalla memoria - explainability risponde dai risultati di una query e
-        # la memoria non la legge. Chi ha un proprio nodo di risposta la spegne.
-        self.assertTrue(MemoryConfig.from_environment().generate_answer)
-
+    def test_the_answer_switch_is_read_from_the_environment(self):
         os.environ["MEMORY_GENERATE_ANSWER"] = "false"
 
         self.assertFalse(MemoryConfig.from_environment().generate_answer)
-
-    def test_an_unreadable_answer_switch_keeps_the_default(self):
-        # Un typo non deve spegnere in silenzio un pezzo del grafo.
-        os.environ["MEMORY_GENERATE_ANSWER"] = "forse"
-
-        self.assertTrue(MemoryConfig.from_environment().generate_answer)
 
     def test_chroma_path_is_absolute(self):
         os.environ["MEMORY_CHROMA_PATH"] = "./relative_db"

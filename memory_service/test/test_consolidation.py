@@ -59,6 +59,7 @@ LIFECYCLE_CONFIG = MemoryConfig(
     maximum_historical_messages=1,
     core_memory_limit=2000,
     eviction=False,  # questi test guardano i tombstone in archivio
+    retrieval_mode="decide",
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
