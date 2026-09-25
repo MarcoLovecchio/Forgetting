@@ -127,7 +127,6 @@ def _assert_state_is_consistent(state):
     assert len({item.id for item in core_memory}) == len(core_memory), "id duplicati in core"
     for item in core_memory:
         assert item.content.strip(), "un item senza contenuto non ha senso"
-        assert item.updated_at >= item.created_at
 
 
 def _contents(state):

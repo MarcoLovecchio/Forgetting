@@ -454,7 +454,11 @@ def _print_operation_log(log):
         return
 
     for number, entry in enumerate(log, 1):
-        score = f" | score {entry.score:.3f}" if entry.score is not None else ""
+        score = ""
+        if entry.score is not None:
+            terms = ", ".join(f"{name} {value:.3f}"
+                              for name, value in (entry.score_terms or {}).items())
+            score = f" | score {entry.score:.3f}" + (f" ({terms})" if terms else "")
         safe_print(f"  {number:>3}  {entry.op_type:<10} | item {_short(entry.item_id)}"
                    f" | related {_short(entry.related_item_id)}"
                    f" | {_clock(entry.timestamp)}{score} | {entry.content}")
@@ -472,8 +476,8 @@ def _print_core_memory(state):
 
     for item in active:
         safe_print(f"  - [{_short(item.id)}] {item.content}")
-        safe_print(f"      created {_clock(item.created_at)}"
-                   f" | updated {_clock(item.updated_at)}")
+        safe_print(f"      updated {_clock(item.updated_at)}"
+                   f" | retrieved {_clock(item.retrieved_at)} ({item.n_retrieve})")
 
 
 def _print_archive(vector_store):
@@ -498,8 +502,9 @@ def _print_archive(vector_store):
         status = metadata["status"]
         counters[status] = counters.get(status, 0) + 1
         safe_print(f"  - [{_short(doc_id)}] ({status}) {content}")
-        safe_print(f"      created {_clock_iso(metadata.get('created_at'))}"
-                   f" | updated {_clock_iso(metadata.get('updated_at'))}")
+        safe_print(f"      updated {_clock_iso(metadata.get('updated_at'))}"
+                   f" | retrieved {_clock_iso(metadata.get('retrieved_at'))}"
+                   f" ({metadata.get('n_retrieve')})")
 
     summary = ", ".join(f"{name} {count}" for name, count in sorted(counters.items()))
     safe_print(f"\n  Riepilogo status: {summary}")
@@ -765,7 +770,6 @@ def _assert_state_is_consistent(state):
     assert len({item.id for item in core_memory}) == len(core_memory), "id duplicati in core"
     for item in core_memory:
         assert item.content.strip(), "un item senza contenuto non ha senso"
-        assert item.updated_at >= item.created_at
 
 
 def _assert_everything_that_left_core_is_archived_or_evicted(state, vector_store):

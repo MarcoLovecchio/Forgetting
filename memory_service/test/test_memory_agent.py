@@ -218,8 +218,8 @@ class CoreMemoryOverflowTest(MemoryServiceTestCase):
 
         metadata = self.vector_store.metadatas[item.id]
         self.assertEqual(metadata["status"], "active")
-        self.assertEqual(metadata["created_at"], item.created_at.isoformat())
         self.assertEqual(metadata["updated_at"], item.updated_at.isoformat())
+        self.assertEqual(metadata["retrieved_at"], item.retrieved_at.isoformat())
 
 
 class SplitPromptTest(MemoryServiceTestCase):
@@ -850,7 +850,7 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
 
 
 class RetrievalModeTest(MemoryServiceTestCase):
-    """Fuori da decide la ricerca in archivio avviene sempre: cambia chi scrive la query."""
+    """Con always_llm_query la ricerca in archivio avviene sempre: il modello scrive solo la query."""
 
     tool_responses = {"retrieve_memory": {"query": "black tea", "k": 2}}
     default_content = "Bevi te nero il pomeriggio."
@@ -860,7 +860,6 @@ class RetrievalModeTest(MemoryServiceTestCase):
         backends.configure(config=config)
         MemoryAgent.reset_instance()
         agent = MemoryAgent(config=config)
-        agent.state["messages"] = [HumanMessage(content="ciao"), AIMessage(content="ciao!")]
         self.archive({"memory_a": "User likes black tea in the afternoon"})
         return agent.run_memory_agent("retrieve", query="cosa bevo il pomeriggio?")
 
@@ -874,15 +873,6 @@ class RetrievalModeTest(MemoryServiceTestCase):
                          "la query la scrive il modello")
         self.assertEqual(self.vector_store.searches[0]["k"], 2)
         self.assertIn("black tea", state["retrieved_memory"])
-
-    def test_with_the_raw_query_the_model_is_not_asked(self):
-        state = self.run_retrieve("always_raw_query")
-
-        self.assertEqual(self.llm.bound_tool_names(), [], "solo la risposta, nessuna decisione")
-        self.assertEqual(self.vector_store.searches, [
-            {"query": "cosa bevo il pomeriggio?", "k": 5, "filter": {"status": "active"}}])
-        self.assertIn("black tea", state["retrieved_memory"])
-        self.assertEqual(self.vector_store.metadatas["memory_a"]["n_retrieve"], 1)
 
 
 class AppendMessageTest(MemoryServiceTestCase):

@@ -36,7 +36,7 @@ class AgentState(TypedDict):
     maximum_historical_messages: int
     core_memory_limit: int
     archive_memory_limit: int
-    retrieval_mode: Literal["decide", "always_llm_query", "always_raw_query"]
+    retrieval_mode: Literal["decide", "always_llm_query"]
     generate_answer: bool
 
 
@@ -219,12 +219,6 @@ Call retrieve_memory to search the archive for what this asks for."""),
 def retrieval_node(state: AgentState):
     print("\tRetrieval node activated")
     user_query, history = query_and_history(state)
-
-    if state["retrieval_mode"] == "always_raw_query":
-        # No model call: the question is the query, and k is retrieve_memory's default.
-        search = {"name": "retrieve_memory", "args": {"query": user_query},
-                  "id": "raw_query", "type": "tool_call"}
-        return {"tool_calls": state["tool_calls"] + [AIMessage(content="", tool_calls=[search])]}
 
     if state["retrieval_mode"] == "always_llm_query":
         prompt, tools = SEARCH_ONLY_PROMPT, [retrieve_memory]

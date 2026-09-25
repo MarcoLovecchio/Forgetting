@@ -62,7 +62,6 @@ class CoreMemoryItem(BaseModel):
     id: str = Field(default_factory=new_item_id)
     content: str
     status: MemoryStatus = "active"
-    created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
     n_retrieve: int = 0
@@ -71,11 +70,10 @@ class CoreMemoryItem(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _one_creation_instant(cls, data: Any) -> Any:
-        """created_at, updated_at and retrieved_at start from the same instant."""
+        """updated_at and retrieved_at start from the same instant."""
         if isinstance(data, dict):
             data = dict(data)
-            created = data.setdefault("created_at", datetime.now())
-            data.setdefault("updated_at", created)
+            created = data.setdefault("updated_at", datetime.now())
             data.setdefault("retrieved_at", created)
         return data
 
@@ -88,6 +86,7 @@ class OperationLogEntry(BaseModel):
     related_item_id: Optional[str] = None
     content: Optional[str] = None
     score: Optional[float] = None
+    score_terms: Optional[Dict[str, float]] = None
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
@@ -231,7 +230,6 @@ def archive_metadata(item: CoreMemoryItem) -> dict:
     """
     return {
         "status": item.status,
-        "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
         "n_retrieve": item.n_retrieve,
         "retrieved_at": item.retrieved_at.isoformat(),

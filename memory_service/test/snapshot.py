@@ -68,7 +68,7 @@ def _print_core_memory(state: dict) -> None:
         safe_print("  (core memory vuota)")
     for item in active:
         safe_print(f"  - [{item.id}] (status: {item.status}) {item.content}")
-        safe_print(f"      created_at: {item.created_at} | updated_at: {item.updated_at}")
+        safe_print(f"      updated_at: {item.updated_at} | retrieved_at: {item.retrieved_at}")
 
 
 def _print_messages(state: dict) -> None:

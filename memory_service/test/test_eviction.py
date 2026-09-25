@@ -12,6 +12,7 @@ Esecuzione: python memory_service/run_tests.py -v
 import contextlib
 import dataclasses
 import io
+import json
 import math
 import os
 import sys
@@ -38,8 +39,10 @@ from memory_service.consolidation import (  # noqa: E402
 from memory_service.eviction import (  # noqa: E402
     EVICTED_STATUSES,
     archive_over_limit,
+    combine_terms,
     evict_archived_tombstones,
     eviction_score,
+    eviction_terms,
     prune_archive,
     prune_count,
     retrieval_count_term,
@@ -79,14 +82,11 @@ class EvictionTestCase(unittest.TestCase):
     def tearDown(self):
         backends.reset()
 
-    def archive(self, content, status="active", days_old=None, now=NOW, created_days_old=None,
-                retrieved_days_old=None):
+    def archive(self, content, status="active", days_old=None, now=NOW, retrieved_days_old=None):
         """Un item in archivio, come lo lascia il core split."""
         item = CoreMemoryItem(content=content, status=status)
         if days_old is not None:
             item.updated_at = now - timedelta(days=days_old)
-        if created_days_old is not None:
-            item.created_at = now - timedelta(days=created_days_old)
         if retrieved_days_old is not None:
             item.retrieved_at = now - timedelta(days=retrieved_days_old)
         archive_items([item])
@@ -330,13 +330,12 @@ class TimeDecayTermTest(unittest.TestCase):
 class EvictionScoreTest(unittest.TestCase):
     """La combinazione dei termini accesi."""
 
-    METADATA = {"created_at": (NOW - timedelta(days=60)).isoformat(),
-                "updated_at": (NOW - timedelta(days=3)).isoformat(),
+    METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(),
                 "retrieved_at": (NOW - timedelta(days=20)).isoformat()}
 
     def test_the_timestamps_share_one_slot(self):
         # Mai una media fra timestamp: il termine e' uno, il selettore dice quale.
-        for field in ("updated_at", "created_at", "retrieved_at"):
+        for field in ("updated_at", "retrieved_at"):
             with self.subTest(field=field):
                 config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field=field)
                 self.assertEqual(eviction_score(self.METADATA, config, NOW),
@@ -345,7 +344,16 @@ class EvictionScoreTest(unittest.TestCase):
     def test_with_every_term_off_there_is_no_score(self):
         config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
 
+        self.assertEqual(eviction_terms({"updated_at": NOW.isoformat()}, config, NOW), {})
         self.assertIsNone(eviction_score({"updated_at": NOW.isoformat()}, config, NOW))
+
+    def test_each_enabled_term_comes_with_its_name(self):
+        self.assertEqual(eviction_terms(self.METADATA, EVICTION_CONFIG, NOW),
+                         {"time_decay": time_decay_term(self.METADATA["updated_at"], NOW)})
+
+    def test_the_score_is_the_mean_of_the_terms(self):
+        self.assertAlmostEqual(combine_terms({"a": 0.2, "b": 0.6}), 0.4)
+        self.assertIsNone(combine_terms({}))
 
 
 class RetrievalCountTermTest(unittest.TestCase):
@@ -418,6 +426,19 @@ class PruneArchiveTest(EvictionTestCase):
         self.assertEqual((entry.op_type, entry.item_id, entry.content),
                          ("prune", old, "ha un cane di nome Argo"))
         self.assertAlmostEqual(entry.score, 0.1262, places=4)
+        self.assertEqual(list(entry.score_terms), ["time_decay"])
+        self.assertAlmostEqual(entry.score_terms["time_decay"], 0.1262, places=4)
+
+    def test_the_sub_scores_survive_the_trip_to_the_ros_response(self):
+        from memory_service.consolidation import serialize_operation_log_for_response
+
+        self.archive("ha un cane di nome Argo", days_old=30)
+        self.archive("ha un gatto di nome Milo", days_old=0)
+
+        self.prune(limit=1)
+
+        published = json.loads(serialize_operation_log_for_response(self.log)[0])
+        self.assertEqual(published["score_terms"], self.log[0].score_terms)
 
     def test_with_every_term_off_nothing_leaves(self):
         config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
@@ -428,28 +449,18 @@ class PruneArchiveTest(EvictionTestCase):
         self.assertEqual(self.store.deletes, [])
         self.assertEqual(self.log, [])
 
-    def old_but_reinforced_and_untouched(self):
-        """Creata 60 giorni fa ma rinforzata ieri, e creata e toccata 10 giorni fa."""
-        return (self.archive("ha un cane di nome Argo", created_days_old=60, days_old=1),
-                self.archive("ha un gatto di nome Milo", created_days_old=10, days_old=10))
+    def reinforced_and_retrieved(self):
+        """Rinforzata ieri ma mai piu' recuperata, e ferma da 10 giorni ma recuperata ieri."""
+        return (self.archive("ha un cane di nome Argo", days_old=1, retrieved_days_old=30),
+                self.archive("ha un gatto di nome Milo", days_old=10, retrieved_days_old=1))
 
     def test_on_updated_at_the_longest_untouched_leaves(self):
-        _, untouched = self.old_but_reinforced_and_untouched()
+        _, untouched = self.reinforced_and_retrieved()
 
         self.assertEqual(self.prune(limit=1), [untouched])
 
-    def test_on_created_at_the_oldest_leaves_even_if_reinforced(self):
-        old_but_reinforced, _ = self.old_but_reinforced_and_untouched()
-        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field="created_at")
-
-        self.assertEqual(self.prune(limit=1, config=config), [old_but_reinforced])
-
     def test_on_retrieved_at_the_longest_unretrieved_leaves(self):
-        # Su updated_at e created_at uscirebbe la prima.
-        self.archive("ha un cane di nome Argo", created_days_old=60, days_old=1,
-                     retrieved_days_old=2)
-        unretrieved = self.archive("ha un gatto di nome Milo", created_days_old=10, days_old=0,
-                                   retrieved_days_old=30)
+        unretrieved, _ = self.reinforced_and_retrieved()
         config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field="retrieved_at")
 
         self.assertEqual(self.prune(limit=1, config=config), [unretrieved])

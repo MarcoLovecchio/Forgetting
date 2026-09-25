@@ -113,8 +113,8 @@ class MemoryConfig:
     # Code only: from_environment does not read these, on purpose.
     eviction: bool = True
     eviction_time_decay: bool = True
-    eviction_time_decay_field: Literal["updated_at", "created_at", "retrieved_at"] = "updated_at"
-    retrieval_mode: Literal["decide", "always_llm_query", "always_raw_query"] = "decide"
+    eviction_time_decay_field: Literal["updated_at", "retrieved_at"] = "updated_at"
+    retrieval_mode: Literal["decide", "always_llm_query"] = "decide"
     generate_answer: bool = True
 
     # Archival memory (ChromaDB)

@@ -438,8 +438,7 @@ class RetrievalCountTest(unittest.TestCase):
         # Nate ieri: un recupero adesso deve risultare piu' recente anche con un
         # orologio a bassa risoluzione.
         yesterday = datetime.now() - timedelta(days=1)
-        items = [CoreMemoryItem(content=content, created_at=yesterday, updated_at=yesterday)
-                 for content in contents]
+        items = [CoreMemoryItem(content=content, updated_at=yesterday) for content in contents]
         archive_items(items)
         return [item.id for item in items]
 
@@ -450,22 +449,21 @@ class RetrievalCountTest(unittest.TestCase):
     def test_a_new_item_starts_never_retrieved(self):
         # Una data lontana: con "adesso" il confronto passerebbe anche per caso.
         created = datetime(2026, 1, 1, 9, 30)
-        item = CoreMemoryItem(content="ha un gatto", created_at=created)
+        item = CoreMemoryItem(content="ha un gatto", updated_at=created)
 
         self.assertEqual(item.n_retrieve, 0)
-        self.assertEqual((item.updated_at, item.retrieved_at), (created, created))
+        self.assertEqual(item.retrieved_at, created)
 
-    def test_the_three_timestamps_start_from_one_instant(self):
+    def test_the_two_timestamps_start_from_one_instant(self):
         item = CoreMemoryItem(content="ha un gatto")
 
-        self.assertEqual(item.updated_at, item.created_at)
-        self.assertEqual(item.retrieved_at, item.created_at)
+        self.assertEqual(item.retrieved_at, item.updated_at)
 
     def test_the_counters_travel_to_the_archive(self):
         item = CoreMemoryItem(content="ha un gatto", n_retrieve=2)
         archive_items([item])
 
-        self.assertEqual(self.counters(item.id), (2, item.created_at.isoformat()))
+        self.assertEqual(self.counters(item.id), (2, item.retrieved_at.isoformat()))
 
     def test_every_returned_memory_counts_once_per_retrieval(self):
         cat, dog, far = self.archive("il gatto Milo", "il gatto nero", "corre la mattina")
@@ -477,7 +475,7 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertEqual(self.store.metadatas[cat]["n_retrieve"], 2)
         self.assertEqual(self.store.metadatas[dog]["n_retrieve"], 2)
         self.assertGreater(self.store.metadatas[cat]["retrieved_at"], created)
-        self.assertEqual(self.counters(far), (0, self.store.metadatas[far]["created_at"]),
+        self.assertEqual(self.counters(far), (0, self.store.metadatas[far]["updated_at"]),
                          "non restituita, non conta")
 
     def test_a_retrieval_is_not_a_write(self):
@@ -506,7 +504,7 @@ class RetrievalCountTest(unittest.TestCase):
         new = supersede_item(old, "obiettivo 2200 calorie", [])
 
         self.assertEqual(new.n_retrieve, 3)
-        self.assertEqual(new.retrieved_at, new.created_at)
+        self.assertEqual(new.retrieved_at, new.updated_at)
 
     def test_an_update_of_an_archived_memory_inherits_n_retrieve(self):
         cat, = self.archive("il gatto Milo ha due anni")
@@ -516,7 +514,7 @@ class RetrievalCountTest(unittest.TestCase):
         new = supersede_archived_item(cat, "il gatto Milo ha tre anni", [])
 
         self.assertEqual(new.n_retrieve, 2)
-        self.assertEqual(new.retrieved_at, new.created_at)
+        self.assertEqual(new.retrieved_at, new.updated_at)
 
     def test_a_failed_count_does_not_cost_the_answer(self):
         self.store = StuckMetadataStore()

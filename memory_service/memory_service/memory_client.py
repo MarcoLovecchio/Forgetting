@@ -59,8 +59,13 @@ def print_operations(operation_log):
     for entry in operation_log:
         operation = json.loads(entry)
         related = operation.get('related_item_id') or '-'
+        score = ''
+        if operation.get('score') is not None:
+            terms = ', '.join(f'{name} {value:.3f}'
+                              for name, value in (operation.get('score_terms') or {}).items())
+            score = f" | score: {operation['score']:.3f}" + (f' ({terms})' if terms else '')
         print(f"  - {operation['op_type']:<10} | item: {operation['item_id']}"
-              f" | related: {related} | {operation.get('content')}")
+              f" | related: {related}{score} | {operation.get('content')}")
 
 
 def main(args=None):

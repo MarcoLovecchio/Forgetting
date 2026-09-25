@@ -42,12 +42,14 @@ Ogni entry di `operation_log` è il JSON di un `OperationLogEntry`:
 
 ```json
 {"op_type": "update", "item_id": "c8f90d30-...", "related_item_id": "7ca3ad4f-...",
- "content": "L'utente mangia pesce", "score": null, "timestamp": "2026-08-24T18:23:39.059368"}
+ "content": "L'utente mangia pesce", "score": null, "score_terms": null,
+ "timestamp": "2026-08-24T18:23:39.059368"}
 ```
 
 `op_type` è uno fra `create`, `redundant`, `update`, `delete`, `archive`, `evict`,
-`prune`. `score` è valorizzato solo nelle voci `prune`: lo score con cui la memoria
-è uscita dall'archivio.
+`prune`. `score` e `score_terms` sono valorizzati solo nelle voci `prune`: lo score
+con cui la memoria è uscita dall'archivio e i termini che lo compongono, per nome
+(oggi solo `{"time_decay": 0.126}`).
 
 Il log riporta **solo le operazioni della chiamata corrente**, non tutto lo
 storico: `state["operation_log"]` cresce per tutta la vita del nodo e `get_memory`
@@ -306,7 +308,7 @@ d'ambiente (lette da `.env` / `.config`):
 | `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `4` | messaggi mantenuti prima del riassunto. **Tenerlo pari**: con un numero dispari la coda della finestra è una risposta dell'assistente, e ogni consolidamento riceve la fine di uno scambio più l'inizio del successivo invece di una coppia (utente, assistente) intera |
 | `MEMORY_CORE_MEMORY_LIMIT` | `400` | caratteri massimi della core memory |
-| `MEMORY_ARCHIVE_LIMIT` | `50` | memorie **attive** in archivio oltre le quali interviene eviction. Non blocca l'inserimento: viene controllato alla fine di ogni `insert` e, se superato, esce il 10% delle memorie attive con lo score più basso (`eviction.prune_archive`, voce `prune` nel log). Lo score è la media dei termini accesi, oggi solo il decadimento Weibull (`eviction_time_decay`), calcolato su `updated_at`, `created_at` o `retrieved_at` secondo `eviction_time_decay_field`: se ne usa sempre uno solo. Gira solo con `MemoryConfig.eviction` acceso: gli switch si cambiano solo nel codice (`config.py`), senza variabile d'ambiente |
+| `MEMORY_ARCHIVE_LIMIT` | `50` | memorie **attive** in archivio oltre le quali interviene eviction. Non blocca l'inserimento: viene controllato alla fine di ogni `insert` e, se superato, esce il 10% delle memorie attive con lo score più basso (`eviction.prune_archive`, voce `prune` nel log). Lo score è la media dei termini accesi, oggi solo il decadimento Weibull (`eviction_time_decay`), calcolato su `updated_at` o `retrieved_at` secondo `eviction_time_decay_field`: se ne usa sempre uno solo. Gira solo con `MemoryConfig.eviction` acceso: gli switch si cambiano solo nel codice (`config.py`), senza variabile d'ambiente |
 | `MEMORY_GENERATE_ANSWER` | `false` | se il ramo `retrieve` debba anche **comporre una risposta** all'utente. **Spenta di default**: nessun campo del servizio la restituisce — l'archivio arriva al chiamante tramite `retrieved_memories` — quindi finiva solo in `last_messages` come un turno che l'utente non ha mai letto. Tenendola spenta si risparmia una chiamata per ogni `retrieve`, resta una coppia (utente, assistente) per scambio invece di tre messaggi, e la memoria smette di citare sé stessa dentro il consolidamento. `true` la riaccende |
 | `MEMORY_CHROMA_PATH` | `./chroma_db` | cartella dell'archivio (risolta in path assoluto) |
 | `MEMORY_COLLECTION_NAME` | `memory_archive` | collezione ChromaDB |
@@ -316,11 +318,9 @@ d'ambiente (lette da `.env` / `.config`):
 se la ricerca in archivio del ramo `retrieve` è una scelta del modello:
 
 - `decide` (default): il modello sceglie fra `retrieve_memory` e `NoSearchNeeded`;
-- `always_llm_query`: si cerca sempre, il modello scrive solo la query e `k`;
-- `always_raw_query`: si cerca sempre con la domanda dell'utente così com'è e
-  `k = 5`, senza chiamare il modello.
+- `always_llm_query`: si cerca sempre, il modello scrive solo la query e `k`.
 
-In tutte e tre un recupero incrementa `n_retrieve` delle memorie restituite. Il test
+In entrambe un recupero incrementa `n_retrieve` delle memorie restituite. Il test
 lungo stampa e salva la modalità della run.
 
 `.env` e `.config` vengono cercati risalendo le directory a partire dalla

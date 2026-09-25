@@ -19,13 +19,14 @@ con lo score piu' basso. Se resta superato, al turno dopo ne esce un'altra quota
 Lo score
 --------
 Ogni termine e' una funzione a parte, con valori in [0, 1], alto vuol dire da
-tenere. eviction_score fa la media dei termini accesi; ogni termine ha il suo
-switch in MemoryConfig, come eviction.
+tenere. eviction_terms calcola i termini accesi, per nome, e combine_terms ne fa
+la media; ogni termine ha il suo switch in MemoryConfig, come eviction. Un
+termine nuovo va aggiunto in eviction_terms, e da li' arriva anche nel log.
 
     time_decay_term   Weibull sul tempo da un timestamp: exp(-(t/scala)^forma),
                       forma 0.5 e scala 7 giorni. Vale 1 al momento del
                       timestamp, 1/e dopo 7 giorni. Il timestamp e'
-                      updated_at, created_at o retrieved_at, secondo
+                      updated_at o retrieved_at, secondo
                       eviction_time_decay_field: occupano lo stesso posto nella
                       media, e se ne usa sempre uno solo.
 
@@ -44,8 +45,8 @@ l'operation log resta com'e': le voci che nominano un id rimosso restano, con i
 related_item_id che da qui in poi puntano a documenti che non esistono piu'.
 
 Ogni documento rimosso aggiunge al log una voce, con il testo della memoria come
-tutte le altre: `evict` per un tombstone, `prune` con il suo score per una
-memoria attiva. Ha un costo, ed e' bene saperlo: il testo di un fatto che
+tutte le altre: `evict` per un tombstone, `prune` per una memoria attiva, con lo
+score in `score` e i termini che lo compongono in `score_terms`. Ha un costo, ed e' bene saperlo: il testo di un fatto che
 l'utente ha chiesto di dimenticare ne guadagna una copia nel log, che vive in RAM
 per tutta la vita del nodo e viaggia nella risposta del servizio.
 
@@ -83,7 +84,7 @@ oggi fa il core split. Qui eviction vuol dire uscire dall'archivio.
 
 import math
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from memory_service import backends
 from memory_service.config import MemoryConfig
@@ -191,17 +192,24 @@ def retrieval_count_term(n_retrieve: int, n_max: int) -> float:
     return n_retrieve / n_max
 
 
-def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optional[float]:
-    """Media dei termini accesi, in [0, 1]: lo score piu' basso esce per primo.
-
-    None se nessun termine e' acceso.
-    """
-    terms = []
+def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime) -> Dict[str, float]:
+    """I termini accesi, per nome: sono anche i sotto-score che il log riporta."""
+    terms = {}
     if config.eviction_time_decay:
-        terms.append(time_decay_term(metadata[config.eviction_time_decay_field], now))
+        terms["time_decay"] = time_decay_term(metadata[config.eviction_time_decay_field], now)
+    return terms
+
+
+def combine_terms(terms: Dict[str, float]) -> Optional[float]:
+    """Media dei termini, in [0, 1]: None se non ce n'e' nessuno."""
     if not terms:
         return None
-    return sum(terms) / len(terms)
+    return sum(terms.values()) / len(terms)
+
+
+def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optional[float]:
+    """Lo score di una memoria: il piu' basso esce per primo. None se nessun termine e' acceso."""
+    return combine_terms(eviction_terms(metadata, config, now))
 
 
 def prune_count(active: int, fraction: float = PRUNE_FRACTION) -> int:
@@ -241,22 +249,23 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
 
     scored = []
     for doc_id, content, metadata in zip(ids, documents, metadatas):
-        score = eviction_score(metadata, config, now)
+        terms = eviction_terms(metadata, config, now)
+        score = combine_terms(terms)
         if score is not None:
-            scored.append((score, doc_id, content))
-    targets = sorted(scored)[:prune_count(len(ids))]
+            scored.append((score, doc_id, content, terms))
+    targets = sorted(scored, key=lambda target: target[:2])[:prune_count(len(ids))]
     if not targets:
         return []
 
     try:
-        store.delete(ids=[doc_id for _, doc_id, _ in targets])
+        store.delete(ids=[doc_id for _, doc_id, _, _ in targets])
     except Exception as error:
         print(f"\tPruning failed, nothing removed: {error}")
         return []
 
     print(f"\tPruned from the archive: "
-          f"{[(doc_id, round(score, 3)) for score, doc_id, _ in targets]}")
-    for score, doc_id, content in targets:
+          f"{[(doc_id, round(score, 3)) for score, doc_id, _, _ in targets]}")
+    for score, doc_id, content, terms in targets:
         log.append(OperationLogEntry(op_type="prune", item_id=doc_id, content=content,
-                                     score=score))
-    return [doc_id for _, doc_id, _ in targets]
+                                     score=score, score_terms=terms))
+    return [doc_id for _, doc_id, _, _ in targets]
