@@ -116,6 +116,8 @@ class MemoryConfig:
     eviction_time_decay_field: Literal["updated_at", "retrieved_at"] = "updated_at"
     eviction_novelty: bool = False
     eviction_novelty_mode: Literal["nearest", "k_nearest"] = "nearest"
+    eviction_frequency: bool = False
+    eviction_frequency_field: Literal["n_retrieve", "n_used"] = "n_retrieve"
     retrieval_mode: Literal["decide", "always_llm_query"] = "decide"
     generate_answer: bool = True
 

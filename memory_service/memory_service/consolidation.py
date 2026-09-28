@@ -66,6 +66,7 @@ class CoreMemoryItem(BaseModel):
 
     n_retrieve: int = 0
     retrieved_at: datetime = Field(default_factory=datetime.now)
+    n_used: int = 0
 
     @model_validator(mode="before")
     @classmethod
@@ -232,6 +233,7 @@ def archive_metadata(item: CoreMemoryItem) -> dict:
         "status": item.status,
         "updated_at": item.updated_at.isoformat(),
         "n_retrieve": item.n_retrieve,
+        "n_used": item.n_used,
         "retrieved_at": item.retrieved_at.isoformat(),
     }
 
@@ -413,10 +415,11 @@ def supersede_item(
 ) -> CoreMemoryItem:
     """Replace a core item with a newer version that points back at it.
 
-    The newer version inherits n_retrieve: it is the same fact, evolved.
+    The newer version inherits n_retrieve and n_used: it is the same fact, evolved.
     """
     _retire_item(old_item, "superseded")
-    new_item = CoreMemoryItem(content=new_content, n_retrieve=old_item.n_retrieve)
+    new_item = CoreMemoryItem(content=new_content, n_retrieve=old_item.n_retrieve,
+                              n_used=old_item.n_used)
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
         related_item_id=old_item.id, content=new_content))
@@ -459,13 +462,14 @@ def supersede_archived_item(
 ) -> Optional[CoreMemoryItem]:
     """Flag an archived memory as superseded; the newer version starts in core memory.
 
-    The newer version inherits n_retrieve, as in supersede_item.
+    The newer version inherits n_retrieve and n_used, as in supersede_item.
     """
     archived = _rewrite_archive_metadata(item_id, status="superseded")
     if archived is None:
         return None
     new_item = CoreMemoryItem(content=new_content,
-                              n_retrieve=archived["metadata"]["n_retrieve"])
+                              n_retrieve=archived["metadata"]["n_retrieve"],
+                              n_used=archived["metadata"]["n_used"])
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
         related_item_id=item_id, content=new_content))

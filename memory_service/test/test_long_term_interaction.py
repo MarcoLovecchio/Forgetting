@@ -477,7 +477,8 @@ def _print_core_memory(state):
     for item in active:
         safe_print(f"  - [{_short(item.id)}] {item.content}")
         safe_print(f"      updated {_clock(item.updated_at)}"
-                   f" | retrieved {_clock(item.retrieved_at)} ({item.n_retrieve})")
+                   f" | retrieved {_clock(item.retrieved_at)} ({item.n_retrieve})"
+                   f" | used {item.n_used}")
 
 
 def _print_archive(vector_store):
@@ -504,7 +505,7 @@ def _print_archive(vector_store):
         safe_print(f"  - [{_short(doc_id)}] ({status}) {content}")
         safe_print(f"      updated {_clock_iso(metadata.get('updated_at'))}"
                    f" | retrieved {_clock_iso(metadata.get('retrieved_at'))}"
-                   f" ({metadata.get('n_retrieve')})")
+                   f" ({metadata.get('n_retrieve')}) | used {metadata.get('n_used')}")
 
     summary = ", ".join(f"{name} {count}" for name, count in sorted(counters.items()))
     safe_print(f"\n  Riepilogo status: {summary}")

@@ -38,14 +38,15 @@ termine nuovo va aggiunto in eviction_terms, e da li' arriva anche nel log.
                       gia': nessuna chiamata di embedding. La core resta fuori
                       dal confronto, perche' non ha vettori.
 
-    retrieval_count_term
-                      n_retrieve / n_max, con n_max il massimo fra le attive:
-                      lineare e relativo all'archivio, come LFU e N_visit di
-                      MemoryOS. Non ancora collegato a eviction_score.
+    frequency_term    un conteggio diviso per il piu' alto fra le attive: lineare
+                      e relativo all'archivio, come LFU e N_visit di MemoryOS.
+                      Il conteggio e' n_retrieve o n_used, secondo
+                      eviction_frequency_field: come per il time decay, se ne
+                      usa sempre uno solo. Entra con eviction_frequency.
 
 Con tutti i termini spenti non esce niente. Le memorie escono una alla volta, e
-dopo ogni uscita gli score delle rimaste si ricalcolano: la novelty dipende da
-cosa c'e' ancora, e di due quasi-doppioni esce solo il primo.
+dopo ogni uscita gli score delle rimaste si ricalcolano: novelty e conteggio
+massimo dipendono da cosa c'e' ancora, e di due quasi-doppioni esce solo il primo.
 
 Cosa tocca e cosa no
 --------------------
@@ -193,14 +194,14 @@ def time_decay_term(timestamp: str, now: datetime,
     return math.exp(-((hours / scale_hours) ** shape))
 
 
-def retrieval_count_term(n_retrieve: int, n_max: int) -> float:
-    """Recuperi di una memoria rispetto alla piu' recuperata: n_retrieve / n_max.
+def frequency_term(count: int, count_max: int) -> float:
+    """Il conteggio di una memoria rispetto al piu' alto: count / count_max.
 
-    Se nessuna e' mai stata recuperata (n_max = 0) vale 0 per tutte.
+    Se il piu' alto e' 0, nessuna e' mai stata contata: vale 0 per tutte.
     """
-    if n_max == 0:
+    if count_max == 0:
         return 0.0
-    return n_retrieve / n_max
+    return count / count_max
 
 
 def similarity_matrix(vectors: Dict[str, Sequence[float]]) -> Dict[str, Dict[str, float]]:
@@ -230,7 +231,7 @@ def novelty_terms(ids: Sequence[str], similarity: Dict[str, Dict[str, float]],
                   mode: str) -> Dict[str, float]:
     """La novelty di ogni memoria fra `ids`, divisa per la piu' alta: in [0, 1].
 
-    Tutte identiche fra loro: 0 per tutte, come retrieval_count_term con n_max = 0.
+    Tutte identiche fra loro: 0 per tutte, come frequency_term con il massimo a 0.
     """
     raw = {doc_id: max(0.0, novelty_term(
         [similarity[doc_id][other] for other in ids if other != doc_id], mode))
@@ -242,17 +243,23 @@ def novelty_terms(ids: Sequence[str], similarity: Dict[str, Dict[str, float]],
 
 
 def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
-                   novelty: Optional[float] = None) -> Dict[str, float]:
+                   novelty: Optional[float] = None,
+                   frequency_max: Optional[int] = None) -> Dict[str, float]:
     """I termini accesi, per nome: sono anche i sotto-score che il log riporta.
 
-    `novelty` e' quella della memoria fra le attive, da novelty_terms: dipende
-    dalle altre, quindi la calcola chi le ha tutte. Serve solo a novelty acceso.
+    `novelty` (da novelty_terms) e `frequency_max` (il conteggio piu' alto fra
+    le attive, sul campo di eviction_frequency_field) dipendono dalle altre
+    memorie, quindi li calcola chi le ha tutte. Servono solo con i rispettivi
+    switch accesi.
     """
     terms = {}
     if config.eviction_time_decay:
         terms["time_decay"] = time_decay_term(metadata[config.eviction_time_decay_field], now)
     if config.eviction_novelty:
         terms["novelty"] = novelty
+    if config.eviction_frequency:
+        terms["frequency"] = frequency_term(metadata[config.eviction_frequency_field],
+                                            frequency_max)
     return terms
 
 
@@ -314,9 +321,12 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
         novelty = (novelty_terms([doc_id for doc_id, _, _ in remaining], similarity,
                                  config.eviction_novelty_mode)
                    if config.eviction_novelty else {})
+        frequency_max = (max(metadata[config.eviction_frequency_field]
+                             for _, _, metadata in remaining)
+                         if config.eviction_frequency else None)
         scored = []
         for doc_id, content, metadata in remaining:
-            terms = eviction_terms(metadata, config, now, novelty.get(doc_id))
+            terms = eviction_terms(metadata, config, now, novelty.get(doc_id), frequency_max)
             score = combine_terms(terms)
             if score is not None:
                 scored.append((score, doc_id, content, terms))

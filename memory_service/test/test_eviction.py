@@ -43,11 +43,11 @@ from memory_service.eviction import (  # noqa: E402
     evict_archived_tombstones,
     eviction_score,
     eviction_terms,
+    frequency_term,
     novelty_term,
     novelty_terms,
     prune_archive,
     prune_count,
-    retrieval_count_term,
     similarity_matrix,
     time_decay_term,
 )
@@ -65,6 +65,8 @@ EVICTION_CONFIG = MemoryConfig(
     eviction_time_decay_field="updated_at",
     eviction_novelty=False,
     eviction_novelty_mode="nearest",
+    eviction_frequency=False,
+    eviction_frequency_field="n_retrieve",
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
@@ -431,26 +433,84 @@ class NoveltyTermsTest(unittest.TestCase):
                          {"a": 0.0, "b": 0.0})
 
 
-class RetrievalCountTermTest(unittest.TestCase):
-    """Il termine dei recuperi: lineare, relativo alla memoria piu' recuperata."""
+class FrequencyTermTest(EvictionTestCase):
+    """Il termine di frequenza: un conteggio relativo al piu' alto, su n_retrieve o n_used."""
 
-    def test_the_count_over_the_most_retrieved(self):
-        for n_retrieve, expected in ((6, 1.0), (3, 0.5), (1, 1 / 6), (0, 0.0)):
-            with self.subTest(n_retrieve=n_retrieve):
-                self.assertAlmostEqual(retrieval_count_term(n_retrieve, 6), expected)
+    FREQUENCY_ONLY = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False,
+                                         eviction_frequency=True)
+    METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(),
+                "n_retrieve": 3, "n_used": 1}
+
+    def archive_counts(self, content, n_retrieve, n_used):
+        item = CoreMemoryItem(content=content, n_retrieve=n_retrieve, n_used=n_used)
+        archive_items([item])
+        return item.id
+
+    def test_the_count_over_the_highest(self):
+        for count, expected in ((6, 1.0), (3, 0.5), (1, 1 / 6), (0, 0.0)):
+            with self.subTest(count=count):
+                self.assertAlmostEqual(frequency_term(count, 6), expected)
 
     def test_the_same_count_is_worth_less_in_a_busier_archive(self):
-        self.assertEqual(retrieval_count_term(2, 4), 0.5)
-        self.assertEqual(retrieval_count_term(2, 8), 0.25)
+        self.assertEqual(frequency_term(2, 4), 0.5)
+        self.assertEqual(frequency_term(2, 8), 0.25)
 
-    def test_an_archive_never_retrieved_is_worth_zero_everywhere(self):
-        self.assertEqual(retrieval_count_term(0, 0), 0.0)
+    def test_an_archive_never_counted_is_worth_zero_everywhere(self):
+        self.assertEqual(frequency_term(0, 0), 0.0)
 
-    def test_it_does_not_enter_the_score_yet(self):
-        base = {"updated_at": (NOW - timedelta(days=3)).isoformat()}
+    def test_with_the_switch_off_it_stays_out_of_the_score(self):
+        self.assertEqual(eviction_score({**self.METADATA, "n_retrieve": 0}, EVICTION_CONFIG, NOW),
+                         eviction_score({**self.METADATA, "n_retrieve": 50}, EVICTION_CONFIG, NOW))
 
-        self.assertEqual(eviction_score({**base, "n_retrieve": 0}, EVICTION_CONFIG, NOW),
-                         eviction_score({**base, "n_retrieve": 50}, EVICTION_CONFIG, NOW))
+    def test_with_the_switch_on_it_joins_the_terms(self):
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_frequency=True)
+
+        self.assertEqual(eviction_terms(self.METADATA, config, NOW, frequency_max=6),
+                         {"time_decay": time_decay_term(self.METADATA["updated_at"], NOW),
+                          "frequency": 0.5})
+
+    def test_the_two_counts_share_one_slot(self):
+        for field in ("n_retrieve", "n_used"):
+            with self.subTest(field=field):
+                config = dataclasses.replace(self.FREQUENCY_ONLY, eviction_frequency_field=field)
+                self.assertEqual(eviction_terms(self.METADATA, config, NOW, frequency_max=6),
+                                 {"frequency": self.METADATA[field] / 6})
+
+    def test_in_the_prune_the_value_is_relative_to_the_highest(self):
+        ids = {n: self.archive_counts(f"fatto {n}", n_retrieve=n, n_used=0) for n in (4, 2, 3)}
+
+        removed = prune_archive(self.log, 2, self.FREQUENCY_ONLY, now=NOW)
+
+        self.assertEqual(removed, [ids[2]])
+        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 su un massimo di 4")
+
+    def test_the_highest_is_taken_on_the_chosen_count(self):
+        # Recuperate tutte 9 volte: il massimo dei recuperi non c'entra con gli usi.
+        ids = {n: self.archive_counts(f"fatto {n}", n_retrieve=9, n_used=n) for n in (4, 2, 3)}
+        config = dataclasses.replace(self.FREQUENCY_ONLY, eviction_frequency_field="n_used")
+
+        removed = prune_archive(self.log, 2, config, now=NOW)
+
+        self.assertEqual(removed, [ids[2]])
+        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 usi su un massimo di 4")
+
+    def retrieved_and_used(self):
+        """Recuperata spesso ma mai usata, usata spesso ma mai recuperata, e una a meta'."""
+        return (self.archive_counts("ha un cane", n_retrieve=4, n_used=0),
+                self.archive_counts("ha un gatto", n_retrieve=0, n_used=4),
+                self.archive_counts("corre la mattina", n_retrieve=2, n_used=2))
+
+    def test_on_n_retrieve_the_least_retrieved_leaves(self):
+        _, never_retrieved, _ = self.retrieved_and_used()
+
+        self.assertEqual(prune_archive(self.log, 2, self.FREQUENCY_ONLY, now=NOW),
+                         [never_retrieved])
+
+    def test_on_n_used_the_least_used_leaves(self):
+        never_used, _, _ = self.retrieved_and_used()
+        config = dataclasses.replace(self.FREQUENCY_ONLY, eviction_frequency_field="n_used")
+
+        self.assertEqual(prune_archive(self.log, 2, config, now=NOW), [never_used])
 
 
 class PruneCountTest(unittest.TestCase):
