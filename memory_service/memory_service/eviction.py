@@ -30,12 +30,22 @@ termine nuovo va aggiunto in eviction_terms, e da li' arriva anche nel log.
                       eviction_time_decay_field: occupano lo stesso posto nella
                       media, e se ne usa sempre uno solo.
 
+    novelty_terms     quanto una memoria si distingue dalle altre attive
+                      dell'archivio: 1 - similarita' coseno con la piu' vicina
+                      (nearest) o media delle NOVELTY_K piu' vicine (k_nearest),
+                      secondo eviction_novelty_mode, divisa per la novelty piu'
+                      alta dell'archivio. I vettori sono quelli che Chroma ha
+                      gia': nessuna chiamata di embedding. La core resta fuori
+                      dal confronto, perche' non ha vettori.
+
     retrieval_count_term
                       n_retrieve / n_max, con n_max il massimo fra le attive:
                       lineare e relativo all'archivio, come LFU e N_visit di
                       MemoryOS. Non ancora collegato a eviction_score.
 
-Con tutti i termini spenti non esce niente.
+Con tutti i termini spenti non esce niente. Le memorie escono una alla volta, e
+dopo ogni uscita gli score delle rimaste si ricalcolano: la novelty dipende da
+cosa c'e' ancora, e di due quasi-doppioni esce solo il primo.
 
 Cosa tocca e cosa no
 --------------------
@@ -84,7 +94,7 @@ oggi fa il core split. Qui eviction vuol dire uscire dall'archivio.
 
 import math
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from memory_service import backends
 from memory_service.config import MemoryConfig
@@ -95,6 +105,7 @@ EVICTED_STATUSES = ("superseded", "deleted")
 PRUNE_FRACTION = 0.10
 DECAY_SHAPE = 0.5
 DECAY_SCALE_HOURS = 7 * 24
+NOVELTY_K = 5
 
 
 def _find_tombstones(store) -> List[Tuple[str, str]]:
@@ -192,11 +203,56 @@ def retrieval_count_term(n_retrieve: int, n_max: int) -> float:
     return n_retrieve / n_max
 
 
-def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime) -> Dict[str, float]:
-    """I termini accesi, per nome: sono anche i sotto-score che il log riporta."""
+def similarity_matrix(vectors: Dict[str, Sequence[float]]) -> Dict[str, Dict[str, float]]:
+    """Similarita' coseno fra ogni coppia di vettori, per id."""
+    unit = {}
+    for doc_id, vector in vectors.items():
+        values = [float(value) for value in vector]
+        norm = math.sqrt(sum(value * value for value in values))
+        unit[doc_id] = [value / norm for value in values]
+    return {doc_id: {other: sum(a * b for a, b in zip(unit[doc_id], unit[other]))
+                     for other in unit if other != doc_id}
+            for doc_id in unit}
+
+
+def novelty_term(similarities: Sequence[float], mode: str, k: int = NOVELTY_K) -> float:
+    """1 - similarita' con la memoria piu' vicina, o media delle k piu' vicine.
+
+    Vale 1 senza altre memorie; con meno di k si usano quelle che ci sono.
+    """
+    if not similarities:
+        return 1.0
+    nearest = sorted(similarities, reverse=True)[:1 if mode == "nearest" else k]
+    return 1 - sum(nearest) / len(nearest)
+
+
+def novelty_terms(ids: Sequence[str], similarity: Dict[str, Dict[str, float]],
+                  mode: str) -> Dict[str, float]:
+    """La novelty di ogni memoria fra `ids`, divisa per la piu' alta: in [0, 1].
+
+    Tutte identiche fra loro: 0 per tutte, come retrieval_count_term con n_max = 0.
+    """
+    raw = {doc_id: max(0.0, novelty_term(
+        [similarity[doc_id][other] for other in ids if other != doc_id], mode))
+        for doc_id in ids}
+    top = max(raw.values())
+    if top == 0:
+        return {doc_id: 0.0 for doc_id in ids}
+    return {doc_id: value / top for doc_id, value in raw.items()}
+
+
+def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
+                   novelty: Optional[float] = None) -> Dict[str, float]:
+    """I termini accesi, per nome: sono anche i sotto-score che il log riporta.
+
+    `novelty` e' quella della memoria fra le attive, da novelty_terms: dipende
+    dalle altre, quindi la calcola chi le ha tutte. Serve solo a novelty acceso.
+    """
     terms = {}
     if config.eviction_time_decay:
         terms["time_decay"] = time_decay_term(metadata[config.eviction_time_decay_field], now)
+    if config.eviction_novelty:
+        terms["novelty"] = novelty
     return terms
 
 
@@ -222,11 +278,12 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
                   now: Optional[datetime] = None) -> List[str]:
     """Oltre il limite, toglie le memorie attive con lo score piu' basso.
 
-    Ne toglie prune_count delle attive; con tutti i termini spenti non ce n'e'
-    nessuna con uno score, e non esce niente. Restituisce gli id rimossi, e per
-    ciascuno aggiunge al log una voce `prune` con lo score. Come
-    evict_archived_tombstones non solleva se lo store fallisce, e il log registra
-    solo le rimozioni riuscite.
+    Ne toglie prune_count delle attive, una alla volta: dopo ogni scelta gli
+    score delle rimaste si ricalcolano senza di lei. Con tutti i termini spenti
+    non ce n'e' nessuna con uno score, e non esce niente. Restituisce gli id
+    rimossi, e per ciascuno aggiunge al log una voce `prune` con lo score e i
+    termini del momento in cui e' stata scelta. Come evict_archived_tombstones
+    non solleva se lo store fallisce, e il log registra solo le rimozioni riuscite.
 
     Presuppone i tombstone gia' rimossi da evict_archived_tombstones, che nel
     memory manager gira subito prima. Il filtro `status: active` resta perche' e'
@@ -235,9 +292,10 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
     if archive_over_limit(limit) == 0:
         return []
 
+    include = ["documents", "metadatas"] + (["embeddings"] if config.eviction_novelty else [])
     try:
         store = backends.get_vector_store()
-        result = store.get(where={"status": "active"}) or {}
+        result = store.get(where={"status": "active"}, include=include) or {}
     except Exception as error:
         print(f"\tPruning skipped, archive lookup failed: {error}")
         return []
@@ -245,15 +303,28 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
     ids = result.get("ids") or []
     documents = result.get("documents") or [""] * len(ids)
     metadatas = result.get("metadatas") or [{}] * len(ids)
+    # Gli embedding arrivano come array numpy: niente `or`, che ne chiederebbe la verita'.
+    similarity = (similarity_matrix(dict(zip(ids, result["embeddings"])))
+                  if config.eviction_novelty else {})
     now = now or datetime.now()
 
-    scored = []
-    for doc_id, content, metadata in zip(ids, documents, metadatas):
-        terms = eviction_terms(metadata, config, now)
-        score = combine_terms(terms)
-        if score is not None:
-            scored.append((score, doc_id, content, terms))
-    targets = sorted(scored, key=lambda target: target[:2])[:prune_count(len(ids))]
+    remaining = list(zip(ids, documents, metadatas))
+    targets = []
+    for _ in range(prune_count(len(ids))):
+        novelty = (novelty_terms([doc_id for doc_id, _, _ in remaining], similarity,
+                                 config.eviction_novelty_mode)
+                   if config.eviction_novelty else {})
+        scored = []
+        for doc_id, content, metadata in remaining:
+            terms = eviction_terms(metadata, config, now, novelty.get(doc_id))
+            score = combine_terms(terms)
+            if score is not None:
+                scored.append((score, doc_id, content, terms))
+        if not scored:
+            break
+        chosen = min(scored, key=lambda target: target[:2])
+        targets.append(chosen)
+        remaining = [entry for entry in remaining if entry[0] != chosen[1]]
     if not targets:
         return []
 

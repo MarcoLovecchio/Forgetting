@@ -5,6 +5,7 @@ archival vector store) so the graph can be exercised without API keys, network
 access, ChromaDB or any other package of the architecture.
 """
 
+import zlib
 from typing import Any, Dict, List, Optional
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -12,6 +13,17 @@ from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+
+
+def fake_embedding(text: str, dimensions: int = 64) -> List[float]:
+    """Bag of words con un hash stabile: le stesse parole danno lo stesso vettore.
+
+    crc32 e non hash(), che per le stringhe cambia da un processo all'altro.
+    """
+    vector = [0.0] * dimensions
+    for word in str(text).lower().split():
+        vector[zlib.crc32(word.encode("utf-8")) % dimensions] += 1.0
+    return vector
 
 
 def tool_name_of(tool: Any) -> str:
@@ -137,6 +149,8 @@ class FakeVectorStore:
     def __init__(self):
         self.documents: Dict[str, str] = {}
         self.metadatas: Dict[str, Dict[str, Any]] = {}
+        # Calcolati da fake_embedding a ogni scrittura; un test puo' sovrascriverli.
+        self.embeddings: Dict[str, List[float]] = {}
         self.searches: List[Dict[str, Any]] = []
         # Ogni add_texts e' un embedding ricalcolato: contarle serve a verificare
         # che un cambio di status non ne paghi uno.
@@ -158,9 +172,10 @@ class FakeVectorStore:
         for doc_id, text, metadata in zip(ids, texts, metadatas):
             self.documents[doc_id] = text
             self.metadatas[doc_id] = dict(metadata or {})
+            self.embeddings[doc_id] = fake_embedding(text)
         return ids
 
-    def get(self, ids=None, where=None, **kwargs):
+    def get(self, ids=None, where=None, include=None, **kwargs):
         """Same contract as Chroma.get: no ids means the whole collection.
 
         `where` solo con l'uguaglianza, che e' quello che il servizio usa. Un
@@ -177,11 +192,15 @@ class FakeVectorStore:
                 raise NotImplementedError(f"FakeVectorStore.get: filtro non supportato {where!r}")
             selected = [doc_id for doc_id in selected
                         if self.metadatas.get(doc_id, {}).get(key) == value]
-        return {
+        result = {
             "ids": selected,
             "documents": [self.documents[doc_id] for doc_id in selected],
             "metadatas": [self.metadatas.get(doc_id, {}) for doc_id in selected],
         }
+        # Come Chroma: i vettori solo se chiesti.
+        if include and "embeddings" in include:
+            result["embeddings"] = [self.embeddings[doc_id] for doc_id in selected]
+        return result
 
     def delete(self, ids=None, **kwargs):
         """Come Chroma.delete, per id.
@@ -199,6 +218,7 @@ class FakeVectorStore:
         for doc_id in ids:
             self.documents.pop(doc_id, None)
             self.metadatas.pop(doc_id, None)
+            self.embeddings.pop(doc_id, None)
 
     def similarity_search(self, query, k=3, filter=None, **kwargs):
         if not isinstance(k, int):
