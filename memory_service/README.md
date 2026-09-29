@@ -308,7 +308,7 @@ d'ambiente (lette da `.env` / `.config`):
 | `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `4` | messaggi mantenuti prima del riassunto. **Tenerlo pari**: con un numero dispari la coda della finestra è una risposta dell'assistente, e ogni consolidamento riceve la fine di uno scambio più l'inizio del successivo invece di una coppia (utente, assistente) intera |
 | `MEMORY_CORE_MEMORY_LIMIT` | `400` | caratteri massimi della core memory |
-| `MEMORY_ARCHIVE_LIMIT` | `50` | memorie **attive** in archivio oltre le quali interviene eviction. Non blocca l'inserimento: viene controllato alla fine di ogni `insert` e, se superato, esce il 10% delle memorie attive con lo score più basso, una alla volta ricalcolando gli score delle rimaste (`eviction.prune_archive`, voce `prune` nel log). Lo score è la media dei termini accesi: il decadimento Weibull (`eviction_time_decay`), calcolato su `updated_at` o `retrieved_at` secondo `eviction_time_decay_field`; la novelty semantica (`eviction_novelty`), cioè 1 − similarità coseno con la memoria attiva più vicina (`nearest`) o media delle 5 più vicine (`k_nearest`) secondo `eviction_novelty_mode`, divisa per la più alta dell'archivio, con i vettori già in Chroma; la frequenza (`eviction_frequency`), cioè `n_retrieve` o `n_used` secondo `eviction_frequency_field`, diviso per il più alto fra le attive. `n_used` parte da 0 e per ora nessun codice lo incrementa. Gira solo con `MemoryConfig.eviction` acceso: gli switch si cambiano solo nel codice (`config.py`), senza variabile d'ambiente |
+| `MEMORY_ARCHIVE_LIMIT` | `50` | memorie **attive** in archivio oltre le quali interviene eviction. Non blocca l'inserimento: viene controllato alla fine di ogni `insert` e, se superato, esce il 10% delle memorie attive con lo score più basso, una alla volta ricalcolando gli score delle rimaste (`eviction.prune_archive`, voce `prune` nel log). Lo score è la media dei termini accesi: il decadimento Weibull (`eviction_time_decay`), calcolato su `updated_at` o `retrieved_at` secondo `eviction_time_decay_field`; la novelty semantica (`eviction_novelty`), cioè 1 − similarità coseno con la memoria attiva più vicina (`nearest`) o media delle 5 più vicine (`k_nearest`) secondo `eviction_novelty_mode`, divisa per la più alta dell'archivio, con i vettori già in Chroma; la frequenza (`eviction_frequency`), cioè `n_used` quando gli usi si contano (`track_used`, vedi sotto) e `n_retrieve` altrimenti, diviso per il più alto fra le attive. Gira solo con `MemoryConfig.eviction` acceso: gli switch si cambiano solo nel codice (`config.py`), senza variabile d'ambiente |
 | `MEMORY_GENERATE_ANSWER` | `false` | se il ramo `retrieve` debba anche **comporre una risposta** all'utente. **Spenta di default**: nessun campo del servizio la restituisce — l'archivio arriva al chiamante tramite `retrieved_memories` — quindi finiva solo in `last_messages` come un turno che l'utente non ha mai letto. Tenendola spenta si risparmia una chiamata per ogni `retrieve`, resta una coppia (utente, assistente) per scambio invece di tre messaggi, e la memoria smette di citare sé stessa dentro il consolidamento. `true` la riaccende |
 | `MEMORY_CHROMA_PATH` | `./chroma_db` | cartella dell'archivio (risolta in path assoluto) |
 | `MEMORY_COLLECTION_NAME` | `memory_archive` | collezione ChromaDB |
@@ -322,6 +322,17 @@ se la ricerca in archivio del ramo `retrieve` è una scelta del modello:
 
 In entrambe un recupero incrementa `n_retrieve` delle memorie restituite. Il test
 lungo stampa e salva la modalità della run.
+
+`track_used` (spento di default, anche lui solo in `config.py`) fa dire alla risposta
+quali memorie ha usato. `generate_answer` passa a un secondo prompt, uguale al primo
+più la richiesta della lista, e risponde con la tool call `AnswerWithUsedMemories`:
+prima `answer`, che arriva all'utente come sempre, poi `used_memory_ids`. Le memorie
+core compaiono nel prompt con il loro id, nello stesso formato di quelle d'archivio.
+Ogni memoria della lista, core o archivio, prende `n_used` + 1 e `retrieved_at`
+adesso; il recupero continua a contare `n_retrieve` ma non tocca più `retrieved_at`,
+che diventa l'ultimo uso. Il termine di frequenza dell'eviction passa da `n_retrieve`
+a `n_used`. Con `generate_answer` spento non c'è una lista da leggere e lo switch non
+ha effetto.
 
 `.env` e `.config` vengono cercati risalendo le directory a partire dalla
 working directory e dalla posizione del pacchetto. Se il nodo viene lanciato da

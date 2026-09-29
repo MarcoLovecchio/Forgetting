@@ -28,7 +28,8 @@ termine nuovo va aggiunto in eviction_terms, e da li' arriva anche nel log.
                       timestamp, 1/e dopo 7 giorni. Il timestamp e'
                       updated_at o retrieved_at, secondo
                       eviction_time_decay_field: occupano lo stesso posto nella
-                      media, e se ne usa sempre uno solo.
+                      media, e se ne usa sempre uno solo. Quando gli usi si
+                      contano, retrieved_at e' l'ultimo uso.
 
     novelty_terms     quanto una memoria si distingue dalle altre attive
                       dell'archivio: 1 - similarita' coseno con la piu' vicina
@@ -40,9 +41,10 @@ termine nuovo va aggiunto in eviction_terms, e da li' arriva anche nel log.
 
     frequency_term    un conteggio diviso per il piu' alto fra le attive: lineare
                       e relativo all'archivio, come LFU e N_visit di MemoryOS.
-                      Il conteggio e' n_retrieve o n_used, secondo
-                      eviction_frequency_field: come per il time decay, se ne
-                      usa sempre uno solo. Entra con eviction_frequency.
+                      Il conteggio e' n_used quando gli usi si contano
+                      (track_used, con generate_answer), n_retrieve altrimenti:
+                      come per il time decay, se ne usa sempre uno solo. Entra
+                      con eviction_frequency.
 
 Con tutti i termini spenti non esce niente. Le memorie escono una alla volta, e
 dopo ogni uscita gli score delle rimaste si ricalcolano: novelty e conteggio
@@ -194,6 +196,11 @@ def time_decay_term(timestamp: str, now: datetime,
     return math.exp(-((hours / scale_hours) ** shape))
 
 
+def frequency_field(config: MemoryConfig) -> str:
+    """Il conteggio del termine di frequenza: n_used quando gli usi si contano."""
+    return "n_used" if config.counts_used else "n_retrieve"
+
+
 def frequency_term(count: int, count_max: int) -> float:
     """Il conteggio di una memoria rispetto al piu' alto: count / count_max.
 
@@ -248,7 +255,7 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     """I termini accesi, per nome: sono anche i sotto-score che il log riporta.
 
     `novelty` (da novelty_terms) e `frequency_max` (il conteggio piu' alto fra
-    le attive, sul campo di eviction_frequency_field) dipendono dalle altre
+    le attive, sul campo di frequency_field) dipendono dalle altre
     memorie, quindi li calcola chi le ha tutte. Servono solo con i rispettivi
     switch accesi.
     """
@@ -258,8 +265,7 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     if config.eviction_novelty:
         terms["novelty"] = novelty
     if config.eviction_frequency:
-        terms["frequency"] = frequency_term(metadata[config.eviction_frequency_field],
-                                            frequency_max)
+        terms["frequency"] = frequency_term(metadata[frequency_field(config)], frequency_max)
     return terms
 
 
@@ -321,8 +327,7 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
         novelty = (novelty_terms([doc_id for doc_id, _, _ in remaining], similarity,
                                  config.eviction_novelty_mode)
                    if config.eviction_novelty else {})
-        frequency_max = (max(metadata[config.eviction_frequency_field]
-                             for _, _, metadata in remaining)
+        frequency_max = (max(metadata[frequency_field(config)] for _, _, metadata in remaining)
                          if config.eviction_frequency else None)
         scored = []
         for doc_id, content, metadata in remaining:

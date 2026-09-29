@@ -66,7 +66,7 @@ EVICTION_CONFIG = MemoryConfig(
     eviction_novelty=False,
     eviction_novelty_mode="nearest",
     eviction_frequency=False,
-    eviction_frequency_field="n_retrieve",
+    track_used=False,
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
@@ -438,6 +438,7 @@ class FrequencyTermTest(EvictionTestCase):
 
     FREQUENCY_ONLY = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False,
                                          eviction_frequency=True)
+    USES_COUNTED = dataclasses.replace(FREQUENCY_ONLY, track_used=True, generate_answer=True)
     METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(),
                 "n_retrieve": 3, "n_used": 1}
 
@@ -470,9 +471,8 @@ class FrequencyTermTest(EvictionTestCase):
                           "frequency": 0.5})
 
     def test_the_two_counts_share_one_slot(self):
-        for field in ("n_retrieve", "n_used"):
+        for field, config in (("n_retrieve", self.FREQUENCY_ONLY), ("n_used", self.USES_COUNTED)):
             with self.subTest(field=field):
-                config = dataclasses.replace(self.FREQUENCY_ONLY, eviction_frequency_field=field)
                 self.assertEqual(eviction_terms(self.METADATA, config, NOW, frequency_max=6),
                                  {"frequency": self.METADATA[field] / 6})
 
@@ -487,9 +487,8 @@ class FrequencyTermTest(EvictionTestCase):
     def test_the_highest_is_taken_on_the_chosen_count(self):
         # Recuperate tutte 9 volte: il massimo dei recuperi non c'entra con gli usi.
         ids = {n: self.archive_counts(f"fatto {n}", n_retrieve=9, n_used=n) for n in (4, 2, 3)}
-        config = dataclasses.replace(self.FREQUENCY_ONLY, eviction_frequency_field="n_used")
 
-        removed = prune_archive(self.log, 2, config, now=NOW)
+        removed = prune_archive(self.log, 2, self.USES_COUNTED, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
         self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 usi su un massimo di 4")
@@ -500,17 +499,22 @@ class FrequencyTermTest(EvictionTestCase):
                 self.archive_counts("ha un gatto", n_retrieve=0, n_used=4),
                 self.archive_counts("corre la mattina", n_retrieve=2, n_used=2))
 
-    def test_on_n_retrieve_the_least_retrieved_leaves(self):
+    def test_without_counting_the_uses_the_least_retrieved_leaves(self):
         _, never_retrieved, _ = self.retrieved_and_used()
 
         self.assertEqual(prune_archive(self.log, 2, self.FREQUENCY_ONLY, now=NOW),
                          [never_retrieved])
 
-    def test_on_n_used_the_least_used_leaves(self):
+    def test_counting_the_uses_the_least_used_leaves(self):
         never_used, _, _ = self.retrieved_and_used()
-        config = dataclasses.replace(self.FREQUENCY_ONLY, eviction_frequency_field="n_used")
 
-        self.assertEqual(prune_archive(self.log, 2, config, now=NOW), [never_used])
+        self.assertEqual(prune_archive(self.log, 2, self.USES_COUNTED, now=NOW), [never_used])
+
+    def test_without_an_answer_the_uses_are_not_counted_and_n_retrieve_stays(self):
+        _, never_retrieved, _ = self.retrieved_and_used()
+        config = dataclasses.replace(self.USES_COUNTED, generate_answer=False)
+
+        self.assertEqual(prune_archive(self.log, 2, config, now=NOW), [never_retrieved])
 
 
 class PruneCountTest(unittest.TestCase):

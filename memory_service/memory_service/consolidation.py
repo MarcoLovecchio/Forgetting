@@ -323,12 +323,13 @@ def serialize_retrieved_for_response(retrieved: str) -> List[str]:
     return [line for line in retrieved.splitlines() if line.strip()]
 
 
-def record_retrievals(item_ids: Iterable[str]) -> None:
-    """Count a retrieval on archived memories: n_retrieve + 1, retrieved_at now.
+def count_archived(item_ids: Iterable[str], counter: str, stamp: bool) -> None:
+    """`counter` + 1 on archived memories, and retrieved_at now when `stamp`.
 
     Metadata only, like _rewrite_archive_metadata, so the vector stays where it
-    is; updated_at is left alone, it belongs to the writes. Never raises: a
-    missed count must not cost the user an answer.
+    is; updated_at is left alone, it belongs to the writes. An id that is not in
+    the archive changes nothing. Never raises: a missed count must not cost the
+    user an answer.
     """
     ids = list(dict.fromkeys(item_ids))
     if not ids:
@@ -342,16 +343,42 @@ def record_retrievals(item_ids: Iterable[str]) -> None:
         updated = []
         for metadata in metadatas:
             metadata = dict(metadata)
-            metadata["n_retrieve"] += 1
-            metadata["retrieved_at"] = now
+            metadata[counter] += 1
+            if stamp:
+                metadata["retrieved_at"] = now
             updated.append(metadata)
         if found_ids:
             store._collection.update(ids=found_ids, metadatas=updated)
     except Exception as error:
-        print(f"\tRetrieval not recorded: {error}")
+        print(f"\t{counter} not recorded: {error}")
 
 
-def retrieve_active_archival_memories(query: str, k: int = 5) -> str:
+def record_retrievals(item_ids: Iterable[str], stamp: bool = True) -> None:
+    """Count a retrieval on archived memories: n_retrieve + 1, retrieved_at now.
+
+    Without `stamp` retrieved_at is left to record_uses: with
+    MemoryConfig.track_used it is the time of the last use.
+    """
+    count_archived(item_ids, "n_retrieve", stamp)
+
+
+def record_uses(item_ids: Iterable[str], core_memory: Iterable[CoreMemoryItem]) -> None:
+    """Count a use on the memories an answer was built on: n_used + 1, retrieved_at now.
+
+    Core items change in place; every other id is looked for in the archive.
+    """
+    ids = list(dict.fromkeys(item_ids))
+    now = datetime.now()
+    in_core = set()
+    for item in get_active_items(core_memory):
+        if item.id in ids:
+            item.n_used += 1
+            item.retrieved_at = now
+            in_core.add(item.id)
+    count_archived([item_id for item_id in ids if item_id not in in_core], "n_used", stamp=True)
+
+
+def retrieve_active_archival_memories(query: str, k: int = 5, stamp: bool = True) -> str:
     """Archive lookup for the retrieval path, tombstones excluded.
 
     The only search that counts as a retrieval: the candidates the classifier sees
@@ -360,7 +387,7 @@ def retrieve_active_archival_memories(query: str, k: int = 5) -> str:
     results = search_archive(query, k=k)
     if not results:
         return NO_ARCHIVAL_RESULTS
-    record_retrievals(doc_id for doc_id, _ in results)
+    record_retrievals((doc_id for doc_id, _ in results), stamp)
     return "\n".join(f"ID: {doc_id}, Content: {content}" for doc_id, content in results)
 
 

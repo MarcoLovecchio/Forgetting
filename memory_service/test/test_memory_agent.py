@@ -15,6 +15,7 @@ import io
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta
 
 # Allow running this file directly, or through a runner that does not pick up
 # the conftest.py of the package.
@@ -51,6 +52,7 @@ from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
 TEST_CONFIG = MemoryConfig(
     node_name="memory_agent",
     generate_answer=True,
+    track_used=False,
     retrieval_mode="decide",
     eviction=False,
     maximum_historical_messages=5,
@@ -469,6 +471,105 @@ class StaleRetrievalTest(MemoryServiceTestCase):
         self.assertEqual(
             second["retrieved_memory"], "",
             "la risposta di questo giro non deve vedere il recupero del giro prima")
+
+
+class UsedMemoriesTest(MemoryServiceTestCase):
+    """track_used: la risposta dice quali memorie ha usato, e ciascuna conta un uso."""
+
+    ANSWER = "Il pomeriggio bevi te nero."
+
+    def setUp(self):
+        super().setUp()
+        self.long_ago = datetime.now() - timedelta(days=3)
+        self.archive_at(self.long_ago, {"memory_a": "User likes black tea in the afternoon",
+                                        "memory_b": "User drinks green tea in the afternoon"})
+
+    def archive_at(self, updated_at, contents):
+        archive_items([CoreMemoryItem(id=item_id, content=content, updated_at=updated_at)
+                       for item_id, content in contents.items()])
+
+    def run_retrieve(self, used_ids, track_used=True, generate_answer=True):
+        config = dataclasses.replace(TEST_CONFIG, track_used=track_used,
+                                     generate_answer=generate_answer)
+        backends.configure(config=config)
+        MemoryAgent.reset_instance()
+        agent = MemoryAgent(config=config)
+        agent.state["core_memory"] = [
+            CoreMemoryItem(id=item_id, content=content, updated_at=self.long_ago)
+            for item_id, content in (("core_name", "User is called Bianca"),
+                                     ("core_diet", "User is vegetarian"))]
+        self.llm.script({"retrieve_memory": {"query": "tea afternoon", "k": 2},
+                         "AnswerWithUsedMemories": {"answer": self.ANSWER,
+                                                    "used_memory_ids": used_ids}})
+        return agent.run_memory_agent("retrieve", query="Cosa bevo il pomeriggio?")
+
+    def core(self, state, item_id):
+        return next(item for item in state["core_memory"] if item.id == item_id)
+
+    def archived(self, item_id):
+        metadata = self.vector_store.metadatas[item_id]
+        return metadata["n_retrieve"], metadata["n_used"], metadata["retrieved_at"]
+
+    def test_the_user_gets_the_answer_alone(self):
+        state = self.run_retrieve(["memory_a"])
+
+        self.assertIsInstance(state["messages"][-1], AIMessage)
+        self.assertEqual(state["messages"][-1].content, self.ANSWER)
+
+    def test_the_facts_are_shown_with_their_ids(self):
+        self.run_retrieve([])
+
+        answer_call = self.llm.invocations[-1]
+        self.assertEqual(answer_call["tools"], ["AnswerWithUsedMemories"])
+        self.assertIn("ID: core_name, Content: User is called Bianca", answer_call["prompt"])
+        self.assertIn("ID: memory_a, Content: User likes black tea", answer_call["prompt"])
+
+    def test_a_used_core_memory_counts_one_use(self):
+        state = self.run_retrieve(["core_name"])
+
+        used, unused = self.core(state, "core_name"), self.core(state, "core_diet")
+        self.assertEqual(used.n_used, 1)
+        self.assertGreater(used.retrieved_at, self.long_ago)
+        self.assertEqual((unused.n_used, unused.retrieved_at), (0, self.long_ago))
+
+    def test_only_the_used_archived_memory_is_stamped_both_count_the_retrieval(self):
+        self.run_retrieve(["memory_a"])
+
+        n_retrieve, n_used, retrieved_at = self.archived("memory_a")
+        self.assertEqual((n_retrieve, n_used), (1, 1))
+        self.assertGreater(retrieved_at, self.long_ago.isoformat())
+        self.assertEqual(self.archived("memory_b"), (1, 0, self.long_ago.isoformat()),
+                         "recuperata e non usata: conta il recupero, retrieved_at resta")
+
+    def test_an_id_repeated_counts_once_and_one_never_shown_changes_nothing(self):
+        self.archive_at(self.long_ago, {"memory_far": "User runs in the morning"})
+
+        state = self.run_retrieve(["core_name", "core_name", "invented", "memory_far"])
+
+        self.assertEqual(self.core(state, "core_name").n_used, 1)
+        self.assertEqual(self.archived("memory_far")[1], 1,
+                         "l'id esiste in archivio: il filtro e' solo l'esistenza")
+
+    def test_switched_off_the_retrieval_stamps_and_no_use_is_counted(self):
+        state = self.run_retrieve(["memory_a", "core_name"], track_used=False)
+
+        answer_call = self.llm.invocations[-1]
+        self.assertEqual(answer_call["tools"], [])
+        self.assertNotIn("ID: core_name", answer_call["prompt"])
+        for item_id in ("memory_a", "memory_b"):
+            n_retrieve, n_used, retrieved_at = self.archived(item_id)
+            self.assertEqual((n_retrieve, n_used), (1, 0))
+            self.assertGreater(retrieved_at, self.long_ago.isoformat())
+        self.assertEqual(self.core(state, "core_name").n_used, 0)
+
+    def test_without_the_answer_the_switch_does_nothing(self):
+        self.run_retrieve(["memory_a"], generate_answer=False)
+
+        self.assertNotIn("AnswerWithUsedMemories", self.llm.bound_tool_names())
+        n_retrieve, n_used, retrieved_at = self.archived("memory_b")
+        self.assertEqual((n_retrieve, n_used), (1, 0))
+        self.assertGreater(retrieved_at, self.long_ago.isoformat(),
+                           "retrieved_at torna ad aggiornarsi al recupero")
 
 
 class CurrentQueryTest(MemoryServiceTestCase):

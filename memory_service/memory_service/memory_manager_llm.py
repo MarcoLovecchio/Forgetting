@@ -1,12 +1,12 @@
 import time
 
 from pydantic import BaseModel, Field
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolArg, tool
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END, START
 from langgraph.runtime import Runtime
 from langchain_core.messages import HumanMessage, AIMessage
-from typing import Dict, Any, Literal, Optional, TypedDict
+from typing import Annotated, Dict, Any, List, Literal, Optional, TypedDict
 
 from memory_service import backends
 from memory_service.config import MemoryConfig
@@ -20,8 +20,10 @@ from memory_service.consolidation import (
     build_candidate_memories,
     core_memory_length,
     get_active_items,
+    record_uses,
     retrieve_active_archival_memories,
     serialize_core_memory_for_prompt,
+    serialize_core_memory_with_ids,
 )
 from memory_service.eviction import evict_archived_tombstones, prune_archive
 
@@ -154,11 +156,12 @@ def empty_node(state: AgentState) -> AgentState:
 
 # Tool to retrieve memories from the archive
 @tool
-def retrieve_memory(query: str, k: int = 5) -> str:
+def retrieve_memory(query: str, k: int = 5,
+                    stamp_retrieved_at: Annotated[bool, InjectedToolArg] = True) -> str:
     """Retrieve relevant memories from the archival vector store based on a query.
     Returns up to k relevant memories.
     Think about the best value of k based on the complexity of the query."""
-    results = retrieve_active_archival_memories(query, k)
+    results = retrieve_active_archival_memories(query, k, stamp_retrieved_at)
     print(results)
     return results
 
@@ -234,7 +237,7 @@ def retrieval_node(state: AgentState):
     return {"tool_calls": state["tool_calls"] + [response]}
 
 # Define tool execution node
-def tool_node(state: AgentState):
+def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
     print("\tTool node activated")
     messages = state["tool_calls"]
     last_message = messages[-1]
@@ -248,7 +251,9 @@ def tool_node(state: AgentState):
 
         if tool_name == "retrieve_memory":
             print(f"Invoking retrieve_memory with args: {tool_args}")
-            result = retrieve_memory.invoke(tool_args)
+            # Quando gli usi si contano, retrieved_at lo aggiorna generate_answer.
+            result = retrieve_memory.invoke(
+                {**tool_args, "stamp_retrieved_at": not runtime.context.counts_used})
         elif tool_name == "NoSearchNeeded":
             print(f"\tNo archive search: {tool_args.get('reason', '')}")
             result = NO_SEARCH_NEEDED
@@ -281,14 +286,9 @@ def tool_node(state: AgentState):
             "retrieved_memory": retrieved_memory, "core_memory": state["core_memory"],
             "operation_log": state["operation_log"]}
 
-def generate_answer(state: AgentState):
-    if not state.get("generate_answer", True):
-        print("\tAnswer generation disabled, skipping")
-        return {}
-
-    print("\tAnswer agent node activated")
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are the user's personal assistant. You answer questions about the user only
+# track_used off: the answer alone.
+ANSWER_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are the user's personal assistant. You answer questions about the user only
          from what you are given here, and nothing else.
 
          You are given three sources, from the oldest to the newest:
@@ -319,22 +319,97 @@ def generate_answer(state: AgentState):
          Memories recalled from the archive for this question: {retrieved_memory}
 
          Last messages (Human is the user, AI is you): {messages}"""),
-        ("human", """{input}
+    ("human", """{input}
 
 Before answering, check the conversation above against the facts or among the recalled memories.
 If the user has just given a newer value, use the newer one.
 If the user has just asked you to forget something, it is gone: do not use it,
 even if it is still listed among the facts or among the recalled memories.""")
-    ])
+])
 
-    chain = prompt | get_llm("generate_answer")
+# track_used on: the same answer, then the ids of the memories it is based on.
+ANSWER_WITH_USED_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You are the user's personal assistant. You answer questions about the user only
+         from what you are given here, and nothing else.
 
+         You are given three sources, from the oldest to the newest:
+         1. Facts kept at hand - stored some time ago.
+         2. Memories recalled from the archive for this question - stored some time ago.
+         3. What the user said in the last messages - the NEWEST information you have. Memory
+            is updated with a delay, so these messages are not in the facts or the memories yet.
+         Facts and memories are listed as ID and Content: use only the content in the answer,
+         never mention an id there.
+
+         When the sources disagree about the same fact, the newest wins:
+         - if the user recently gave a new value, answer with the new value only;
+         - if the user recently told you something no fact mentions, you know it: answer with it;
+         - if the user has just retracted a piece of previous information, answer with what they retracted;
+         - if the user recently asked you to forget something, you no longer know it: say that
+           you do not keep that information anymore, even if a fact or a memory still contains it.
+
+         A recent message changes only the fact it talks about: everything else you know on the
+         same topic is still true. When the question asks for several things answer with every 
+         item that is still true, from all the sources.
+         Say directly what is true now: never state an outdated value and then correct it,
+         and never repeat a forgotten fact.
+
+         Answer in one or two sentences, in the language the user wrote in. If none of the
+         sources contains the answer, say so plainly instead of inventing it.
+
+         Then list the ID of every fact and memory the answer is based on, copied exactly.
+         Leave out the ones you read but did not use, and the ones a recent message replaced
+         or asked to forget. If the answer comes only from the last messages, or from no
+         source at all, the list is empty.
+
+         Facts kept at hand: {core_memory}
+
+         Memories recalled from the archive for this question: {retrieved_memory}
+
+         Last messages (Human is the user, AI is you): {messages}"""),
+    ("human", """{input}
+
+Before answering, check the conversation above against the facts or among the recalled memories.
+If the user has just given a newer value, use the newer one.
+If the user has just asked you to forget something, it is gone: do not use it,
+even if it is still listed among the facts or among the recalled memories.
+Then list the ids of the facts and memories your answer used.""")
+])
+
+
+class AnswerWithUsedMemories(BaseModel):
+    """The answer for the user, then the facts and memories it is based on."""
+
+    answer: str = Field(description="The answer for the user, with no id in it.")
+    used_memory_ids: List[str] = Field(description=(
+        "The ID of every fact and memory the answer is based on, copied exactly. Empty "
+        "when the answer uses none of them."))
+
+
+def generate_answer(state: AgentState, runtime: Runtime[MemoryConfig]):
+    if not state.get("generate_answer", True):
+        print("\tAnswer generation disabled, skipping")
+        return {}
+
+    print("\tAnswer agent node activated")
     user_query, history = query_and_history(state)
-    response = _timed("generate_answer", lambda: chain.invoke(
-        {"input": user_query,
-         "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
-         "retrieved_memory": state.get("retrieved_memory", ""),
-         "messages": messages_to_str(history)}))
+    inputs = {"input": user_query,
+              "retrieved_memory": state.get("retrieved_memory", ""),
+              "messages": messages_to_str(history)}
+
+    if runtime.context.track_used:
+        facts = serialize_core_memory_with_ids(state["core_memory"])
+        inputs["core_memory"] = "\n".join(
+            f"ID: {item_id}, Content: {content}" for item_id, content in facts.items()) or "(none)"
+        chain = ANSWER_WITH_USED_PROMPT | get_llm("generate_answer").bind_tools(
+            [AnswerWithUsedMemories], tool_choice=REQUIRED)
+        args = _timed("generate_answer", lambda: chain.invoke(inputs)).tool_calls[0]["args"]
+        print(f"\tUsed memories: {args['used_memory_ids']}")
+        record_uses(args["used_memory_ids"], state["core_memory"])
+        response = AIMessage(content=args["answer"])
+    else:
+        inputs["core_memory"] = serialize_core_memory_for_prompt(state["core_memory"])
+        chain = ANSWER_PROMPT | get_llm("generate_answer")
+        response = _timed("generate_answer", lambda: chain.invoke(inputs))
 
     asked_out_of_band = bool(str(state.get("current_query") or "").strip())
     turn = [HumanMessage(content=user_query)] if asked_out_of_band else []

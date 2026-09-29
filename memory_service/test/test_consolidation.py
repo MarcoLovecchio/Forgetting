@@ -38,6 +38,7 @@ from memory_service.consolidation import (  # noqa: E402
     CoreMemoryItem,
     archive_items,
     get_active_items,
+    record_uses,
     reinforce_archived_item,
     retrieve_active_archival_memories,
     search_archive,
@@ -423,7 +424,7 @@ class StuckMetadataStore(FakeVectorStore):
 
 
 class RetrievalCountTest(unittest.TestCase):
-    """n_retrieve e retrieved_at: si muovono solo con un recupero dall'archivio."""
+    """n_retrieve, n_used e retrieved_at: si muovono solo con un recupero o con un uso."""
 
     def setUp(self):
         self.store = FakeVectorStore()
@@ -479,6 +480,14 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertEqual(self.counters(far), (0, self.store.metadatas[far]["updated_at"]),
                          "non restituita, non conta")
 
+    def test_without_the_stamp_a_retrieval_counts_but_leaves_retrieved_at(self):
+        cat, = self.archive("il gatto Milo")
+        created = self.store.metadatas[cat]["retrieved_at"]
+
+        retrieve_active_archival_memories("gatto", k=1, stamp=False)
+
+        self.assertEqual(self.counters(cat), (1, created))
+
     def test_a_retrieval_is_not_a_write(self):
         # updated_at e' il tempo delle scritture, e il vettore non si ricalcola.
         cat, = self.archive("il gatto Milo")
@@ -511,7 +520,7 @@ class RetrievalCountTest(unittest.TestCase):
         cat, = self.archive("il gatto Milo ha due anni")
         retrieve_active_archival_memories("gatto", k=1)
         retrieve_active_archival_memories("gatto", k=1)
-        self.store.metadatas[cat]["n_used"] = 1  # nessun codice lo popola ancora
+        record_uses([cat], [])
 
         new = supersede_archived_item(cat, "il gatto Milo ha tre anni", [])
 

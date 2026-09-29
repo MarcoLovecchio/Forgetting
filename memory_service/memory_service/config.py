@@ -117,9 +117,9 @@ class MemoryConfig:
     eviction_novelty: bool = False
     eviction_novelty_mode: Literal["nearest", "k_nearest"] = "nearest"
     eviction_frequency: bool = False
-    eviction_frequency_field: Literal["n_retrieve", "n_used"] = "n_retrieve"
     retrieval_mode: Literal["decide", "always_llm_query"] = "decide"
     generate_answer: bool = True
+    track_used: bool = False
 
     # Archival memory (ChromaDB)
     chroma_path: str = "./chroma_db"
@@ -133,6 +133,11 @@ class MemoryConfig:
     # Embedding model, read from the EMBEDDING_CONFIG entry of this node.
     embedding_config: Dict[str, Any] = field(default_factory=dict)
     embedding_base_url: Optional[str] = None
+
+    @property
+    def counts_used(self) -> bool:
+        """track_used vale solo con generate_answer: la lista degli usi esce dalla risposta."""
+        return self.track_used and self.generate_answer
 
     @classmethod
     def from_environment(cls, node_name: Optional[str] = None) -> "MemoryConfig":
