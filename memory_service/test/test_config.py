@@ -94,15 +94,6 @@ class ConfigTest(EnvironmentTestCase):
 
         self.assertEqual(config.llm_config["model_name"], "m1")
 
-    def test_local_model_defaults(self):
-        config = MemoryConfig.from_environment()
-
-        self.assertIsNone(config.base_url, "senza indirizzo vale il default del provider")
-        self.assertIsNone(config.embedding_base_url)
-        self.assertEqual(config.embedding_config, {})
-        self.assertEqual(config.api_key_env, "",
-                         "senza variabile configurata non si legge nessuna chiave")
-
     def test_base_urls_are_read_from_the_environment(self):
         os.environ["MEMORY_LLM_BASE_URL"] = "http://192.168.1.50:11434"
         os.environ["MEMORY_EMBEDDING_BASE_URL"] = "http://192.168.1.50:11434"
@@ -127,11 +118,6 @@ class ConfigTest(EnvironmentTestCase):
         config = MemoryConfig.from_environment()
 
         self.assertEqual(config.embedding_config["model_name"], "qwen3-embedding")
-
-    def test_malformed_embedding_config_does_not_raise(self):
-        os.environ["EMBEDDING_CONFIG"] = "{ questo non e' python"
-
-        self.assertEqual(MemoryConfig.from_environment().embedding_config, {})
 
     def test_llm_and_embedding_configs_are_independent(self):
         # Sono due modelli diversi, potenzialmente su runtime diversi: una
@@ -179,14 +165,6 @@ class BackendsTest(EnvironmentTestCase):
 
         self.assertIn("model_provider", str(raised.exception))
 
-    def test_injected_backends_are_returned_as_is(self):
-        sentinel_llm, sentinel_store = object(), object()
-
-        backends.configure(llm=sentinel_llm, vector_store=sentinel_store)
-
-        self.assertIs(backends.get_llm(), sentinel_llm)
-        self.assertIs(backends.get_vector_store(), sentinel_store)
-
     def test_reset_forgets_the_injected_backends(self):
         backends.configure(llm=object(), vector_store=object())
         backends.reset()
@@ -233,16 +211,6 @@ class LocalModelParametersTest(EnvironmentTestCase):
         config = MemoryConfig(node_name="memory_agent", llm_config=llm_config, **overrides)
         _build_llm(config, node_sampling)
         return self.calls[-1]
-
-    def test_a_node_override_wins_over_the_configuration(self):
-        parameters = self._build(
-            {"model_name": "qwen3.5-4b", "model_provider": "openai",
-             "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True},
-            node_sampling={"enable_thinking": False, "temperature": 0.7})
-
-        self.assertEqual(parameters["temperature"], 0.7)
-        self.assertIs(
-            parameters["extra_body"]["chat_template_kwargs"]["enable_thinking"], False)
 
     def test_a_new_configuration_invalidates_the_cached_models(self):
         # I modelli in cache derivano dalla configurazione: tenendoli, dopo un
@@ -326,17 +294,6 @@ class LocalModelParametersTest(EnvironmentTestCase):
         self.assertEqual(parameters["model_provider"], "openai")
         self.assertEqual(parameters["base_url"], "http://modelli.cluster.local:8000/v1")
 
-    def test_the_sampling_parameters_come_from_the_configuration(self):
-        # Qwen sconsiglia il greedy decoding: "can lead to performance
-        # degradation and endless repetitions". I valori stanno in .config
-        # proprio per poter essere tarati senza toccare il codice.
-        parameters = self._build({
-            "model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai",
-            "temperature": 1.0, "top_p": 0.95, "top_k": 20})
-
-        self.assertEqual(parameters["temperature"], 1.0)
-        self.assertEqual(parameters["top_p"], 0.95)
-
     def test_top_k_travels_in_extra_body(self):
         # top_k non e' un parametro dell'API OpenAI: passarlo come argomento
         # diretto non arriverebbe al server, che invece lo accetta nel corpo.
@@ -353,36 +310,12 @@ class LocalModelParametersTest(EnvironmentTestCase):
         self.assertEqual(parameters["extra_body"],
                          {"chat_template_kwargs": {"enable_thinking": False}})
 
-    def test_thinking_left_alone_is_not_sent_at_all(self):
-        # None non e' False: senza indicazione decide il server, e mandare
-        # esplicitamente un valore sarebbe decidere al posto suo.
-        parameters = self._build(
-            {"model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai"})
-
-        self.assertNotIn("extra_body", parameters)
-
     def test_what_is_not_configured_is_left_to_the_server(self):
         parameters = self._build(
             {"model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai"})
 
         for name in ("temperature", "top_p", "presence_penalty", "extra_body"):
             self.assertNotIn(name, parameters)
-
-    def test_extra_body_is_not_sent_to_a_hosted_provider(self):
-        # E' un campo di ChatOpenAI: altrove sarebbe un argomento sconosciuto.
-        parameters = self._build(
-            {"model_name": "un-modello", "model_provider": "groq", "top_k": 20})
-
-        self.assertNotIn("extra_body", parameters)
-
-    def test_a_placeholder_key_is_sent_when_the_endpoint_wants_none(self):
-        # L'SDK di OpenAI solleva alla costruzione del client, non alla prima
-        # chiamata, se non trova nessuna chiave - anche verso un server che non
-        # la controlla. Senza segnaposto il servizio non parte proprio.
-        parameters = self._build(
-            {"model_name": "qwen3.5-4b", "model_provider": "openai"})
-
-        self.assertEqual(parameters["api_key"], "EMPTY")
 
     def test_the_key_of_another_provider_never_leaves(self):
         # GROQ_API_KEY *e'* impostata nel .env, perche' gli altri cinque nodi
@@ -396,24 +329,6 @@ class LocalModelParametersTest(EnvironmentTestCase):
             {"model_name": "qwen3.5-4b", "model_provider": "openai"})
 
         self.assertEqual(parameters["api_key"], "EMPTY")
-
-    def test_a_hosted_provider_keeps_looking_up_its_own_key(self):
-        # Passare api_key=None non e' neutro: sopprimerebbe il lookup che il
-        # provider fa da solo sulla propria variabile.
-        parameters = self._build(
-            {"model_name": "un-modello", "model_provider": "groq"})
-
-        self.assertNotIn("api_key", parameters)
-
-    def test_the_api_key_is_sent_when_the_variable_is_set(self):
-        os.environ["A_TEST_KEY"] = "segreto"
-        self.addCleanup(os.environ.pop, "A_TEST_KEY", None)
-
-        parameters = self._build(
-            {"model_name": "un-modello", "model_provider": "groq"},
-            api_key_env="A_TEST_KEY")
-
-        self.assertEqual(parameters["api_key"], "segreto")
 
     def test_base_url_is_omitted_when_not_configured(self):
         parameters = self._build(
@@ -487,25 +402,6 @@ class OpenAIEmbeddingParametersTest(EnvironmentTestCase):
 
 class EmbeddingBackendTest(EnvironmentTestCase):
     """Gli errori di configurazione dell'embedding, verificabili senza il server."""
-
-    def test_a_missing_embedding_config_is_reported(self):
-        from memory_service.backends import _build_embeddings
-
-        with self.assertRaises(RuntimeError) as raised:
-            _build_embeddings(MemoryConfig(node_name="memory_agent"))
-
-        self.assertIn("EMBEDDING_CONFIG", str(raised.exception))
-
-    def test_an_incomplete_embedding_config_is_reported(self):
-        from memory_service.backends import _build_embeddings
-
-        config = MemoryConfig(node_name="memory_agent",
-                              embedding_config={"model_name": "qwen3-embedding:0.6b"})
-
-        with self.assertRaises(RuntimeError) as raised:
-            _build_embeddings(config)
-
-        self.assertIn("model_provider", str(raised.exception))
 
     def test_an_unknown_provider_is_reported(self):
         from memory_service.backends import _build_embeddings

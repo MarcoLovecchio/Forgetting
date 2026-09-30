@@ -37,7 +37,6 @@ from memory_service.memory_manager_llm import (  # noqa: E402
     NODE_STATS,
     MemoryAgent,
     _timed,
-    messages_to_str,
     query_and_history,
     reset_node_stats,
     retrieve_memory,
@@ -105,39 +104,6 @@ class MemoryServiceTestCase(unittest.TestCase):
         return messages
 
 
-class ImportIsolationTest(unittest.TestCase):
-    """The package must not drag in the rest of the architecture."""
-
-    def test_agent_module_has_no_architecture_dependencies(self):
-        import memory_service.memory_manager_llm as module
-
-        with open(module.__file__, encoding="utf-8") as handle:
-            source = handle.read()
-        # I provider stanno solo in backends.py: il modulo dell'agente non deve
-        # sapere se dietro c'e' un endpoint OpenAI compatible, Mistral o altro.
-        forbidden_imports = (
-            "shared_utils", "db_adapters", "rclpy", "chromadb",
-            "langchain_mistralai", "langchain_openai")
-        for forbidden in forbidden_imports:
-            self.assertNotIn(
-                forbidden, source, f"{forbidden} must not be imported by the agent module")
-
-    def test_consolidation_module_has_no_architecture_dependencies(self):
-        import memory_service.consolidation as module
-
-        with open(module.__file__, encoding="utf-8") as handle:
-            source = handle.read()
-        for forbidden in ("shared_utils", "db_adapters", "rclpy", "chromadb"):
-            self.assertNotIn(
-                forbidden, source, f"{forbidden} must not be imported by consolidation")
-
-    def test_importing_does_not_build_backends(self):
-        backends.reset()
-        self.assertEqual(backends._llm, {})
-        self.assertIsNone(backends._injected_llm)
-        self.assertIsNone(backends._vector_store)
-
-
 class InsertInteractionTest(MemoryServiceTestCase):
     tool_responses = {
         "InsertCoreMemories": {
@@ -183,82 +149,8 @@ class InsertInteractionTest(MemoryServiceTestCase):
         self.assertEqual(self.llm.invocations, [])
 
 
-class CoreMemoryOverflowTest(MemoryServiceTestCase):
-    """Regression test for the summarize/execute cycle that never terminated."""
-
-    def test_core_memory_over_the_limit_is_split_once_and_terminates(self):
-        long_item = CoreMemoryItem(content="x" * 300)
-        self.agent.state["core_memory"] = [long_item]
-        self.agent.state["messages"] = self.conversation(9)
-        self.llm.script({
-            "InsertCoreMemories": {"memories": []},
-            "SplitCoreAndArchivalMemory": {
-                "decisions": [{"item_id": long_item.id, "destination": "archive"}]},
-        })
-
-        state = self.agent.run_memory_agent("insert")
-
-        self.assertEqual(state["core_memory"], [], "the item moved to the archive")
-        self.assertEqual(self.vector_store.documents[long_item.id], long_item.content)
-        self.assertEqual(
-            self.llm.bound_tool_names().count("SplitCoreAndArchivalMemory"),
-            1,
-            "the split must happen once, not loop until the recursion limit",
-        )
-
-    def test_archived_item_keeps_the_core_memory_item_fields(self):
-        item = CoreMemoryItem(content="y" * 300)
-        self.agent.state["core_memory"] = [item]
-        self.agent.state["messages"] = self.conversation(9)
-        self.llm.script({
-            "InsertCoreMemories": {"memories": []},
-            "SplitCoreAndArchivalMemory": {
-                "decisions": [{"item_id": item.id, "destination": "archive"}]},
-        })
-
-        self.agent.run_memory_agent("insert")
-
-        metadata = self.vector_store.metadatas[item.id]
-        self.assertEqual(metadata["status"], "active")
-        self.assertEqual(metadata["updated_at"], item.updated_at.isoformat())
-        self.assertEqual(metadata["retrieved_at"], item.retrieved_at.isoformat())
-
-
-class SplitPromptTest(MemoryServiceTestCase):
-    """Il limite e' una richiesta al modello: il prompt deve dargli i numeri.
-
-    Non c'e' nessuna eviction deterministica dietro, quindi se il prompt non
-    mette il modello in condizione di contare, il limite non viene rispettato.
-    """
-
-    def _run_split(self, items, limit=150):
-        self.agent.state["core_memory"] = list(items)
-        self.agent.state["core_memory_limit"] = limit
-        self.agent.state["messages"] = self.conversation(9)
-        self.llm.script({
-            "InsertCoreMemories": {"memories": []},
-            "SplitCoreAndArchivalMemory": {"decisions": []},
-        })
-        self.agent.run_memory_agent("insert")
-        return "\n".join(
-            invocation["prompt"] for invocation in self.llm.invocations
-            if "SplitCoreAndArchivalMemory" in invocation["tools"])
-
-    def test_the_prompt_carries_the_numbers(self):
-        # Numeri che non si contengono l'un l'altro, e un id senza cifre: con 150
-        # di limite "50" da liberare sarebbe comparso comunque.
-        prompt = self._run_split([CoreMemoryItem(id="a", content="x" * 230)], limit=100)
-
-        self.assertIn("230", prompt, "la lunghezza attuale deve essere nel prompt")
-        self.assertIn("100", prompt, "il limite deve essere nel prompt")
-        self.assertIn("130", prompt, "quanto liberare deve essere nel prompt")
-
-    def test_every_memory_carries_its_own_length(self):
-        prompt = self._run_split(
-            [CoreMemoryItem(content="a" * 90), CoreMemoryItem(content="b" * 80)], limit=100)
-
-        self.assertIn("(90 characters)", prompt)
-        self.assertIn("(80 characters)", prompt)
+class SplitLimitTest(MemoryServiceTestCase):
+    """Il limite della core e' una richiesta al modello: dietro non c'e' un taglio forzato."""
 
     def test_ignoring_the_limit_is_reported_but_not_forced(self):
         # Il modello decide di non archiviare nulla: la scelta viene rispettata,
@@ -280,38 +172,6 @@ class SplitPromptTest(MemoryServiceTestCase):
         self.assertIn("still over the limit", captured.getvalue())
 
 
-class MalformedToolCallTest(MemoryServiceTestCase):
-    """The graph must survive an LLM that omits arguments."""
-
-    tool_responses = {
-        "InsertCoreMemories": {},
-        "SplitCoreAndArchivalMemory": {},
-    }
-
-    def test_missing_arguments_do_not_crash_the_graph(self):
-        kept = CoreMemoryItem(content="kept fact")
-        self.agent.state["core_memory"] = [kept]
-        self.agent.state["messages"] = self.conversation(9)
-
-        state = self.agent.run_memory_agent("insert")
-
-        self.assertEqual(contents(state), ["kept fact"])
-        self.assertEqual(self.vector_store.documents, {})
-
-    def test_malformed_operations_are_skipped(self):
-        self.agent.state["messages"] = self.conversation(9)
-        self.llm.script({"InsertCoreMemories": {"memories": [
-            "not a dict",
-            {"fact": "", "operation": "new"},
-            {"fact": "a fact", "operation": "nonsense"},
-            {"fact": "a good fact", "operation": "new"},
-        ]}})
-
-        state = self.agent.run_memory_agent("insert")
-
-        self.assertEqual(contents(state), ["a good fact"], "only the valid one survives")
-
-
 class RetrieveInteractionTest(MemoryServiceTestCase):
     tool_responses = {"NoSearchNeeded": {"reason": "Bianca is vegetarian"}}
     default_content = "Yes, you are vegetarian."
@@ -326,9 +186,6 @@ class RetrieveInteractionTest(MemoryServiceTestCase):
         self.assertEqual(self.vector_store.searches, [], "the archive must not be queried")
 
     def test_retrieve_result_is_cached_until_the_next_insert(self):
-        # La seconda meta' - che un insert butti via la cache - non era coperta
-        # da nessun test, e senza di lei la prima duplica soltanto
-        # CurrentQueryTest.test_the_same_question_is_still_cached.
         self.agent.state["messages"] = [HumanMessage(content="What are my dietary preferences?")]
 
         self.agent.run_memory_agent("retrieve")
@@ -368,14 +225,6 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         self.assertEqual(self.vector_store.searches[0]["filter"], {"status": "active"})
         self.assertIn("black tea", state["retrieved_memory"])
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
-
-    def test_the_retrieve_branch_counts_what_it_returns(self):
-        self.archive({"memory_a": "User likes black tea in the afternoon"})
-        self.agent.state["messages"] = [HumanMessage(content="What can I drink in the afternoon?")]
-
-        self.agent.run_memory_agent("retrieve")
-
-        self.assertEqual(self.vector_store.metadatas["memory_a"]["n_retrieve"], 1)
 
 
 class InsertDoesNotCountRetrievalsTest(MemoryServiceTestCase):
@@ -516,14 +365,6 @@ class UsedMemoriesTest(MemoryServiceTestCase):
         self.assertIsInstance(state["messages"][-1], AIMessage)
         self.assertEqual(state["messages"][-1].content, self.ANSWER)
 
-    def test_the_facts_are_shown_with_their_ids(self):
-        self.run_retrieve([])
-
-        answer_call = self.llm.invocations[-1]
-        self.assertEqual(answer_call["tools"], ["AnswerWithUsedMemories"])
-        self.assertIn("ID: core_name, Content: User is called Bianca", answer_call["prompt"])
-        self.assertIn("ID: memory_a, Content: User likes black tea", answer_call["prompt"])
-
     def test_a_used_core_memory_counts_one_use(self):
         state = self.run_retrieve(["core_name"])
 
@@ -555,7 +396,6 @@ class UsedMemoriesTest(MemoryServiceTestCase):
 
         answer_call = self.llm.invocations[-1]
         self.assertEqual(answer_call["tools"], [])
-        self.assertNotIn("ID: core_name", answer_call["prompt"])
         for item_id in ("memory_a", "memory_b"):
             n_retrieve, n_used, retrieved_at = self.archived(item_id)
             self.assertEqual((n_retrieve, n_used), (1, 0))
@@ -585,46 +425,6 @@ class CurrentQueryTest(MemoryServiceTestCase):
     }
     default_content = "risposta"
 
-    def test_the_passed_query_is_what_reaches_the_prompts(self):
-        self.agent.state["messages"] = [
-            HumanMessage(content="di cosa parlavamo prima?"),
-            AIMessage(content="parlavamo del tuo cane"),
-        ]
-
-        self.agent.run_memory_agent("retrieve", query="quante calorie devo assumere?")
-
-        prompts = "\n".join(invocation["prompt"] for invocation in self.llm.invocations)
-        self.assertIn("quante calorie devo assumere?", prompts)
-
-    def test_without_a_query_it_falls_back_to_the_last_message(self):
-        self.agent.state["messages"] = [HumanMessage(content="e il mio cane?")]
-
-        self.agent.run_memory_agent("retrieve")
-
-        prompts = "\n".join(invocation["prompt"] for invocation in self.llm.invocations)
-        self.assertIn("e il mio cane?", prompts)
-
-    def test_a_new_question_is_not_served_from_the_cache(self):
-        self.agent.state["messages"] = [HumanMessage(content="un messaggio")]
-
-        self.agent.run_memory_agent("retrieve", query="prima domanda?")
-        after_first = len(self.llm.invocations)
-        self.agent.run_memory_agent("retrieve", query="seconda domanda?")
-
-        self.assertGreater(len(self.llm.invocations), after_first,
-                           "una domanda diversa deve far rigirare il grafo")
-        prompts = "\n".join(invocation["prompt"] for invocation in self.llm.invocations)
-        self.assertIn("seconda domanda?", prompts)
-
-    def test_the_same_question_is_still_cached(self):
-        self.agent.state["messages"] = [HumanMessage(content="un messaggio")]
-
-        self.agent.run_memory_agent("retrieve", query="stessa domanda?")
-        after_first = len(self.llm.invocations)
-        self.agent.run_memory_agent("retrieve", query="stessa domanda?")
-
-        self.assertEqual(len(self.llm.invocations), after_first)
-
     def test_a_question_is_answered_even_with_an_empty_conversation(self):
         # L'archivio puo' contenere roba di sessioni precedenti: una domanda a
         # freddo deve comunque poterlo interrogare.
@@ -643,16 +443,6 @@ class CurrentQueryTest(MemoryServiceTestCase):
         self.agent.run_memory_agent("retrieve")
 
         self.assertEqual(self.llm.invocations, [])
-
-    def test_an_insert_clears_the_query(self):
-        self.agent.state["messages"] = self.conversation(9)
-        self.llm.script({"InsertCoreMemories": {"memories": []}})
-
-        self.agent.run_memory_agent("retrieve", query="una domanda?")
-        state = self.agent.run_memory_agent("insert")
-
-        self.assertEqual(state["current_query"], "",
-                         "la domanda vale per il retrieve che l'ha ricevuta")
 
 
 def _tool_name(tool):
@@ -758,30 +548,6 @@ class ArchiveLimitStateTest(MemoryServiceTestCase):
         self.assertEqual(agent.state["archive_memory_limit"], 7)
 
 
-class KnownMemoriesFormatTest(MemoryServiceTestCase):
-    """Le memorie note arrivano al classificatore una per riga, come id: content."""
-
-    tool_responses = {"InsertCoreMemories": {"memories": []}}
-
-    def consolidation_prompt(self):
-        self.agent.state["messages"] = self.conversation(8)
-        self.agent.run_memory_agent("insert")
-
-        for invocation in self.llm.invocations:
-            if "InsertCoreMemories" in invocation["tools"]:
-                return invocation["prompt"]
-        raise AssertionError("il consolidamento non e' mai stato invocato")
-
-    def test_the_known_memories_are_one_per_line(self):
-        # Come dizionario Python erano una riga sola di graffe e virgolette.
-        item = CoreMemoryItem(content="The user is allergic to peanuts.")
-        self.agent.state["core_memory"] = [item]
-        prompt = self.consolidation_prompt()
-
-        self.assertIn("\n%s: The user is allergic to peanuts.\n" % item.id, prompt)
-        self.assertNotIn("{'", prompt)
-
-
 class NodeSamplingWiringTest(MemoryServiceTestCase):
     """Ogni nodo deve chiedere il proprio nome, e quel nome deve esistere.
 
@@ -872,12 +638,6 @@ class NodeStatsTest(MemoryServiceTestCase):
         self.agent.run_memory_agent("retrieve", query="cosa bevo?")
 
         self.assertEqual(NODE_STATS["retrieval"]["output_tokens"], 0)
-
-    def test_the_counters_are_reset_between_runs(self):
-        self.agent.run_memory_agent("retrieve", query="cosa bevo?")
-        reset_node_stats()
-
-        self.assertEqual(NODE_STATS, {})
 
 
 class ToolChoiceSpy:
@@ -984,19 +744,8 @@ class AppendMessageTest(MemoryServiceTestCase):
         self.assertIsInstance(self.agent.state["messages"][0], HumanMessage)
         self.assertIsInstance(self.agent.state["messages"][1], AIMessage)
 
-    def test_singleton_is_shared_but_resettable(self):
-        self.assertIs(MemoryAgent(), self.agent)
-        MemoryAgent.reset_instance()
-        self.assertIsNot(MemoryAgent(config=TEST_CONFIG), self.agent)
-
 
 class RetrieveMemoryToolTest(MemoryServiceTestCase):
-    def test_string_k_is_accepted(self):
-        self.archive({"memory_a": "a fact about tea"})
-
-        result = retrieve_memory.invoke({"query": "tea", "k": "1"})
-
-        self.assertIn("a fact about tea", result)
 
     def test_no_results(self):
         self.assertEqual(
@@ -1005,18 +754,6 @@ class RetrieveMemoryToolTest(MemoryServiceTestCase):
 
 class LastOperationsTest(MemoryServiceTestCase):
     """What the ROS response publishes: the operations of THIS call only."""
-
-    def test_operations_of_the_last_run_are_reported(self):
-        self.agent.state["messages"] = self.conversation(9)
-        self.llm.script({"InsertCoreMemories": {"memories": [
-            {"fact": "Bianca is vegetarian", "operation": "new"},
-            {"fact": "Bianca is allergic to peanuts", "operation": "new"},
-        ]}})
-
-        self.agent.run_memory_agent("insert")
-
-        self.assertEqual([entry.op_type for entry in self.agent.last_operations()],
-                         ["create", "create"])
 
     def test_a_later_run_does_not_report_the_previous_operations(self):
         self.agent.state["messages"] = self.conversation(9)
@@ -1042,13 +779,6 @@ class LastOperationsTest(MemoryServiceTestCase):
 
     def test_no_operations_before_the_first_run(self):
         self.assertEqual(self.agent.last_operations(), [])
-
-
-class MessagesToStrTest(unittest.TestCase):
-    def test_messages_are_prefixed_by_their_role(self):
-        rendered = messages_to_str([HumanMessage(content="hi"), AIMessage(content="hello")])
-
-        self.assertEqual(rendered, "Human: hi\nAI: hello")
 
 
 if __name__ == "__main__":

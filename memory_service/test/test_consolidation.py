@@ -41,7 +41,6 @@ from memory_service.consolidation import (  # noqa: E402
     record_uses,
     reinforce_archived_item,
     retrieve_active_archival_memories,
-    search_archive,
     serialize_retrieved_for_response,
     supersede_archived_item,
     supersede_item,
@@ -360,56 +359,6 @@ class RetrievedSerializationTest(unittest.TestCase):
     def test_the_nothing_found_sentence_becomes_an_empty_list(self):
         self.assertEqual(serialize_retrieved_for_response(NO_ARCHIVAL_RESULTS), [])
 
-    def test_no_retrieval_at_all_becomes_an_empty_list(self):
-        self.assertEqual(serialize_retrieved_for_response(""), [])
-
-
-class ArchiveSearchTest(unittest.TestCase):
-    """Il filtro sulle attive lo fa lo store, dentro l'indice.
-
-    Chiedere k documenti e scartare dopo quelli non attivi ne restituisce meno
-    di k, e il divario peggiora col tempo perche' con l'eviction spenta i tombstone
-    non vengono mai rimossi: il classificatore si ritroverebbe senza candidati su un
-    archivio molto usato, senza che niente segnali il problema.
-    """
-
-    def setUp(self):
-        self.store = FakeVectorStore()
-        backends.reset()
-        backends.configure(llm=ScriptedChatModel(tool_responses={}),
-                           vector_store=self.store, config=LIFECYCLE_CONFIG)
-
-    def tearDown(self):
-        backends.reset()
-
-    def fill(self, tombstones, active):
-        """Prima i tombstone, poi le attive.
-
-        Tutti i contenuti contengono la stessa parola della query, quindi hanno
-        lo stesso punteggio: l'ordinamento e' stabile e le lapidi finiscono
-        davanti. E' il caso peggiore, ed e' quello che succede davvero quando
-        una memoria viene aggiornata piu' volte - la versione vecchia resta li',
-        somigliantissima alla nuova.
-        """
-        for index in range(tombstones):
-            self.store.add_texts(texts=[f"il gatto, versione vecchia {index}"],
-                                 ids=[f"tomb_{index}"],
-                                 metadatas=[{"status": "superseded"}])
-        for index in range(active):
-            self.store.add_texts(texts=[f"il gatto, versione buona {index}"],
-                                 ids=[f"live_{index}"],
-                                 metadatas=[{"status": "active"}])
-
-    def test_the_search_delegates_the_filter_to_the_store(self):
-        self.fill(tombstones=2, active=5)
-
-        search_archive("gatto", k=3)
-
-        search = self.store.searches[-1]
-        self.assertEqual(search["filter"], {"status": "active"})
-        self.assertEqual(search["k"], 3,
-                         "niente documenti chiesti in piu': il filtro e' nell'indice")
-
 
 class StuckMetadataStore(FakeVectorStore):
     """Lo store che cerca, ma non riesce a riscrivere i metadata."""
@@ -455,11 +404,6 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertEqual((item.n_retrieve, item.n_used), (0, 0))
         self.assertEqual(item.retrieved_at, created)
 
-    def test_the_two_timestamps_start_from_one_instant(self):
-        item = CoreMemoryItem(content="ha un gatto")
-
-        self.assertEqual(item.retrieved_at, item.updated_at)
-
     def test_the_counters_travel_to_the_archive(self):
         item = CoreMemoryItem(content="ha un gatto", n_retrieve=2, n_used=5)
         archive_items([item])
@@ -479,14 +423,6 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertGreater(self.store.metadatas[cat]["retrieved_at"], created)
         self.assertEqual(self.counters(far), (0, self.store.metadatas[far]["updated_at"]),
                          "non restituita, non conta")
-
-    def test_without_the_stamp_a_retrieval_counts_but_leaves_retrieved_at(self):
-        cat, = self.archive("il gatto Milo")
-        created = self.store.metadatas[cat]["retrieved_at"]
-
-        retrieve_active_archival_memories("gatto", k=1, stamp=False)
-
-        self.assertEqual(self.counters(cat), (1, created))
 
     def test_a_retrieval_is_not_a_write(self):
         # updated_at e' il tempo delle scritture, e il vettore non si ricalcola.

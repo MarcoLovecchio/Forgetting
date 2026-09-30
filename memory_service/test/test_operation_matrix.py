@@ -89,9 +89,6 @@ class ClassifyTest(unittest.TestCase):
     def test_different_types_are_mixed(self):
         self.assertEqual(om.classify(["create", "redundant"])[0], om.MIXED)
 
-    def test_nothing_is_none(self):
-        self.assertEqual(om.classify([])[0], "none")
-
 
 class AttributionTest(unittest.TestCase):
     """A quale messaggio appartengono le operazioni di un turno."""

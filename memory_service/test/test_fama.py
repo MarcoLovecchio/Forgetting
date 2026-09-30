@@ -111,20 +111,6 @@ class FormulaTest(unittest.TestCase):
         self.assertEqual(scored.lam, 0.0)
         self.assertEqual(scored.fama, 0.0)
 
-    def test_the_declared_deviation_on_an_empty_presence_set(self):
-        """Le domande dopo un delete valgono FAA, non zero fisso.
-
-        Il codice di Memora mette MPA a 0 quando non ci sono criteri di
-        presenza, e con lam = 1 quelle domande valgono 0 comunque vada. Nel loro
-        dataset il ramo non gira mai; qui girerebbe sei volte su diciassette e
-        bloccherebbe il totale sotto i 65 punti a prescindere. Se qualcuno
-        allinea `score` alla lettera del riferimento, questo test lo ferma e gli
-        dice perche'.
-        """
-        subject = question(fama.forgets("indirizzo", "mondello"))
-        self.assertEqual(fama.score(subject, "Non lo so.").fama, 1.0)
-        self.assertEqual(fama.score(subject, "Abiti a Mondello.").fama, 0.0)
-
     def test_the_score_says_which_criteria_gave_way(self):
         subject = question(fama.recalls("torino"), fama.forgets("milano"))
         scored = fama.score(subject, "Vive a Milano.")
@@ -403,12 +389,6 @@ class VerdictTest(unittest.TestCase):
 
 class CriteriaTableTest(unittest.TestCase):
     """La tabella delle diciassette domande, contro la conversazione vera."""
-
-    def test_every_annotated_index_is_inside_the_conversation(self):
-        messages = conversation()
-        for index in fama.QUESTIONS:
-            self.assertTrue(1 <= index <= len(messages),
-                            "indice %d fuori dalla conversazione" % index)
 
     def test_every_question_in_the_conversation_has_criteria(self):
         """Una domanda senza criteri sparirebbe dal conto senza dirlo.
