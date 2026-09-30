@@ -145,7 +145,7 @@ class MemoryConfig:
         node_name = node_name or os.getenv("MEMORY_LLM_NODE", "memory_agent")
         return cls(
             node_name=node_name,
-            maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES", 4),
+            maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES", 2),
             core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", 400),
             archive_memory_limit=_env_int("MEMORY_ARCHIVE_LIMIT", 50),
             generate_answer=_env_bool("MEMORY_GENERATE_ANSWER", True),

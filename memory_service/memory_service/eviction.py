@@ -71,9 +71,11 @@ variabile d'ambiente lo legge.
 Una volta per insert, nel nodo evict_archive del grafo, in cui confluiscono tutte
 le uscite del ramo insert: dopo il consolidamento, che e' dove nascono superseded
 e deleted. Cosi' i tombstone di un turno spariscono nello stesso turno, e non c'e'
-concorrenza con la chiamata successiva sulla stessa collezione. Il ramo retrieve
-non la esegue: non produce tombstone e non aggiunge memorie. Il nodo legge gli
-switch dal runtime context, la MemoryConfig che run_memory_agent passa a invoke.
+concorrenza con la chiamata successiva sulla stessa collezione. Da li' il router
+exceed_archive_limit manda al nodo prune_archive solo se le attive superano il
+limite, come gli altri due limiti del ramo. Il ramo retrieve non la esegue: non
+produce tombstone e non aggiunge memorie. Nodi e router leggono gli switch dal
+runtime context, la MemoryConfig che run_memory_agent passa a invoke.
 
 Le voci evict e prune cadono dopo l'offset fissato all'inizio del run, quindi
 last_operations() le pubblica nella stessa risposta di update_memory.
@@ -287,9 +289,9 @@ def prune_count(active: int, fraction: float = PRUNE_FRACTION) -> int:
     return math.ceil(active * fraction)
 
 
-def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig,
+def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
                   now: Optional[datetime] = None) -> List[str]:
-    """Oltre il limite, toglie le memorie attive con lo score piu' basso.
+    """Toglie le memorie attive con lo score piu' basso.
 
     Ne toglie prune_count delle attive, una alla volta: dopo ogni scelta gli
     score delle rimaste si ricalcolano senza di lei. Con tutti i termini spenti
@@ -298,13 +300,10 @@ def prune_archive(log: List[OperationLogEntry], limit: int, config: MemoryConfig
     termini del momento in cui e' stata scelta. Come evict_archived_tombstones
     non solleva se lo store fallisce, e il log registra solo le rimozioni riuscite.
 
-    Presuppone i tombstone gia' rimossi da evict_archived_tombstones, che nel
-    memory manager gira subito prima. Il filtro `status: active` resta perche' e'
-    lo stesso insieme su cui archive_over_limit conta le memorie.
+    Non guarda il limite: se l'archivio lo supera lo decide il grafo, con
+    archive_over_limit, prima di arrivare qui. Il filtro `status: active` e' lo
+    stesso insieme su cui quella conta le memorie.
     """
-    if archive_over_limit(limit) == 0:
-        return []
-
     include = ["documents", "metadatas"] + (["embeddings"] if config.eviction_novelty else [])
     try:
         store = backends.get_vector_store()

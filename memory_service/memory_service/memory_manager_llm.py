@@ -25,7 +25,7 @@ from memory_service.consolidation import (
     serialize_core_memory_for_prompt,
     serialize_core_memory_with_ids,
 )
-from memory_service.eviction import evict_archived_tombstones, prune_archive
+from memory_service.eviction import archive_over_limit, evict_archived_tombstones, prune_archive
 
 class AgentState(TypedDict):
     messages: list
@@ -548,13 +548,23 @@ Return one decision for every memory listed above.""")])
 
 
 def eviction_node(state: AgentState, runtime: Runtime[MemoryConfig]):
-    """Fine del ramo insert: via i tombstone, poi il prune se l'archivio e' oltre il limite."""
-    config = runtime.context
-    if not config.eviction:
+    """Fine del ramo insert: via i tombstone."""
+    if not runtime.context.eviction:
         return {}
     log = list(state["operation_log"])
     evict_archived_tombstones(log)
-    prune_archive(log, state["archive_memory_limit"], config)
+    return {"operation_log": log}
+
+
+def exceed_archive_limit(state: AgentState, runtime: Runtime[MemoryConfig]) -> bool:
+    if not runtime.context.eviction:
+        return False
+    return archive_over_limit(state["archive_memory_limit"]) > 0
+
+
+def prune_node(state: AgentState, runtime: Runtime[MemoryConfig]):
+    log = list(state["operation_log"])
+    prune_archive(log, runtime.context)
     return {"operation_log": log}
 
 
@@ -576,15 +586,17 @@ graph.add_node("summarize_core_memories", summarize_core_memories_node)
 graph.add_node("execute_insertion_tool", tool_node)
 graph.add_node("execute_core_split_tool", tool_node)
 graph.add_node("evict_archive", eviction_node)
+graph.add_node("prune_archive", prune_node)
 graph.add_edge("summarize_memories",  "execute_insertion_tool")
 graph.add_edge("summarize_core_memories",  "execute_core_split_tool")
 graph.add_edge("execute_core_split_tool", "evict_archive")
-graph.add_edge("evict_archive", END)
+graph.add_edge("prune_archive", END)
 
 graph.add_conditional_edges(START, interaction_type_node, {'insert': "insert_memories", 'retrieve': "retrieve"})
 
 graph.add_conditional_edges('insert_memories', exceed_memory_limit, {True: "summarize_memories", False: "evict_archive"})
 graph.add_conditional_edges('execute_insertion_tool', exceed_core_memory_limit, {True: "summarize_core_memories", False: "evict_archive"})
+graph.add_conditional_edges('evict_archive', exceed_archive_limit, {True: "prune_archive", False: END})
 
 # Compile the graph
 memory_agent = graph.compile()

@@ -214,7 +214,7 @@ class WhenTheStoreFailsTest(EvictionTestCase):
         self.use(StuckStore)
         old = self.archive("ha un cane di nome Argo", days_old=30)
 
-        self.assertEqual(prune_archive(self.log, 0, EVICTION_CONFIG, now=NOW), [])
+        self.assertEqual(prune_archive(self.log, EVICTION_CONFIG, now=NOW), [])
         self.assertIn(old, self.store.documents)
         self.assertEqual(self.log, [])
 
@@ -395,7 +395,7 @@ class FrequencyTermTest(EvictionTestCase):
     def test_in_the_prune_the_value_is_relative_to_the_highest(self):
         ids = {n: self.archive_counts(f"fatto {n}", n_retrieve=n, n_used=0) for n in (4, 2, 3)}
 
-        removed = prune_archive(self.log, 2, self.FREQUENCY_ONLY, now=NOW)
+        removed = prune_archive(self.log, self.FREQUENCY_ONLY, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
         self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 su un massimo di 4")
@@ -404,7 +404,7 @@ class FrequencyTermTest(EvictionTestCase):
         # Recuperate tutte 9 volte: il massimo dei recuperi non c'entra con gli usi.
         ids = {n: self.archive_counts(f"fatto {n}", n_retrieve=9, n_used=n) for n in (4, 2, 3)}
 
-        removed = prune_archive(self.log, 2, self.USES_COUNTED, now=NOW)
+        removed = prune_archive(self.log, self.USES_COUNTED, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
         self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 usi su un massimo di 4")
@@ -419,7 +419,7 @@ class FrequencyTermTest(EvictionTestCase):
         _, never_retrieved, _ = self.retrieved_and_used()
         config = dataclasses.replace(self.USES_COUNTED, generate_answer=False)
 
-        self.assertEqual(prune_archive(self.log, 2, config, now=NOW), [never_retrieved])
+        self.assertEqual(prune_archive(self.log, config, now=NOW), [never_retrieved])
 
 
 class PruneCountTest(unittest.TestCase):
@@ -432,22 +432,15 @@ class PruneCountTest(unittest.TestCase):
 
 
 class PruneArchiveTest(EvictionTestCase):
-    """Oltre il limite escono le attive con lo score piu' basso, e solo quelle."""
+    """Escono le attive con lo score piu' basso, il 10%, e solo quelle."""
 
-    def prune(self, limit, config=EVICTION_CONFIG):
-        return prune_archive(self.log, limit, config, now=NOW)
+    def prune(self, config=EVICTION_CONFIG):
+        return prune_archive(self.log, config, now=NOW)
 
-    def test_within_the_limit_nothing_leaves(self):
-        for days in range(3):
-            self.archive(f"fatto {days}", days_old=days)
-
-        self.assertEqual(self.prune(limit=3), [])
-        self.assertEqual(self.store.deletes, [])
-
-    def test_over_the_limit_the_oldest_leave_first(self):
+    def test_the_oldest_leave_first(self):
         ids = {days: self.archive(f"fatto {days}", days_old=days) for days in range(11)}
 
-        removed = self.prune(limit=10)
+        removed = self.prune()
 
         self.assertCountEqual(removed, [ids[10], ids[9]], "il 10% di 11, per eccesso, e' 2")
         self.assertEqual(len(self.store.documents), 9)
@@ -456,7 +449,7 @@ class PruneArchiveTest(EvictionTestCase):
         old = self.archive("ha un cane di nome Argo", days_old=30)
         self.archive("ha un gatto di nome Milo", days_old=0)
 
-        self.prune(limit=1)
+        self.prune()
 
         self.assertEqual(len(self.log), 1)
         entry = self.log[0]
@@ -472,7 +465,7 @@ class PruneArchiveTest(EvictionTestCase):
         self.archive("ha un cane di nome Argo", days_old=30)
         self.archive("ha un gatto di nome Milo", days_old=0)
 
-        self.prune(limit=1)
+        self.prune()
 
         published = json.loads(serialize_operation_log_for_response(self.log)[0])
         self.assertEqual(published["score_terms"], self.log[0].score_terms)
@@ -482,7 +475,7 @@ class PruneArchiveTest(EvictionTestCase):
         for days in range(3):
             self.archive(f"fatto {days}", days_old=days * 30)
 
-        self.assertEqual(self.prune(limit=0, config=config), [])
+        self.assertEqual(self.prune(config), [])
         self.assertEqual(self.store.deletes, [])
         self.assertEqual(self.log, [])
 
@@ -494,13 +487,13 @@ class PruneArchiveTest(EvictionTestCase):
     def test_on_updated_at_the_longest_untouched_leaves(self):
         _, untouched = self.reinforced_and_retrieved()
 
-        self.assertEqual(self.prune(limit=1), [untouched])
+        self.assertEqual(self.prune(), [untouched])
 
     def test_on_retrieved_at_the_longest_unretrieved_leaves(self):
         unretrieved, _ = self.reinforced_and_retrieved()
         config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field="retrieved_at")
 
-        self.assertEqual(self.prune(limit=1, config=config), [unretrieved])
+        self.assertEqual(self.prune(config), [unretrieved])
 
 
 class NoveltyPruneTest(EvictionTestCase):
@@ -514,15 +507,15 @@ class NoveltyPruneTest(EvictionTestCase):
         self.store.embeddings[doc_id] = vector
         return doc_id
 
-    def prune(self, limit, config):
-        return prune_archive(self.log, limit, config, now=NOW)
+    def prune(self, config):
+        return prune_archive(self.log, config, now=NOW)
 
     def test_a_duplicate_leaves_before_a_distinct_memory(self):
         twins = {self.archive_with_vector("ha un cane", [1, 0]),
                  self.archive_with_vector("ha un cane di nome Argo", [1, 0])}
         self.archive_with_vector("corre la mattina", [0, 1])
 
-        removed = self.prune(limit=2, config=self.NOVELTY_ONLY)
+        removed = self.prune(self.NOVELTY_ONLY)
 
         self.assertEqual(len(removed), 1)
         self.assertIn(removed[0], twins)
@@ -537,7 +530,7 @@ class NoveltyPruneTest(EvictionTestCase):
         for n in range(1, 10):
             self.archive_with_vector(f"fatto {n}", [0] * n + [1] + [0] * (9 - n), days_old=30)
 
-        removed = self.prune(limit=10, config=config)
+        removed = self.prune(config)
 
         self.assertEqual(len(removed), 2)
         self.assertEqual(len(twins & set(removed)), 1)
@@ -554,7 +547,7 @@ class NoveltyPruneTest(EvictionTestCase):
     def test_nearest_sees_the_twins(self):
         _, twins = self.crowded_topic_and_twins()
 
-        removed = self.prune(limit=7, config=self.NOVELTY_ONLY)
+        removed = self.prune(self.NOVELTY_ONLY)
 
         self.assertEqual(len(removed), 1)
         self.assertIn(removed[0], twins)
@@ -563,14 +556,14 @@ class NoveltyPruneTest(EvictionTestCase):
         crowded, _ = self.crowded_topic_and_twins()
         config = dataclasses.replace(self.NOVELTY_ONLY, eviction_novelty_mode="k_nearest")
 
-        removed = self.prune(limit=7, config=config)
+        removed = self.prune(config)
 
         self.assertEqual(len(removed), 1)
         self.assertIn(removed[0], crowded)
 
 
 class WiredIntoTheAgentTest(EvictionTestCase):
-    """Nel nodo evict_archive, solo nel ramo insert e solo a switch acceso."""
+    """Tombstone e prune nel ramo insert, a switch acceso; il prune solo oltre il limite."""
 
     def setUp(self):
         super().setUp()
@@ -626,13 +619,16 @@ class WiredIntoTheAgentTest(EvictionTestCase):
 
                 self.assertIsNone(self.store.status_of(gone.id))
 
-    def test_with_the_switch_off_the_tombstone_stays(self):
-        self.use_agent(eviction=False)
+    def test_with_the_switch_off_nothing_leaves(self):
+        self.use_agent(eviction=False, archive_memory_limit=0)
+        old = self.archive("ha un cane di nome Argo", days_old=30, now=datetime.now())
 
         item = self.remember_then_forget()
 
         self.assertEqual(self.store.status_of(item.id), "deleted")
-        self.assertNotIn("evict", [entry.op_type for entry in self.agent.state["operation_log"]])
+        self.assertEqual(self.store.status_of(old), "active", "oltre il limite, ma a switch spento")
+        self.assertEqual([entry.op_type for entry in self.agent.state["operation_log"]],
+                         ["create", "delete"])
 
     def test_a_retrieve_removes_nothing(self):
         self.use_agent(eviction=True, archive_memory_limit=0)
@@ -644,6 +640,17 @@ class WiredIntoTheAgentTest(EvictionTestCase):
 
         self.assertEqual(self.store.status_of(gone.id), "deleted")
         self.assertEqual(self.store.status_of(old), "active")
+
+    def test_within_the_limit_nothing_is_pruned(self):
+        self.use_agent(eviction=True, archive_memory_limit=2)
+        kept = [self.archive("ha un cane di nome Argo", days_old=30, now=datetime.now()),
+                self.archive("ha un gatto di nome Milo", days_old=0, now=datetime.now())]
+
+        self.insert([])
+
+        self.assertEqual([self.store.status_of(doc_id) for doc_id in kept], ["active", "active"])
+        self.assertEqual(self.store.deletes, [])
+        self.assertEqual(self.agent.last_operations(), [])
 
     def test_over_the_limit_the_oldest_memory_is_pruned_in_the_same_insert(self):
         self.use_agent(eviction=True, archive_memory_limit=1)
