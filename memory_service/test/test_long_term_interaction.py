@@ -464,9 +464,8 @@ def _print_operation_log(log):
                    f" | {_clock(entry.timestamp)}{score} | {entry.content}")
 
 
-def _print_core_memory(state):
+def _print_core_memory(state, limit):
     active = get_active_items(state["core_memory"])
-    limit = state.get("core_memory_limit")
     used = len("\n".join(item.content for item in active))
     safe_print(f"\n--- CORE MEMORY ({len(active)} item attivi, {used}/{limit} caratteri) ---")
 
@@ -750,7 +749,7 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
             safe_print(f"  ... e altri {len(failures) - 10}")
 
     _print_operation_log(state["operation_log"])
-    _print_core_memory(state)
+    _print_core_memory(state, config.core_memory_limit)
     _print_archive(vector_store)
     _print_questions(answers)
     _print_fama(answers)

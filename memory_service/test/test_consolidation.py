@@ -18,6 +18,7 @@ I turni sono in sequenza e ognuno parte dallo stato lasciato dal precedente:
 Esecuzione: python memory_service/run_tests.py -v
 """
 
+import dataclasses
 import os
 import sys
 import time
@@ -101,7 +102,8 @@ class ConsolidationLifecycleTest(unittest.TestCase):
 
         state = self.agent.run_memory_agent("insert")
 
-        print_memory_snapshot(f"turno {turn} - {operation}", state, self.store)
+        print_memory_snapshot(f"turno {turn} - {operation}", state, self.store,
+                              self.agent.config.core_memory_limit)
         return state
 
     def active(self, state):
@@ -202,7 +204,8 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         moved = find_item(items, "2200 calorie")
 
         print_turn_header(6, "archive", "core memory oltre il limite: un item passa all'archivio")
-        self.agent.state["core_memory_limit"] = 40  # forza lo split al prossimo giro
+        # forza lo split al prossimo giro
+        self.agent.config = dataclasses.replace(self.agent.config, core_memory_limit=40)
         self.llm.script({
             "InsertCoreMemories": {"memories": []},
             "SplitCoreAndArchivalMemory": {
@@ -216,7 +219,8 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         self.agent.append_message("Certo.", "assistant")
 
         state = self.agent.run_memory_agent("insert")
-        print_memory_snapshot("turno 6 - archive", state, self.store)
+        print_memory_snapshot("turno 6 - archive", state, self.store,
+                              self.agent.config.core_memory_limit)
 
         items = self.active(state)
         self.assertEqual([item.id for item in items], [survivor.id], "in core resta un item solo")
@@ -239,7 +243,8 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         self.agent.state["retrieved_memory"] = ""
 
         state = self.agent.run_memory_agent("retrieve")
-        print_memory_snapshot("turno 7 - retrieve", state, self.store)
+        print_memory_snapshot("turno 7 - retrieve", state, self.store,
+                              self.agent.config.core_memory_limit)
 
         retrieved = state["retrieved_memory"]
         self.assertIn("2200 calorie", retrieved, "l'item archiviato attivo viene recuperato")

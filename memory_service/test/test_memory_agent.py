@@ -150,14 +150,22 @@ class InsertInteractionTest(MemoryServiceTestCase):
 
 
 class SplitLimitTest(MemoryServiceTestCase):
-    """Il limite della core e' una richiesta al modello: dietro non c'e' un taglio forzato."""
+    """Lo split parte solo oltre il limite della core, e dietro non c'e' un taglio forzato."""
+
+    def test_within_the_limit_the_split_is_not_attempted(self):
+        self.agent.state["core_memory"] = [CoreMemoryItem(content="x" * 100)]
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({"InsertCoreMemories": {"memories": []}})
+
+        self.agent.run_memory_agent("insert")
+
+        self.assertNotIn("SplitCoreAndArchivalMemory", self.llm.bound_tool_names())
 
     def test_ignoring_the_limit_is_reported_but_not_forced(self):
         # Il modello decide di non archiviare nulla: la scelta viene rispettata,
         # ma non deve passare in silenzio.
         item = CoreMemoryItem(content="x" * 200)
         self.agent.state["core_memory"] = [item]
-        self.agent.state["core_memory_limit"] = 150
         self.agent.state["messages"] = self.conversation(9)
         self.llm.script({
             "InsertCoreMemories": {"memories": []},
@@ -536,16 +544,6 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
 
         self.assertIn("mi chiamo Bianca", query)
         self.assertNotIn(self.ONLY_THE_ASSISTANT_SAYS_THIS, query)
-
-
-class ArchiveLimitStateTest(MemoryServiceTestCase):
-    """Il limite dell'archivio sta nello stato, accanto a quello della core memory."""
-
-    def test_the_state_carries_the_configured_limit(self):
-        MemoryAgent.reset_instance()
-        agent = MemoryAgent(config=dataclasses.replace(TEST_CONFIG, archive_memory_limit=7))
-
-        self.assertEqual(agent.state["archive_memory_limit"], 7)
 
 
 class NodeSamplingWiringTest(MemoryServiceTestCase):

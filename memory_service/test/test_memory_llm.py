@@ -113,7 +113,8 @@ def _turn(agent, number, says, description, user_message, assistant_message,
 
     state = agent.run_memory_agent("insert")
 
-    print_memory_snapshot(f"turno {number} - {says}", state, backends.get_vector_store())
+    print_memory_snapshot(f"turno {number} - {says}", state, backends.get_vector_store(),
+                          agent.config.core_memory_limit)
     _assert_state_is_consistent(state)
     return state
 
@@ -231,7 +232,8 @@ def test_memory_lifecycle_with_a_real_llm():
     agent.state["retrieved_memory"] = ""
 
     state = agent.run_memory_agent("retrieve")
-    print_memory_snapshot("turno 7 - retrieve", state, backends.get_vector_store())
+    print_memory_snapshot("turno 7 - retrieve", state, backends.get_vector_store(),
+                          agent.config.core_memory_limit)
 
     answer = state["messages"][-1].content
     print(f"\n  -> risposta dell'assistente: {answer}")

@@ -35,11 +35,6 @@ class AgentState(TypedDict):
     retrieved_memory: str
     current_query: str
     current_interaction: Literal["insert", "retrieve"]
-    maximum_historical_messages: int
-    core_memory_limit: int
-    archive_memory_limit: int
-    retrieval_mode: Literal["decide", "always_llm_query"]
-    generate_answer: bool
 
 
 def get_llm(node: str = ""):
@@ -219,11 +214,11 @@ Call retrieve_memory to search the archive for what this asks for."""),
 
 
 # Define the retrieval node
-def retrieval_node(state: AgentState):
+def retrieval_node(state: AgentState, runtime: Runtime[MemoryConfig]):
     print("\tRetrieval node activated")
     user_query, history = query_and_history(state)
 
-    if state["retrieval_mode"] == "always_llm_query":
+    if runtime.context.retrieval_mode == "always_llm_query":
         prompt, tools = SEARCH_ONLY_PROMPT, [retrieve_memory]
     else:
         prompt, tools = DECIDE_PROMPT, [retrieve_memory, NoSearchNeeded]
@@ -266,9 +261,10 @@ def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
             state["core_memory"], result = apply_split_decisions(
                 tool_args.get("decisions", []), state["core_memory"], state["operation_log"])
             remaining = core_memory_length(state["core_memory"])
-            if remaining > state["core_memory_limit"]:
+            limit = runtime.context.core_memory_limit
+            if remaining > limit:
                 print(f"\tWARNING: core memory still over the limit after the split "
-                      f"({remaining}/{state['core_memory_limit']} characters)")
+                      f"({remaining}/{limit} characters)")
         else:
             result = "Unknown tool"
 
@@ -386,7 +382,7 @@ class AnswerWithUsedMemories(BaseModel):
 
 
 def generate_answer(state: AgentState, runtime: Runtime[MemoryConfig]):
-    if not state.get("generate_answer", True):
+    if not runtime.context.generate_answer:
         print("\tAnswer generation disabled, skipping")
         return {}
 
@@ -416,23 +412,23 @@ def generate_answer(state: AgentState, runtime: Runtime[MemoryConfig]):
 
     return {"messages": state["messages"] + turn + [response]}
 
-def exceed_memory_limit(state: AgentState) -> bool:
+def exceed_memory_limit(state: AgentState, runtime: Runtime[MemoryConfig]) -> bool:
     print("\tInsert memories interaction selected")
 
-    if len(state['messages']) > state['maximum_historical_messages']:
+    if len(state['messages']) > runtime.context.maximum_historical_messages:
         return True
     return False
 
-def exceed_core_memory_limit(state: AgentState) -> bool:
+def exceed_core_memory_limit(state: AgentState, runtime: Runtime[MemoryConfig]) -> bool:
     print("\tChecking core memory limit")
 
-    if core_memory_length(state["core_memory"]) > state["core_memory_limit"]:
+    if core_memory_length(state["core_memory"]) > runtime.context.core_memory_limit:
         return True
     return False
 
-def summarize_memories_node(state: AgentState):
+def summarize_memories_node(state: AgentState, runtime: Runtime[MemoryConfig]):
 
-    keep = max(1, state['maximum_historical_messages'])
+    keep = max(1, runtime.context.maximum_historical_messages)
     exceeding_messages = state['messages'][:-keep]
     print(f"\tSummarizing {len(exceeding_messages)} exceeding messages")
     user_messages, assistant_messages = split_by_speaker(exceeding_messages)
@@ -496,13 +492,13 @@ First decide what kind of message this is, then store every piece of information
     print(f"\tSummarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response], "messages": state["messages"][-keep:]}  # Keep only the last N messages
 
-def summarize_core_memories_node(state: AgentState):
+def summarize_core_memories_node(state: AgentState, runtime: Runtime[MemoryConfig]):
 
     active_items = get_active_items(state["core_memory"])
     core_memory_display = "\n".join(
         f"{item.id}: {item.content} ({len(item.content)} characters)" for item in active_items)
     used = core_memory_length(state["core_memory"])
-    limit = state["core_memory_limit"]
+    limit = runtime.context.core_memory_limit
     to_free = max(0, used - limit)
     print(f"\tSummarizing {len(active_items)} core memories for the core/archival split "
           f"({used}/{limit} characters, {to_free} to free)")
@@ -559,7 +555,7 @@ def eviction_node(state: AgentState, runtime: Runtime[MemoryConfig]):
 def exceed_archive_limit(state: AgentState, runtime: Runtime[MemoryConfig]) -> bool:
     if not runtime.context.eviction:
         return False
-    return archive_over_limit(state["archive_memory_limit"]) > 0
+    return archive_over_limit(runtime.context.archive_memory_limit) > 0
 
 
 def prune_node(state: AgentState, runtime: Runtime[MemoryConfig]):
@@ -616,11 +612,6 @@ class MemoryAgent():
                 "core_memory": [],
                 "operation_log": [],
                 "messages": [],
-                "maximum_historical_messages": self.config.maximum_historical_messages,
-                "core_memory_limit": self.config.core_memory_limit,
-                "archive_memory_limit": self.config.archive_memory_limit,
-                "retrieval_mode": self.config.retrieval_mode,
-                "generate_answer": self.config.generate_answer,
                 "retrieved_memory": "",
                 "current_query": "",
                 "tool_calls": []

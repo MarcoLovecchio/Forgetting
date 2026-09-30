@@ -38,13 +38,14 @@ def print_turn_header(number, operation: str, description: str,
     safe_print("#" * 78)
 
 
-def print_memory_snapshot(title: str, state: dict, vector_store=None) -> None:
+def print_memory_snapshot(title: str, state: dict, vector_store=None,
+                          core_memory_limit=None) -> None:
     """Everything worth looking at after a turn."""
     safe_print("\n" + SEPARATOR)
     safe_print(f"=== {title.upper()} ===")
     safe_print(SEPARATOR)
 
-    _print_core_memory(state)
+    _print_core_memory(state, core_memory_limit)
     _print_messages(state)
     _print_archive(vector_store)
     _print_retrieved(state)
@@ -53,10 +54,9 @@ def print_memory_snapshot(title: str, state: dict, vector_store=None) -> None:
     safe_print(SEPARATOR + "\n")
 
 
-def _print_core_memory(state: dict) -> None:
+def _print_core_memory(state: dict, limit=None) -> None:
     core_memory = state.get("core_memory", [])
     active = get_active_items(core_memory)
-    limit = state.get("core_memory_limit")
     used = len("\n".join(item.content for item in active))
 
     header = f"\n[CORE MEMORY] {len(active)} elementi attivi"
