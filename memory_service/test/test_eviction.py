@@ -41,10 +41,11 @@ from memory_service.eviction import (  # noqa: E402
     frequency_term,
     novelty_term,
     novelty_terms,
+    power_decay_term,
     prune_archive,
     prune_count,
     similarity_matrix,
-    time_decay_term,
+    weibull_decay_term,
 )
 from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
 
@@ -58,6 +59,7 @@ EVICTION_CONFIG = MemoryConfig(
     core_memory_limit=2000,
     eviction_time_decay=True,
     eviction_time_decay_field="updated_at",
+    eviction_time_decay_function="weibull",
     eviction_novelty=False,
     eviction_novelty_mode="nearest",
     eviction_frequency=False,
@@ -246,19 +248,25 @@ class ArchiveLimitTest(EvictionTestCase):
 
 
 class TimeDecayTermTest(unittest.TestCase):
-    """Il termine di decadimento: una Weibull sul tempo da updated_at."""
+    """Le due curve del decadimento sul tempo da un timestamp: Weibull e power law."""
 
-    def worth(self, **age):
-        return time_decay_term((NOW - timedelta(**age)).isoformat(), NOW)
+    def worth(self, decay, **age):
+        return decay((NOW - timedelta(**age)).isoformat(), NOW)
 
-    def test_the_decided_curve_shape_0_5_scale_7_days(self):
-        self.assertAlmostEqual(self.worth(days=1), 0.6853, places=4)
-        self.assertAlmostEqual(self.worth(days=7), 1 / math.e, places=4)
-        self.assertAlmostEqual(self.worth(days=30), 0.1262, places=4)
+    def test_the_decided_weibull_shape_0_5_scale_1_hour(self):
+        self.assertAlmostEqual(self.worth(weibull_decay_term, hours=1), 1 / math.e)
+        self.assertAlmostEqual(self.worth(weibull_decay_term, hours=4), math.exp(-2))
+        self.assertAlmostEqual(self.worth(weibull_decay_term, days=1), math.exp(-math.sqrt(24)))
+
+    def test_the_decided_power_exponent_0_5_scale_1_hour(self):
+        self.assertAlmostEqual(self.worth(power_decay_term, hours=3), 0.5)
+        self.assertAlmostEqual(self.worth(power_decay_term, days=1), 0.2)
 
     def test_a_timestamp_in_the_future_is_worth_one(self):
         # Un orologio spostato non deve dare piu' di 1.
-        self.assertEqual(self.worth(hours=-5), 1.0)
+        for decay in (weibull_decay_term, power_decay_term):
+            with self.subTest(decay=decay.__name__):
+                self.assertEqual(self.worth(decay, hours=-5), 1.0)
 
 
 class EvictionScoreTest(unittest.TestCase):
@@ -273,7 +281,15 @@ class EvictionScoreTest(unittest.TestCase):
             with self.subTest(field=field):
                 config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field=field)
                 self.assertEqual(eviction_score(self.METADATA, config, NOW),
-                                 time_decay_term(self.METADATA[field], NOW))
+                                 weibull_decay_term(self.METADATA[field], NOW))
+
+    def test_the_two_curves_share_one_slot(self):
+        for function, decay in (("weibull", weibull_decay_term), ("power", power_decay_term)):
+            with self.subTest(function=function):
+                config = dataclasses.replace(EVICTION_CONFIG,
+                                             eviction_time_decay_function=function)
+                self.assertEqual(eviction_terms(self.METADATA, config, NOW),
+                                 {"time_decay": decay(self.METADATA["updated_at"], NOW)})
 
     def test_with_every_term_off_there_is_no_score(self):
         config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
@@ -289,7 +305,7 @@ class EvictionScoreTest(unittest.TestCase):
         config = dataclasses.replace(EVICTION_CONFIG, eviction_novelty=True)
 
         self.assertEqual(eviction_terms(self.METADATA, config, NOW, novelty=0.4),
-                         {"time_decay": time_decay_term(self.METADATA["updated_at"], NOW),
+                         {"time_decay": weibull_decay_term(self.METADATA["updated_at"], NOW),
                           "novelty": 0.4})
 
 
@@ -383,7 +399,7 @@ class FrequencyTermTest(EvictionTestCase):
         config = dataclasses.replace(EVICTION_CONFIG, eviction_frequency=True)
 
         self.assertEqual(eviction_terms(self.METADATA, config, NOW, frequency_max=6),
-                         {"time_decay": time_decay_term(self.METADATA["updated_at"], NOW),
+                         {"time_decay": weibull_decay_term(self.METADATA["updated_at"], NOW),
                           "frequency": 0.5})
 
     def test_the_two_counts_share_one_slot(self):
@@ -446,7 +462,7 @@ class PruneArchiveTest(EvictionTestCase):
         self.assertEqual(len(self.store.documents), 9)
 
     def test_each_pruned_memory_is_logged_with_its_score(self):
-        old = self.archive("ha un cane di nome Argo", days_old=30)
+        old = self.archive("ha un cane di nome Argo", days_old=4 / 24)
         self.archive("ha un gatto di nome Milo", days_old=0)
 
         self.prune()
@@ -455,9 +471,9 @@ class PruneArchiveTest(EvictionTestCase):
         entry = self.log[0]
         self.assertEqual((entry.op_type, entry.item_id, entry.content),
                          ("prune", old, "ha un cane di nome Argo"))
-        self.assertAlmostEqual(entry.score, 0.1262, places=4)
+        self.assertAlmostEqual(entry.score, math.exp(-2), places=4)
         self.assertEqual(list(entry.score_terms), ["time_decay"])
-        self.assertAlmostEqual(entry.score_terms["time_decay"], 0.1262, places=4)
+        self.assertAlmostEqual(entry.score_terms["time_decay"], math.exp(-2), places=4)
 
     def test_the_sub_scores_survive_the_trip_to_the_ros_response(self):
         from memory_service.consolidation import serialize_operation_log_for_response
@@ -483,6 +499,33 @@ class PruneArchiveTest(EvictionTestCase):
         """Rinforzata ieri ma mai piu' recuperata, e ferma da 10 giorni ma recuperata ieri."""
         return (self.archive("ha un cane di nome Argo", days_old=1, retrieved_days_old=30),
                 self.archive("ha un gatto di nome Milo", days_old=10, retrieved_days_old=1))
+
+    def fresh_and_retrieved(self):
+        """Appena scritta e mai recuperata, ferma da 8 ore ma recuperata 4 volte su 5."""
+        def archive(content, hours_old, n_retrieve):
+            item = CoreMemoryItem(content=content, n_retrieve=n_retrieve,
+                                  updated_at=NOW - timedelta(hours=hours_old))
+            archive_items([item])
+            return item.id
+
+        return (archive("ha un cane", 0, 0), archive("ha un gatto", 8, 4),
+                archive("corre la mattina", 0, 5))
+
+    def test_mixed_with_frequency_the_weibull_lets_the_older_one_go(self):
+        # Da sola ogni curva ordina come l'altra: conta quando e' mediata.
+        # A 8 ore la Weibull vale 0.06, la power law 0.33.
+        _, older, _ = self.fresh_and_retrieved()
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_frequency=True,
+                                     eviction_time_decay_function="weibull")
+
+        self.assertEqual(self.prune(config), [older])
+
+    def test_mixed_with_frequency_the_power_law_keeps_the_older_one(self):
+        fresh, _, _ = self.fresh_and_retrieved()
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_frequency=True,
+                                     eviction_time_decay_function="power")
+
+        self.assertEqual(self.prune(config), [fresh])
 
     def test_on_updated_at_the_longest_untouched_leaves(self):
         _, untouched = self.reinforced_and_retrieved()
@@ -528,7 +571,8 @@ class NoveltyPruneTest(EvictionTestCase):
         twins = {self.archive_with_vector(f"gemello {n}", [1] + [0] * 9, days_old=0)
                  for n in range(2)}
         for n in range(1, 10):
-            self.archive_with_vector(f"fatto {n}", [0] * n + [1] + [0] * (9 - n), days_old=30)
+            self.archive_with_vector(f"fatto {n}", [0] * n + [1] + [0] * (9 - n),
+                                     days_old=2 / 24)
 
         removed = self.prune(config)
 

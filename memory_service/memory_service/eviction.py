@@ -23,13 +23,22 @@ tenere. eviction_terms calcola i termini accesi, per nome, e combine_terms ne fa
 la media; ogni termine ha il suo switch in MemoryConfig, come eviction. Un
 termine nuovo va aggiunto in eviction_terms, e da li' arriva anche nel log.
 
-    time_decay_term   Weibull sul tempo da un timestamp: exp(-(t/scala)^forma),
-                      forma 0.5 e scala 7 giorni. Vale 1 al momento del
-                      timestamp, 1/e dopo 7 giorni. Il timestamp e'
-                      updated_at o retrieved_at, secondo
-                      eviction_time_decay_field: occupano lo stesso posto nella
-                      media, e se ne usa sempre uno solo. Quando gli usi si
-                      contano, retrieved_at e' l'ultimo uso.
+    time_decay        il tempo da un timestamp, con una delle due curve secondo
+                      eviction_time_decay_function; tutte e due valgono 1 al
+                      momento del timestamp e occupano lo stesso posto nella
+                      media:
+                        weibull_decay_term  exp(-(t/scala)^forma), forma 0.5 e
+                                            scala 1 ora: 1/e dopo un'ora;
+                        power_decay_term    (1 + t/scala)^-d, d 0.5 e scala
+                                            1 ora: 0.5 dopo 3 ore, 0.2 dopo
+                                            un giorno, con la coda lunga della
+                                            power law.
+                      Da sole ordinano le memorie allo stesso modo, perche'
+                      dipendono dallo stesso timestamp: la scelta conta quando
+                      il decadimento e' mediato con altri termini. Il
+                      timestamp e' updated_at o retrieved_at, secondo
+                      eviction_time_decay_field, e se ne usa sempre uno solo.
+                      Quando gli usi si contano, retrieved_at e' l'ultimo uso.
 
     novelty_terms     quanto una memoria si distingue dalle altre attive
                       dell'archivio: 1 - similarita' coseno con la piu' vicina
@@ -109,7 +118,9 @@ EVICTED_STATUSES = ("superseded", "deleted")
 
 PRUNE_FRACTION = 0.10
 DECAY_SHAPE = 0.5
-DECAY_SCALE_HOURS = 7 * 24
+DECAY_SCALE_HOURS = 1
+POWER_EXPONENT = 0.5
+POWER_SCALE_HOURS = 1
 NOVELTY_K = 5
 
 
@@ -185,17 +196,31 @@ def archive_over_limit(limit: int) -> int:
     return excess
 
 
-def time_decay_term(timestamp: str, now: datetime,
-                    scale_hours: float = DECAY_SCALE_HOURS,
-                    shape: float = DECAY_SHAPE) -> float:
-    """Weibull sul tempo trascorso da timestamp: 1 al momento, 1/e a scale_hours.
+def hours_since(timestamp: str, now: datetime) -> float:
+    """Ore trascorse da timestamp, mai negative.
 
-    Un timestamp nel futuro vale 1, mai piu' di 1: succede davvero, perche' i
-    timestamp sono ora locale e a fine ora legale l'orologio torna indietro.
+    Un timestamp nel futuro conta 0: succede davvero, perche' i timestamp sono ora
+    locale e a fine ora legale l'orologio torna indietro.
     """
     elapsed = now - datetime.fromisoformat(timestamp)
-    hours = max(0.0, elapsed.total_seconds() / 3600)
-    return math.exp(-((hours / scale_hours) ** shape))
+    return max(0.0, elapsed.total_seconds() / 3600)
+
+
+def weibull_decay_term(timestamp: str, now: datetime,
+                       scale_hours: float = DECAY_SCALE_HOURS,
+                       shape: float = DECAY_SHAPE) -> float:
+    """Weibull sul tempo trascorso da timestamp: 1 al momento, 1/e a scale_hours."""
+    return math.exp(-((hours_since(timestamp, now) / scale_hours) ** shape))
+
+
+def power_decay_term(timestamp: str, now: datetime,
+                     scale_hours: float = POWER_SCALE_HOURS,
+                     exponent: float = POWER_EXPONENT) -> float:
+    """Power law sul tempo trascorso da timestamp: (1 + t/scale_hours)^-exponent, 1 al momento."""
+    return (1 + hours_since(timestamp, now) / scale_hours) ** -exponent
+
+
+DECAY_FUNCTIONS = {"weibull": weibull_decay_term, "power": power_decay_term}
 
 
 def frequency_field(config: MemoryConfig) -> str:
@@ -263,7 +288,8 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     """
     terms = {}
     if config.eviction_time_decay:
-        terms["time_decay"] = time_decay_term(metadata[config.eviction_time_decay_field], now)
+        decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
+        terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now)
     if config.eviction_novelty:
         terms["novelty"] = novelty
     if config.eviction_frequency:
