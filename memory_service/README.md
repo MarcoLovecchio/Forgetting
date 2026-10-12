@@ -131,16 +131,18 @@ pytest memory_service/test/test_memory_llm.py -v -s
 ```
 
 `test/test_long_term_interaction.py` e' invece la simulazione di una **sessione
-lunga**: 117 messaggi dell'utente iniettati uno alla volta — 101 fatti e 16
-domande — mescolati come capiterebbero davvero. I primi 25 sono la presentazione;
+lunga**: 232 messaggi dell'utente iniettati uno alla volta — 176 fatti e 56
+domande — mescolati come capiterebbero davvero. I primi 34 sono la presentazione;
 da li' in poi fatti nuovi, ripetizioni, raffinamenti, contraddizioni, richieste
 di cancellazione e chiacchiere si alternano senza blocchi, rispettando solo la
 causalita' (un fatto viene introdotto prima di essere modificato).
 
 I messaggi che finiscono con `?` sono **domande**: non consolidano, fanno girare
-il ramo `retrieve` e verificano cosa l'assistente sa in quel momento. Sono
+il ramo `retrieve` e verificano cosa l'assistente sa in quel momento. Molte sono
 piazzate subito dopo un update, una contraddizione o una cancellazione — "sai
-dirmi dove abito?" arriva dopo "dimentica il mio indirizzo" — e quelle su fatti
+dirmi dove abito?" arriva dopo "dimentica il mio indirizzo" —, altre richiamano
+fatti scritti molto prima, e dieci sono compiti da assistente che usano i
+fatti senza nominarli ("mi consigli cosa cucinare per cena?"). Quelle su fatti
 finiti in archivio costringono la retrieve a interrogarlo davvero.
 
 Durante l'esecuzione stampa solo una riga di avanzamento ogni 10 messaggi; alla
@@ -161,6 +163,27 @@ MEMORY_LONGRUN_MESSAGES=20 pytest memory_service/test/test_long_term_interaction
 
 # con una pausa fra i messaggi, se l'endpoint e' condiviso con altri carichi
 MEMORY_LONGRUN_DELAY=1 pytest memory_service/test/test_long_term_interaction.py -v -s
+```
+
+**Calibrazione delle tabelle di utility.** Con `MEMORY_LONGRUN_CALIBRATION` il test
+lungo aggiunge a quel file una traccia della run: per ogni domanda FAMA le memorie
+attive alla sua fotografia, con i voti. In quella run l'eviction è spenta, perché una
+memoria tolta prima di una domanda non potrebbe mai risultare servita.
+`consolidation_utility` va messo a `single` o `need_gain` in `config.py` prima di
+lanciarla.
+
+`test/calibrate_utility.py` legge le tracce dell'ultimo commit e, per ogni coppia
+(memoria, domanda), toglie la memoria e ricalcola FAMA-memoria: la memoria è servita
+se il punteggio scende, e quanto scende è il suo gain. Da lì need e gain per livello,
+avvicinati alla media di tutti i livelli quando i dati sono pochi e resi monotoni, e
+le due tabelle già normalizzate, da incollare in `eviction.py`. Per `need_gain`
+stampa anche la tabella libera, cella per cella, e con almeno due run confronta le
+due su ogni run lasciata fuori. Nessuna chiamata al modello: FAMA-memoria è
+deterministica.
+
+```bash
+MEMORY_LONGRUN_CALIBRATION=memory_service/test/longrun_calibration.jsonl pytest memory_service/test/test_long_term_interaction.py -v -s
+python memory_service/test/calibrate_utility.py
 ```
 
 ## I modelli sul cluster
@@ -354,10 +377,13 @@ giudicato di nuovo, un `redundant` tiene i voti che aveva, un `delete` non ne ha
 fuori scala conta come non dato. I quattro campi stanno in `CoreMemoryItem` e nei
 metadata dell'archivio, dove un valore mancante è assente invece che `None`.
 
-Nell'eviction, con `single`, il voto entra nello score come utility / 5 (da 0.2 a 1,
-alto vuol dire da tenere come gli altri termini); con `need_gain` need e gain non
-entrano ancora nello score. In tutte le modalità una memoria con `safety` vera non esce
-mai dall'archivio per il limite.
+Nell'eviction il giudizio entra nello score come termine utility, alto vuol dire da
+tenere come per gli altri termini: con `single` la voce del voto in `UTILITY_TABLE`,
+con `need_gain` la cella (need, gain) di `NEED_GAIN_TABLE`, entrambe in
+`eviction.py`. Finché non sono calibrate valgono voto / 5 e (need / 3) · (gain / 3);
+i valori calibrati li stampa `test/calibrate_utility.py` (vedi la sezione Test). In
+tutte le modalità una memoria con `safety` vera non esce mai dall'archivio per il
+limite.
 
 `.env` e `.config` vengono cercati risalendo le directory a partire dalla
 working directory e dalla posizione del pacchetto. Se il nodo viene lanciato da

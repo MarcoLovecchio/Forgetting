@@ -28,9 +28,15 @@ combina. time_decay e frequency hanno il loro switch in MemoryConfig, come
 eviction; utility segue consolidation_utility. Un termine nuovo va aggiunto in
 eviction_terms e nei pesi, e da li' arriva anche nel log.
 
-    utility_term      il voto da 1 a 5 che il classificatore da' a ogni fatto
-                      con consolidation_utility `single`, diviso per 5: da 0.2
-                      a 1. Entra solo in quella modalita'.
+    utility           il giudizio del classificatore, secondo
+                      consolidation_utility; con `none` non c'e':
+                        utility_term    `single`: la voce di UTILITY_TABLE
+                                        per il voto da 1 a 5;
+                        need_gain_term  `need_gain`: la cella di
+                                        NEED_GAIN_TABLE, riga need e colonna
+                                        gain.
+                      Le due tabelle si calibrano con
+                      test/calibrate_utility.py.
 
     time_decay        il tempo da un timestamp, con una delle due curve secondo
                       eviction_time_decay_function; tutte e due valgono 1 al
@@ -121,7 +127,7 @@ from typing import Dict, List, Optional, Tuple
 
 from memory_service import backends
 from memory_service.config import MemoryConfig
-from memory_service.consolidation import RATING_SCALES, OperationLogEntry
+from memory_service.consolidation import OperationLogEntry
 
 EVICTED_STATUSES = ("superseded", "deleted")
 
@@ -132,6 +138,16 @@ POWER_EXPONENT = 0.5
 POWER_SCALE_HOURS = 1
 WEIGHTED_SUM_WEIGHTS = {"utility": 0.5, "time_decay": 0.25, "frequency": 0.25}
 PRODUCT_WEIGHTS = {"time_decay": 0.5, "frequency": 0.5}
+
+# Provvisorie finche' non sono calibrate: voto / 5 e (need / 3) * (gain / 3).
+# Una tabella calibrata deve restare in (0, 1], mai in discesa salendo di livello.
+UTILITY_TABLE = (0.2, 0.4, 0.6, 0.8, 1.0)
+NEED_GAIN_TABLE = (
+    # gain 1  gain 2  gain 3
+    (1 / 9, 2 / 9, 3 / 9),  # need 1
+    (2 / 9, 4 / 9, 6 / 9),  # need 2
+    (3 / 9, 6 / 9, 9 / 9),  # need 3
+)
 
 
 def _find_tombstones(store) -> List[Tuple[str, str]]:
@@ -249,8 +265,13 @@ def frequency_term(count: int, count_max: int) -> float:
 
 
 def utility_term(utility: int) -> float:
-    """Il voto del classificatore da 0.2 a 1: utility / 5."""
-    return utility / RATING_SCALES["utility"]
+    """La voce di UTILITY_TABLE per il voto 1-5 del classificatore."""
+    return UTILITY_TABLE[utility - 1]
+
+
+def need_gain_term(need: int, gain: int) -> float:
+    """La cella di NEED_GAIN_TABLE: riga need, colonna gain."""
+    return NEED_GAIN_TABLE[need - 1][gain - 1]
 
 
 def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
@@ -264,6 +285,8 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     terms = {}
     if config.consolidation_utility == "single":
         terms["utility"] = utility_term(metadata["utility"])
+    elif config.consolidation_utility == "need_gain":
+        terms["utility"] = need_gain_term(metadata["need"], metadata["gain"])
     if config.eviction_time_decay:
         decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
         terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now)

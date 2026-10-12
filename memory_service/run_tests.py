@@ -32,6 +32,7 @@ TEST_MODULES = (
     "test_fama",  # la metrica del test lungo, senza il test lungo
     "test_eviction",
     "test_operation_matrix",
+    "test_calibrate_utility",  # le tabelle di utility dalle tracce del test lungo
     "test_memory_server",  # skipped when rclpy is not available
 )
 

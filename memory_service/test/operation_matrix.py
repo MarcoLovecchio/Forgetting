@@ -3,7 +3,7 @@
 Per ogni messaggio della conversazione del test lungo: l'operazione che dovrebbe
 provocare, dal commento accanto in CONVERSATION, contro quella che il
 consolidamento ha fatto davvero. FAMA guarda lo stato della memoria su
-diciassette domande; questa guarda ogni singola decisione.
+56 domande; questa guarda ogni singola decisione.
 
 L'unita' e' il messaggio, non l'operazione. Un messaggio che produce due `new`
 resta un new: quante memorie ne escono e' granularita', e si conta a parte. Dove
@@ -51,46 +51,92 @@ _LOG_TO_CLASS = {"create": "new"}
 # chiacchiere come nessuna operazione, tutto il resto - presentazione compresa -
 # come new. test_operation_matrix controlla che coincidano ancora.
 _EXPECTED = {
-    "update": (29, 33, 35, 37, 39, 42, 47, 48, 52, 54, 59, 62, 64, 66, 69, 71, 72, 74,
-               75, 79, 80, 83, 84, 86, 90, 91, 94, 97, 98, 100, 105, 106),
-    "redundant": (28, 32, 36, 43, 51, 57, 63, 93, 104, 110, 114, 115, 116),
-    "delete": (44, 55, 67, 77, 87, 96, 102, 108, 109, 111, 112),
-    "none": (26, 27, 30, 40, 45, 49, 56, 60, 68, 76, 81, 88, 92, 95, 103, 107, 113, 117),
+    "update": (38, 47, 51, 54, 57, 62, 66, 69, 70, 77, 82, 89, 96, 99, 103, 107, 110, 112,
+               116, 117, 124, 126, 132, 134, 138, 141, 146, 147, 150, 153, 156, 158, 160,
+               162, 165, 170, 175, 176, 180, 182, 185, 193, 199, 204, 205, 216, 229),
+    "redundant": (37, 41, 45, 52, 63, 76, 80, 87, 98, 152, 173, 174, 189, 191, 207, 209,
+                  211, 214, 225, 226),
+    "delete": (64, 83, 104, 121, 139, 159, 168, 184, 186, 187, 195, 197, 202, 212, 222, 224),
+    "none": (35, 36, 39, 40, 42, 46, 50, 58, 59, 60, 65, 67, 71, 73, 79, 81, 84, 90, 92, 97,
+             101, 105, 106, 108, 111, 114, 118, 119, 123, 125, 127, 131, 133, 137, 140, 148,
+             151, 154, 155, 157, 167, 169, 171, 172, 177, 179, 181, 183, 188, 190, 192, 194,
+             198, 200, 201, 203, 206, 208, 210, 213, 217, 219, 230, 231, 232),
 }
 _PRIMARY = {index: label for label, indices in _EXPECTED.items() for index in indices}
 
 ACCEPTED_ALSO: Dict[int, Tuple[Tuple[str, ...], ...]] = {
-    13: (("update",), ("new", "update")),   # "Argo e' un labrador": dettaglio sul cane del msg 12
-    15: (("update",),),                     # "corro la mattina presto": dettaglio sulla corsa
-    26: (("new",),),                        # "sette pazienti" letto come fatto sul lavoro
-    48: (("new", "update"),),               # niente caffe', e il perche': mi agitava
-    52: (("new",), ("new", "redundant")),   # pianoforte confermato, chitarra nuova
-    54: (("new", "update"),),               # niente corsa, e il ginocchio che cancella il 111
-    58: (("update",),),                     # il nuoto al posto della corsa
-    66: (("new",),),                        # il mercoledi' si aggiunge, il sabato resta vero
-    69: (("new",),),                        # il part-time si aggiunge, la clinica resta vera
-    71: (("new",),),                        # l'olio si aggiunge, l'allergia resta vera
-    79: (("new",),),                        # i saggi si aggiungono, i romanzi storici restano
-    83: (("new",),),                        # la merenda si aggiunge, il pomeriggio resta vero
-    90: (("new",),),                        # cambia la ricetta, il piatto preferito resta
-    93: (("update",),),                     # "ma non carne" aggiunge un dettaglio alla dieta
-    94: (("new", "update"),),               # 1800 calorie, e il perche': dimagrire
-    101: (("update",), ("new", "update")),  # "Milo e' un soriano": dettaglio sul gatto del msg 99
-    110: (("update",), ("new",)),           # la mattina presto si era persa fra i msg 54, 58 e 106
-    112: (("none",),),                      # i familiari erano gia' stati cancellati ai msg 67 e 102
+    3: (("update",),),                    # il compleanno accanto all'eta', nella stessa memoria
+    17: (("update",), ("new", "update")), # "Argo e' un labrador": dettaglio sul cane del msg 16
+    18: (("update",),),                   # dettaglio sul cane, nella stessa memoria
+    20: (("update",),),                   # "corro la mattina presto": dettaglio sulla corsa
+    35: (("new",),),                      # "sette pazienti" letto come fatto sul lavoro
+    41: (("update",),),                   # "in borsa" puo' essere un dettaglio nuovo
+    43: (("update",),),                   # la bici e' gia' negli spostamenti del msg 6
+    66: (("new",),),                      # la levotiroxina resta vera, la dose si aggiunge
+    70: (("new", "update"),),             # niente caffe', e il perche': mi agitava
+    72: (("update",),),                   # l'allergia alle arachidi e' gia' in memoria
+    77: (("new",), ("new", "redundant")), # pianoforte confermato, chitarra nuova
+    81: (("redundant",),),                # la domanda conferma il viaggio a Naxos
+    82: (("new", "update"),),             # niente corsa, e il ginocchio che cancella il 195
+    83: (("update",),),                   # se il msg 3 e' un update: via l'eta', non il compleanno
+    88: (("update",),),                   # il nuoto al posto della corsa
+    91: (("update",),),                   # dettaglio sul corso di fotografia
+    95: (("update",), ("new", "update")), # data e testimone su Giulia
+    103: (("new",),),                     # il mercoledi' si aggiunge, il sabato resta vero
+    104: (("update",), ("delete", "new")),  # via il nome, la sorella a Torino resta vera
+    107: (("new",),),                     # il part-time si aggiunge, la clinica resta vera
+    110: (("new",),),                     # l'olio si aggiunge, l'allergia resta vera
+    120: (("update",),),                  # dettaglio sul cane
+    123: (("new",),),                     # la domanda lascia intendere un'escursione
+    124: (("new",),),                     # i saggi si aggiungono, i romanzi storici restano
+    130: (("update",),),                  # il budget e' un dettaglio della spesa del msg 129
+    131: (("redundant",),),               # la domanda conferma la spesa del giovedi'
+    132: (("new",),),                     # la merenda si aggiunge, il pomeriggio resta vero
+    136: (("update",),),                  # dettaglio sul cane
+    142: (("update",),),                  # dettaglio sul cane
+    146: (("new",),),                     # cambia la ricetta, il piatto preferito resta
+    149: (("update",),),                  # la chitarra e' gia' in memoria
+    150: (("new",),),                     # il desiderio resta vero, la prenotazione si aggiunge
+    151: (("redundant",),),               # la domanda conferma la partenza ad agosto
+    152: (("update",),),                  # "ma non carne" aggiunge un dettaglio alla dieta
+    153: (("new", "update"),),            # 1800 calorie, e il perche': dimagrire
+    158: (("new",),),                     # lo spagnolo resta vero, il livello si aggiunge
+    161: (("update",),),                  # dettaglio sui gialli
+    166: (("update",), ("new", "update")),  # "Milo e' un soriano": dettaglio sul gatto, msg 163
+    168: (("update",), ("delete", "update")),  # la cucina senza glutine puo' restare
+    176: (("new", "update"),),            # se il msg 88 ha messo il nuoto al posto della corsa
+    178: (("update",),),                  # se lo sport e' in una memoria sola
+    180: (("new",),),                     # pomodori e basilico restano veri
+    184: (("update",),),                  # se il perche' del msg 153 e' nella stessa memoria
+    189: (("update",), ("new",)),         # la mattina presto persa fra i msg 82, 88 e 176
+    192: (("new",),),                     # la domanda lascia intendere una gita al lago
+    195: (("update",),),                  # il ginocchio puo' stare nella memoria sulla corsa
+    197: (("none",),),                    # familiari gia' cancellati ai msg 104 e 168
+    219: (("new",),),                     # la domanda lascia intendere una cena fuori
+    221: (("update",),),                  # dettaglio sulla dieta a base di pesce
 }
 
 # Dove piu' operazioni dello stesso tipo sono giuste, e non frammentazione.
 MULTIPLE_EXPECTED = (
-    18,   # sorella: il nome e la citta'
-    19,   # madre celiaca, e in casa senza glutine
-    54,   # la corsa in due memorie, se il msg 15 e' diventato un new
-    80,   # lo yoga del sabato e del mercoledi', se il 66 e' diventato un new
-    84,   # la clinica e il part-time, se il 69 e' diventato un new
-    87,   # le stesse due memorie sul lavoro, da cancellare
-    96,   # l'ora in cui va a dormire e quella della sveglia
-    106,  # la corsa ripresa e il ginocchio che sta meglio
-    112,  # tutti i familiari
+    9,    # l'asma e l'inalatore
+    23,   # sorella: il nome e la citta'
+    24,   # madre celiaca, e in casa senza glutine
+    31,   # i pomodori e il basilico
+    75,   # la paura e i mezzi preferiti
+    82,   # la corsa in due memorie, se il msg 20 e' diventato un new
+    95,   # la data e la testimone
+    126,  # lo yoga del sabato e del mercoledi', se il 103 e' diventato un new
+    134,  # la clinica e il part-time, se il 107 e' diventato un new
+    139,  # le stesse due memorie sul lavoro, da cancellare
+    159,  # l'ora in cui va a dormire e quella della sveglia
+    165,  # romanzi storici e saggi, se il msg 124 e' diventato un new
+    168,  # la celiachia e la cucina senza glutine, se il msg 24 ne ha fatte due
+    170,  # la data e la testimone, se il msg 95 ne ha fatte due
+    176,  # la corsa ripresa e il ginocchio che sta meglio
+    193,  # la paura e i mezzi preferiti, se il msg 75 ne ha fatte due
+    197,  # tutti i familiari
+    212,  # l'orto e i peperoncini, se il msg 180 e' diventato un new
+    216,  # il desiderio e la prenotazione, se il msg 150 e' diventato un new
 )
 
 

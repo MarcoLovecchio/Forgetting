@@ -113,18 +113,18 @@ Tre cose non coincidono, e sono tutte dichiarate:
 
 2. **MPA su un insieme vuoto.** Il loro codice lo mette a 0, e siccome li' lam
    vale 1 quelle domande valgono 0 comunque vada. Nel loro dataset il ramo non
-   gira mai; qui girerebbe sei volte su diciassette, bloccando il totale sotto i
-   65 punti a prescindere. Vale 1 per vacuita', come dice la prosa del paper.
+   gira mai; qui girerebbe nove volte su 56, bloccando il totale sotto gli 84
+   punti a prescindere. Vale 1 per vacuita', come dice la prosa del paper.
    Il conto e' in `score`, il perche' pure.
 
 3. **I tipi di task.** Memora divide in Remembering, Reasoning e Recommending e
-   riporta un punteggio per ciascuno. Queste diciassette domande sono tutte
-   Remembering: la conversazione non chiede mai di inferire ne' di consigliare.
-   C'e' un numero solo perche' c'e' un task solo, non perche' siano stati
-   mescolati.
+   riporta un punteggio per ciascuno. Qui quasi tutte le domande sono
+   Remembering, e dieci sono compiti di tipo Recommending ("mi consigli
+   cosa cucinare per cena?"), giudicati con gli stessi criteri: cosa la
+   risposta e la memoria devono contenere. Il numero resta uno solo.
 
 Quindi il numero e' calcolato come nel paper, ma **non e' confrontabile con le
-sue tabelle**: dati diversi, una persona invece di dieci, diciassette domande
+sue tabelle**: dati diversi, una persona invece di dieci, 56 domande
 invece di centocinquanta, e un altro giudice. E' un numero per confrontare
 questa architettura con se stessa fra una run e l'altra.
 """
@@ -465,10 +465,10 @@ def score(question: EvaluationQuestion, text: str) -> Score:
     # sono criteri di presenza, e siccome li' lam vale 1, quelle domande
     # valgono 0 comunque vada. Nel loro dataset non succede mai - le domande
     # sono a lista ("quali task restano?") e qualcosa resta sempre - quindi e'
-    # un ramo difensivo che non gira. Qui invece succede sei volte su
-    # diciassette: dopo una cancellazione non c'e' nessun valore valido da
-    # ricordare, e "non lo so" e' la risposta giusta. Con MPA a 0 quelle sei
-    # domande sarebbero incorreggibili e il totale bloccato sotto i 65 punti,
+    # un ramo difensivo che non gira. Qui invece succede nove volte su
+    # 56: dopo una cancellazione non c'e' nessun valore valido da
+    # ricordare, e "non lo so" e' la risposta giusta. Con MPA a 0 quelle nove
+    # domande sarebbero incorreggibili e il totale bloccato sotto gli 84 punti,
     # qualunque cosa faccia l'architettura.
     #
     # Qui MPA vale 1 per vacuita', che e' la lettura della prosa del paper:
@@ -568,13 +568,13 @@ def memory_snapshot_turn(question: int, maximum_historical_messages: int) -> int
 
 
 # --------------------------------------------------------------------------- #
-# Le diciassette domande
+# Le 56 domande
 # --------------------------------------------------------------------------- #
 
 QUESTIONS: Dict[int, EvaluationQuestion] = {
 
-    27: EvaluationQuestion(
-        27, "i fatti della presentazione, niente e' ancora superato",
+    36: EvaluationQuestion(
+        36, "i fatti della presentazione, niente e' ancora superato",
         (
             recalls_some(
                 "almeno due fatti sull'alimentazione", 2,
@@ -586,16 +586,37 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    30: EvaluationQuestion(
-        30, "msg 29 ha aggiornato le calorie da 2000 a 2200",
+    39: EvaluationQuestion(
+        39, "msg 38 ha aggiornato le calorie da 2000 a 2200",
         (
             recalls("2200", "2200"),
             supersedes("2000", "2000", replaced_by=("2200",)),
         ),
     ),
 
-    40: EvaluationQuestion(
-        40, "msg 39 ha smentito la dieta vegetariana: ora mangia pesce",
+    42: EvaluationQuestion(
+        42, "msg 41 ha ripetuto l'asma del msg 9",
+        (
+            recalls("asma", "asma", "asthma*"),
+        ),
+    ),
+
+    46: EvaluationQuestion(
+        46, "msg 45 ha ripetuto il nome",
+        (
+            recalls("bianca"),
+        ),
+    ),
+
+    50: EvaluationQuestion(
+        50, "compito: un film, e gli horror del msg 49 le mettono ansia",
+        (
+            recalls("niente horror", "horror*", "orror*"),
+        ),
+    ),
+
+    58: EvaluationQuestion(
+        58, "msg 57 ha smentito la dieta vegetariana: ora mangia pesce",
         (
             recalls("mangia pesce", "pesce", "pescetarian*", "fish", "pescatarian*"),
             supersedes("vegetarian*",
@@ -603,23 +624,62 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    45: EvaluationQuestion(
-        45, "msg 44 ha cancellato l'indirizzo: Palermo centro, poi Mondello",
+    60: EvaluationQuestion(
+        60, "compito: una cena, con il pesce del msg 57 e l'allergia alle arachidi",
+        (
+            recalls("mangia pesce", "pesce", "fish", "pescatarian*", "pescetarian*"),
+            recalls("niente arachidi", "arachid*", "peanut*"),
+            supersedes("vegetarian*",
+                       replaced_by=("pesce", "fish", "pescatarian*", "pescetarian*")),
+        ),
+    ),
+
+    65: EvaluationQuestion(
+        65, "msg 64 ha cancellato l'indirizzo: Palermo centro, poi Mondello",
         (
             forgets("indirizzo cancellato", "mondello", "palermo",
                     "centro", "centre", "center", "downtown"),
         ),
     ),
 
-    49: EvaluationQuestion(
-        49, "msg 48 ha eliminato il caffe': nessuna bevanda nuova al suo posto",
+    67: EvaluationQuestion(
+        67, "msg 66 ha portato la levotiroxina a 88 microgrammi",
+        (
+            recalls("88 microgrammi", "88"),
+        ),
+    ),
+
+    71: EvaluationQuestion(
+        71, "msg 70 ha eliminato il caffe': nessuna bevanda nuova al suo posto",
         (
             supersedes("caffe' della mattina", "caffe", "coffee"),
         ),
     ),
 
-    56: EvaluationQuestion(
-        56, "msg 55 ha cancellato l'eta': prima 29, poi 30",
+    73: EvaluationQuestion(
+        73, "msg 72: allergica anche alla penicillina",
+        (
+            recalls("penicillina", "penicillin*"),
+        ),
+    ),
+
+    79: EvaluationQuestion(
+        79, "msg 78: ad agosto vorrebbe andare in Grecia, forse a Naxos",
+        (
+            recalls("Naxos o la Grecia", "naxos", "grecia", "greece"),
+        ),
+    ),
+
+    81: EvaluationQuestion(
+        81, "compito: arrivare a Naxos con la paura di volare del msg 75",
+        (
+            recalls("niente aereo", "volare", "fly*", "flight*", "aere*", "plane*",
+                    "nave", "traghett*", "ferry*", "boat*"),
+        ),
+    ),
+
+    84: EvaluationQuestion(
+        84, "msg 83 ha cancellato l'eta': prima 29, poi 30",
         (
             # Mai il numero da solo: "6:30" diventa "6 30", e la sveglia passava per l'eta'.
             forgets("eta' cancellata", "30 anni", "29 anni", "30 year*", "29 year*",
@@ -629,8 +689,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    60: EvaluationQuestion(
-        60, "msg 59 ha spostato la sorella da Milano a Torino",
+    90: EvaluationQuestion(
+        90, "msg 89 ha spostato la sorella da Milano a Torino",
         (
             recalls("vive a Torino", "torino", "turin"),
             supersedes("vecchia citta' Milano", "milano", "milan",
@@ -638,23 +698,76 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    68: EvaluationQuestion(
-        68, "msg 67 ha cancellato il nome della sorella",
+    92: EvaluationQuestion(
+        92, "msg 85 e 91: il corso di fotografia del lunedi' sera",
+        (
+            recalls("fotografia", "fotograf*", "photograph*"),
+        ),
+    ),
+
+    101: EvaluationQuestion(
+        101, "msg 95: Giulia si sposa il 14 giugno",
+        (
+            recalls("14 giugno", "14 giugno", "14 june", "june 14*", "14th of june",
+                    "14th june"),
+        ),
+    ),
+
+    105: EvaluationQuestion(
+        105, "msg 104 ha cancellato il nome della sorella",
         (
             forgets("nome cancellato", "chiara"),
         ),
     ),
 
-    76: EvaluationQuestion(
-        76, "msg 75 ha smentito la razza: non labrador ma golden retriever",
+    108: EvaluationQuestion(
+        108, "msg 102: volontariato in un canile il martedi' sera",
+        (
+            recalls("volontariato", "volontari*", "volunteer*", "canile", "shelter*"),
+        ),
+    ),
+
+    111: EvaluationQuestion(
+        111, "msg 110 ha esteso l'allergia all'olio di arachidi, msg 72 ha aggiunto la "
+             "penicillina",
+        (
+            recalls("arachidi", "arachid*", "peanut*"),
+            recalls("penicillina", "penicillin*"),
+        ),
+    ),
+
+    114: EvaluationQuestion(
+        114, "msg 99: si e' ricreduta sulla liquirizia, ora le piace",
+        (
+            recalls("liquirizia", "liquirizia", "licorice", "liquorice"),
+            recalls("le piace", "piace", "like*", "enjoy*", "ricredut*"),
+        ),
+    ),
+
+    118: EvaluationQuestion(
+        118, "msg 117 ha smentito la razza: non labrador ma golden retriever",
         (
             recalls("golden retriever", "golden"),
             supersedes("vecchia razza labrador", "labrador", replaced_by=("golden",)),
         ),
     ),
 
-    81: EvaluationQuestion(
-        81, "msg 80 ha smentito lo yoga: smesso a settembre",
+    119: EvaluationQuestion(
+        119, "msg 18: Argo non puo' mangiare il pollo",
+        (
+            recalls("pollo", "pollo", "chicken"),
+        ),
+    ),
+
+    123: EvaluationQuestion(
+        123, "compito: lo zaino per la montagna, con l'asma del msg 9",
+        (
+            recalls("inalatore", "inalator*", "inhaler*", "asma", "asthma*"),
+        ),
+    ),
+
+    127: EvaluationQuestion(
+        127, "msg 126 ha smentito lo yoga: smesso a settembre",
         (
             recalls("ha smesso", "smesso", "settembre", "non*piu", "interrott*",
                     "abbandonat*", "stop*", "quit*", "september", "no longer",
@@ -664,8 +777,32 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    88: EvaluationQuestion(
-        88, "msg 87 ha cancellato il lavoro: clinica, poi part-time, poi in proprio",
+    131: EvaluationQuestion(
+        131, "compito: la spesa del giovedi', con il budget del msg 130",
+        (
+            recalls("budget di 50 euro", "50 eur*"),
+        ),
+    ),
+
+    133: EvaluationQuestion(
+        133, "msg 120: il richiamo del vaccino di Argo il 20 ottobre",
+        (
+            recalls("20 ottobre", "20 ottobre", "20 october", "october 20*",
+                    "20th of october", "20th october"),
+        ),
+    ),
+
+    137: EvaluationQuestion(
+        137, "msg 128: dentista martedi' prossimo alle tre del pomeriggio",
+        (
+            recalls("martedi'", "martedi", "tuesday"),
+            recalls("alle tre", "alle tre", "tre del pomeriggio", "15", "3 pm", "3pm",
+                    "three in the afternoon", "3 in the afternoon"),
+        ),
+    ),
+
+    140: EvaluationQuestion(
+        140, "msg 139 ha cancellato il lavoro: clinica, poi part-time, poi in proprio",
         (
 
             forgets("lavoro cancellato", "fisioterapist*", "physiotherap*",
@@ -674,8 +811,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    92: EvaluationQuestion(
-        92, "msg 91 ha chiuso col pianoforte: restano chitarra e vinili jazz",
+    148: EvaluationQuestion(
+        148, "msg 147 ha chiuso col pianoforte: restano chitarra e vinili jazz",
         (
             recalls("chitarra", "chitarra", "guitar*"),
             recalls("jazz in vinile", "jazz", "vinil*", "vinyl*"),
@@ -683,8 +820,15 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    95: EvaluationQuestion(
-        95, "msg 94 ha portato le calorie a 1800, dopo 2000 e 2200",
+    151: EvaluationQuestion(
+        151, "compito: a chi lasciare Argo, dal msg 142",
+        (
+            recalls("la vicina", "vicin*", "neighbo*"),
+        ),
+    ),
+
+    154: EvaluationQuestion(
+        154, "msg 153 ha portato le calorie a 1800, dopo 2000 e 2200",
         (
             recalls("obiettivo 1800", "1800"),
             supersedes("obiettivo 2200", "2200", replaced_by=("1800",)),
@@ -692,16 +836,40 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    103: EvaluationQuestion(
-        103, "msg 102 ha cancellato la celiachia: prima la madre, poi il padre",
+    157: EvaluationQuestion(
+        157, "msg 156 ha portato la levotiroxina a 100 microgrammi, dopo gli 88 del msg 66",
+        (
+            recalls("levotiroxina", "levotiroxin*", "levothyroxin*", "tiroide",
+                    "thyroid*"),
+            recalls("100 microgrammi", "100"),
+            supersedes("88 microgrammi", "88", replaced_by=("100",)),
+        ),
+    ),
+
+    169: EvaluationQuestion(
+        169, "msg 168 ha cancellato la celiachia: prima la madre, poi il padre",
         (
             forgets("familiare celiaco cancellato", "padre", "madre", "papa",
                     "mamma", "father", "mother", "dad", "mom", "mum", "parent*"),
         ),
     ),
 
-    107: EvaluationQuestion(
-        107, "msg 106 ha ripreso la corsa; il nuoto e' a tre volte, lo yoga e' finito",
+    171: EvaluationQuestion(
+        171, "msg 25: la migliore amica e' Giulia",
+        (
+            recalls("giulia"),
+        ),
+    ),
+
+    172: EvaluationQuestion(
+        172, "msg 53 e 158: lo spagnolo, ora al livello B1",
+        (
+            recalls("spagnolo", "spagnol*", "spanish"),
+        ),
+    ),
+
+    177: EvaluationQuestion(
+        177, "msg 176 ha ripreso la corsa; il nuoto e' a tre volte, lo yoga e' finito",
         (
             recalls("corsa ripresa", "corr*", "corsa", "run*", "jog*"),
             recalls("nuoto", "nuot*", "swim*"),
@@ -709,16 +877,156 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         ),
     ),
 
-    113: EvaluationQuestion(
-        113, "msg 112 ha cancellato i familiari, non gli animali",
+    179: EvaluationQuestion(
+        179, "compito: la settimana sportiva, con il pilates del msg 178 e la corsa ripresa al "
+             "msg 176",
+        (
+            recalls_some("almeno due sport", 2, ("corr*", "corsa", "run*", "jog*"),
+                         ("nuot*", "swim*"), "pilates"),
+            supersedes("yoga interrotto", "yoga"),
+        ),
+    ),
+
+    181: EvaluationQuestion(
+        181, "msg 180: ai pomodori e al basilico del msg 31 si aggiungono i peperoncini",
+        (
+            recalls_some("almeno due piante", 2, ("pomodor*", "tomato*"),
+                         ("basilic*", "basil"), ("peperoncin*", "chili*", "chilli*")),
+        ),
+    ),
+
+    183: EvaluationQuestion(
+        183, "msg 182: ha smesso di meditare",
+        (
+            recalls("meditazione", "medit*"),
+            recalls("ha smesso", "smesso", "stop*", "no longer", "non*piu", "anymore",
+                    "quit*", "gave up"),
+        ),
+    ),
+
+    188: EvaluationQuestion(
+        188, "msg 187 ha cancellato il volontariato al canile",
+        (
+            forgets("volontariato cancellato", "volontari*", "volunteer*", "canile",
+                    "shelter*", "kennel*"),
+        ),
+    ),
+
+    192: EvaluationQuestion(
+        192, "compito: il lago senza patente (msg 6 e 191)",
+        (
+            recalls("niente patente", "patente", "licen*"),
+        ),
+    ),
+
+    194: EvaluationQuestion(
+        194, "msg 193: ha superato la paura di volare",
+        (
+            recalls("volare", "volare", "fly*", "flight*", "aere*", "plane*"),
+            recalls("superata", "superat*", "overc*", "got over"),
+        ),
+    ),
+
+    198: EvaluationQuestion(
+        198, "msg 197 ha cancellato i familiari, non gli animali",
         (
             recalls("il cane Argo", "argo"),
             recalls("il gatto Milo", "milo"),
         ),
     ),
 
-    117: EvaluationQuestion(
-        117, "il quadro d'insieme: cosa e' sopravvissuto e cosa doveva sparire",
+    200: EvaluationQuestion(
+        200, "msg 199: operata agli occhi, niente piu' occhiali",
+        (
+            recalls("operata agli occhi", "operat*", "surgery", "intervent*", "laser"),
+            supersedes("occhiali", "occhiali", "glasses", "eyeglasses"),
+        ),
+    ),
+
+    201: EvaluationQuestion(
+        201, "msg 3: il compleanno e' il 12 marzo",
+        (
+            recalls("12 marzo", "12 marzo", "12 march", "march 12*", "12th of march",
+                    "12th march"),
+        ),
+    ),
+
+    203: EvaluationQuestion(
+        203, "msg 202 ha cancellato la data del compleanno",
+        (
+            forgets("compleanno cancellato", "12 marzo", "12 march", "march 12*",
+                    "marzo", "march"),
+        ),
+    ),
+
+    206: EvaluationQuestion(
+        206, "msg 205: finito il corso di lingua dei segni",
+        (
+            recalls("lingua dei segni", "lingua dei segni", "segni", "sign language"),
+            recalls("finito", "finit*", "conclus*", "finished", "completed",
+                    "primo livello", "first level"),
+        ),
+    ),
+
+    208: EvaluationQuestion(
+        208, "msg 51 ha portato le proteine da 60 a 75 grammi",
+        (
+            recalls("75 grammi", "75"),
+            supersedes("60 grammi", "60", replaced_by=("75",)),
+        ),
+    ),
+
+    210: EvaluationQuestion(
+        210, "msg 209 ha confermato i due litri d'acqua del msg 68",
+        (
+            recalls("due litri", "due litri", "2 litri", "two lit*", "2 lit*", "2l"),
+        ),
+    ),
+
+    213: EvaluationQuestion(
+        213, "msg 212 ha cancellato l'orto sul balcone",
+        (
+            forgets("orto cancellato", "orto", "pomodor*", "tomato*", "basilic*",
+                    "basil", "peperoncin*", "chili*", "chilli*", "vegetable garden",
+                    "vegetable patch"),
+        ),
+    ),
+
+    217: EvaluationQuestion(
+        217, "msg 216: niente Naxos, ad agosto il Portogallo",
+        (
+            recalls("portogallo", "portogallo", "portugal"),
+            supersedes("Naxos e la Grecia", "naxos", "grecia", "greece",
+                       replaced_by=("portogallo", "portugal")),
+        ),
+    ),
+
+    219: EvaluationQuestion(
+        219, "compito: una cena, con la trattoria preferita del msg 218",
+        (
+            recalls("la trattoria di Cefalu'", "cefalu", "trattoria"),
+        ),
+    ),
+
+    230: EvaluationQuestion(
+        230, "msg 229: niente sci in Trentino, a Natale resta a casa",
+        (
+            recalls("resta a casa", "resto a casa", "resti a casa", "restare a casa",
+                    "rimani a casa", "stay at home", "stays at home", "staying at home",
+                    "stay home", "stays home", "staying home"),
+            supersedes("sci in Trentino", "sciare", "sci", "ski", "skiing", "trentino"),
+        ),
+    ),
+
+    231: EvaluationQuestion(
+        231, "msg 161: lo scrittore preferito e' Camilleri",
+        (
+            recalls("camilleri"),
+        ),
+    ),
+
+    232: EvaluationQuestion(
+        232, "il quadro d'insieme: cosa e' sopravvissuto e cosa doveva sparire",
         (
             recalls_some(
                 "almeno due fatti sopravvissuti", 2,

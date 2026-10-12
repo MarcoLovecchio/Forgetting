@@ -48,14 +48,16 @@ class ExpectedTableTest(unittest.TestCase):
 
     def test_the_table_agrees_with_the_comments_of_the_conversation(self):
         tags = conversation_tags()
-        self.assertEqual(len(tags), 117)
+        self.assertEqual(len(tags), 232)
         for index, tag in enumerate(tags, 1):
             self.assertEqual(om.expected(index)[0], _TAG_TO_CLASS[tag],
                              "msg %d (%s)" % (index, tag or "presentazione"))
 
     def test_the_questions_are_the_ones_fama_evaluates(self):
-        none = {index for index in range(1, 118) if om.expected(index)[0] == "none"}
-        self.assertEqual(none - {26}, set(fama.QUESTIONS))
+        tags = conversation_tags()
+        none = {index for index in range(1, len(tags) + 1) if om.expected(index)[0] == "none"}
+        chatter = {index for index, tag in enumerate(tags, 1) if tag == "chiacchiere"}
+        self.assertEqual(none - chatter, set(fama.QUESTIONS))
 
     def test_alternatives_are_real_classes_and_not_the_label_again(self):
         for index, also in om.ACCEPTED_ALSO.items():
@@ -66,7 +68,7 @@ class ExpectedTableTest(unittest.TestCase):
     def test_a_changed_value_always_needs_an_update(self):
         # 2000 e 2200 attivi insieme sarebbero una contraddizione in memoria: un
         # new passa solo accanto all'update che toglie il valore vecchio.
-        for index in (29, 42, 48, 54, 59, 94, 105):
+        for index in (38, 62, 70, 82, 89, 153, 156, 175, 193, 199, 216, 229):
             for combination in om.expected(index)[1]:
                 self.assertIn("update", combination, "msg %d" % index)
 
@@ -109,40 +111,40 @@ class AccuracyTest(unittest.TestCase):
     """Accuratezza stretta e tollerante, e la matrice."""
 
     def test_strict_and_lenient(self):
-        exact = om.row(29, ["update"])
-        tolerated = om.row(66, ["create"])            # il mercoledi' come new
-        wrong = om.row(29, ["create"])                # 2200 accanto a 2000
-        mixed = om.row(52, ["redundant", "create"])   # pianoforte e chitarra
+        exact = om.row(38, ["update"])
+        tolerated = om.row(103, ["create"])            # il mercoledi' come new
+        wrong = om.row(38, ["create"])                # 2200 accanto a 2000
+        mixed = om.row(77, ["redundant", "create"])   # pianoforte e chitarra
         self.assertTrue(om.is_strict(exact) and om.is_lenient(exact))
         self.assertTrue(not om.is_strict(tolerated) and om.is_lenient(tolerated))
         self.assertFalse(om.is_strict(wrong) or om.is_lenient(wrong))
         self.assertTrue(not om.is_strict(mixed) and om.is_lenient(mixed))
 
     def test_the_types_must_match_a_combination_not_be_part_of_it(self):
-        self.assertFalse(om.is_lenient(om.row(52, ["redundant"])))         # chitarra persa
-        self.assertTrue(om.is_lenient(om.row(54, ["update", "create"])))   # corsa e ginocchio
-        self.assertFalse(om.is_lenient(om.row(54, ["create"])))            # corre e non corre
+        self.assertFalse(om.is_lenient(om.row(77, ["redundant"])))         # chitarra persa
+        self.assertTrue(om.is_lenient(om.row(82, ["update", "create"])))   # corsa e ginocchio
+        self.assertFalse(om.is_lenient(om.row(82, ["create"])))            # corre e non corre
 
     def test_repeats_are_fragmentation_only_where_not_expected(self):
         text = "\n".join(om.format_report([
-            om.row(18, ["create", "create"]), om.row(19, ["create", "create"]),
-            om.row(112, ["delete", "delete"]), om.row(33, ["update", "update"]),
-            om.row(42, ["update", "create", "create"]), om.row(12, ["create"])]))
+            om.row(23, ["create", "create"]), om.row(24, ["create", "create"]),
+            om.row(197, ["delete", "delete"]), om.row(47, ["update", "update"]),
+            om.row(62, ["update", "create", "create"]), om.row(16, ["create"])]))
         self.assertIn("Frammentazione: 2 messaggi con piu' operazioni dello stesso tipo "
-                      "(msg 33, 42), piu' 3 dove sono previste", text)
+                      "(msg 47, 62), piu' 3 dove sono previste", text)
 
     def test_a_question_that_produced_nothing_is_right(self):
-        self.assertTrue(om.is_strict(om.row(27, [])))
-        self.assertFalse(om.is_lenient(om.row(27, ["create"])))
+        self.assertTrue(om.is_strict(om.row(36, [])))
+        self.assertFalse(om.is_lenient(om.row(36, ["create"])))
 
     def test_the_matrix_counts_expected_against_predicted(self):
-        counts = om.matrix([om.row(29, ["update"]), om.row(33, ["create"]), om.row(44, [])])
+        counts = om.matrix([om.row(38, ["update"]), om.row(47, ["create"]), om.row(64, [])])
         self.assertEqual(counts["update"]["update"], 1)
         self.assertEqual(counts["update"]["new"], 1)
         self.assertEqual(counts["delete"]["none"], 1)
 
     def test_the_report_names_every_class(self):
-        text = "\n".join(om.format_report([om.row(29, ["update"]), om.row(27, [])]))
+        text = "\n".join(om.format_report([om.row(38, ["update"]), om.row(36, [])]))
         for name in ("new", "redundant", "update", "delete", "nessuna", "misto", "precisione"):
             self.assertIn(name, text)
         self.assertIn("Accuratezza stretta 2/2", text)
@@ -154,8 +156,8 @@ class SavedRunsTest(unittest.TestCase):
     def test_runs_are_appended_and_read_back(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "runs.jsonl")
-            om.save_run(path, {"commit": "a", "messages": [om.row(29, ["update"])]})
-            om.save_run(path, {"commit": "b", "messages": [om.row(29, ["create"])]})
+            om.save_run(path, {"commit": "a", "messages": [om.row(38, ["update"])]})
+            om.save_run(path, {"commit": "b", "messages": [om.row(38, ["create"])]})
             runs = om.load_runs(path)
         self.assertEqual([run["commit"] for run in runs], ["a", "b"])
         self.assertEqual(runs[1]["messages"][0]["predicted"], "new")
@@ -167,9 +169,9 @@ class SavedRunsTest(unittest.TestCase):
     def test_the_summary_sums_only_the_last_commit(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "runs.jsonl")
-            om.save_run(path, {"commit": "a", "messages": [om.row(29, ["update"])]})
-            om.save_run(path, {"commit": "b", "messages": [om.row(44, [])]})
-            om.save_run(path, {"commit": "b", "messages": [om.row(44, ["delete"])]})
+            om.save_run(path, {"commit": "a", "messages": [om.row(38, ["update"])]})
+            om.save_run(path, {"commit": "b", "messages": [om.row(64, [])]})
+            om.save_run(path, {"commit": "b", "messages": [om.row(64, ["delete"])]})
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = om.main(["operation_matrix.py", path])

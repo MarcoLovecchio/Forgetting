@@ -54,6 +54,7 @@ TEST_CONFIG = MemoryConfig(
     track_used=False,
     retrieval_mode="decide",
     eviction=False,
+    consolidation_utility="none",
     maximum_historical_messages=5,
     core_memory_limit=150,
     chroma_path="/tmp/not-used",

@@ -15,6 +15,7 @@ import math
 import os
 import sys
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,7 +23,7 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from memory_service import backends  # noqa: E402
+from memory_service import backends, eviction  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
     CoreMemoryItem,
@@ -39,6 +40,7 @@ from memory_service.eviction import (  # noqa: E402
     eviction_score,
     eviction_terms,
     frequency_term,
+    need_gain_term,
     power_decay_term,
     prune_archive,
     prune_count,
@@ -376,20 +378,40 @@ class FrequencyTermTest(EvictionTestCase):
 class UtilityTermTest(unittest.TestCase):
     """Il voto 1-5 del classificatore nello score, e come si combina con gli altri termini."""
 
-    METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(), "utility": 4}
+    METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(), "utility": 4,
+                "need": 1, "gain": 3}
     TERMS = {"utility": 0.8, "time_decay": 0.4, "frequency": 0.2}
 
-    def test_the_vote_over_five(self):
-        for vote, expected in ((1, 0.2), (3, 0.6), (5, 1.0)):
-            with self.subTest(vote=vote):
-                self.assertAlmostEqual(utility_term(vote), expected)
+    def test_the_vote_picks_its_entry(self):
+        with mock.patch.object(eviction, "UTILITY_TABLE", (0.1, 0.3, 0.5, 0.7, 0.9)):
+            self.assertEqual([utility_term(vote) for vote in range(1, 6)],
+                             [0.1, 0.3, 0.5, 0.7, 0.9])
 
-    def test_only_the_single_mode_brings_it(self):
-        for mode, expected in (("none", None), ("need_gain", None), ("single", 0.8)):
+    def test_each_mode_brings_its_own_and_none_brings_nothing(self):
+        for mode, expected in (("none", None), ("single", utility_term(4)),
+                               ("need_gain", need_gain_term(1, 3))):
             with self.subTest(mode=mode):
                 config = dataclasses.replace(EVICTION_CONFIG, consolidation_utility=mode)
                 self.assertEqual(eviction_terms(self.METADATA, config, NOW).get("utility"),
                                  expected)
+
+    def test_need_picks_the_row_and_gain_the_column(self):
+        asymmetric = ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6), (0.7, 0.8, 0.9))
+
+        with mock.patch.object(eviction, "NEED_GAIN_TABLE", asymmetric):
+            self.assertEqual(need_gain_term(1, 3), 0.3)
+            self.assertEqual(need_gain_term(3, 1), 0.7)
+
+    def test_the_tables_are_valid_utilities(self):
+        # Vale anche per le tabelle calibrate: in (0, 1], mai in discesa salendo di livello.
+        table = eviction.NEED_GAIN_TABLE
+        self.assertEqual(len(eviction.UTILITY_TABLE), 5)
+        self.assertEqual(len(table), 3)
+        for line in (eviction.UTILITY_TABLE, *table, *zip(*table)):
+            with self.subTest(line=line):
+                self.assertTrue(all(0 < value <= 1 for value in line))
+                self.assertEqual(list(line), sorted(line))
+        self.assertTrue(all(len(row) == 3 for row in table))
 
     def test_the_weighted_sum_is_half_utility_and_a_quarter_each(self):
         self.assertAlmostEqual(combine_terms(self.TERMS, "weighted_sum"),
@@ -555,6 +577,15 @@ class UtilityPruneTest(EvictionTestCase):
         useless, _ = self.useless_fresh_and_useful_old()
 
         self.assertEqual(prune_archive(self.log, self.config("weighted_sum"), now=NOW), [useless])
+
+    def test_with_need_and_gain_the_lowest_cell_leaves(self):
+        config = dataclasses.replace(self.config("weighted_sum"),
+                                     consolidation_utility="need_gain")
+        ids = {cell: self.archive(f"fatto {cell}", days_old=0, need=cell[0], gain=cell[1])
+               for cell in ((3, 3), (1, 1), (2, 3))}
+
+        self.assertEqual(prune_archive(self.log, config, now=NOW), [ids[(1, 1)]])
+        self.assertAlmostEqual(self.log[0].score_terms["utility"], need_gain_term(1, 1))
 
     def test_in_the_product_the_useful_old_one_leaves(self):
         # 0.2 * 1 contro 1 * 0.135: nel prodotto un decadimento basso pesa per intero.

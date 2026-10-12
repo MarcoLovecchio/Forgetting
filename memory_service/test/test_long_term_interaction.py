@@ -19,7 +19,7 @@ fuori dal memory service (explainability ha un suo LLM): qui e' una chiamata
 diretta al modello con lo stesso ruolo, cosi' c'e' una risposta vera da
 consolidare e da verificare.
 
-I primi 25 messaggi sono la presentazione: l'utente si racconta e sono tutti
+I primi 34 messaggi sono la presentazione: l'utente si racconta e sono tutti
 fatti nuovi. Da li' in poi **e' tutto mescolato**, come in una sessione vera: una
 ripetizione, poi un raffinamento, poi due chiacchiere, poi una contraddizione,
 poi una cancellazione. Nessun blocco per tipo di operazione.
@@ -28,10 +28,10 @@ L'unico vincolo rispettato e' la causalita': un fatto viene introdotto prima di
 poter essere ripetuto, raffinato, smentito o cancellato. Le catene si sviluppano
 a distanza, come succederebbe davvero - per esempio le calorie:
 
-    msg 7    "il mio obiettivo giornaliero e' 2000 calorie"     (new)
-    msg 28   "in realta' l'obiettivo ora e' 2200"               (update)
-    msg 82   "ho cambiato obiettivo: 1800, voglio dimagrire"    (update)
-    msg 93   "non memorizzare piu' quante calorie punto"        (delete)
+    msg 11   "il mio obiettivo giornaliero e' 2000 calorie"     (new)
+    msg 38   "in realta' l'obiettivo ora e' 2200"               (update)
+    msg 153  "ho cambiato obiettivo: 1800, voglio dimagrire"    (update)
+    msg 184  "non memorizzare piu' quante calorie punto"        (delete)
 
 Ogni messaggio porta in commento il caso che dovrebbe provocare. Le chiacchiere
 sparse servono a riempire la core memory fino a far scattare lo split verso
@@ -39,15 +39,22 @@ l'archivio.
 
 Sparse fra i fatti ci sono anche **domande**. Non ricevono un trattamento
 diverso - anche loro passano da retrieve e poi da insert, come tutto il resto -
-ma sono i punti in cui la risposta dice qualcosa: sono piazzate subito dopo un
-update, una contraddizione o una cancellazione, e sono le uniche che il resoconto
-riporta per esteso:
+ma sono i punti in cui la risposta dice qualcosa, e sono le uniche che il
+resoconto riporta per esteso. Molte sono piazzate subito dopo un update, una
+contraddizione o una cancellazione:
 
     "in realta' l'obiettivo ora e' 2200"        (update)
     "qual e' il mio obiettivo calorico?"        -> deve dire 2200, non 2000
 
     "dimentica il mio indirizzo"                (delete)
     "sai dirmi dove abito?"                     -> non deve piu' saperlo
+
+Altre richiamano un fatto scritto molto prima, finito magari in archivio ("come
+si chiama la mia migliore amica?"), e altre ancora sono compiti da assistente
+che usano i fatti senza nominarli: "mi consigli cosa cucinare per cena?" vuole
+il pesce e niente arachidi, "come mi conviene andare al lago?" vuole che non ha
+la patente. Cosi' quali memorie servono lo decide il compito, non chi ha scritto
+la domanda.
 
 Nel resoconto si vede, per ogni domanda, cosa ha risposto l'assistente e se
 l'archivio e' stato consultato per quel giro. La risposta e' quella del servizio,
@@ -63,7 +70,7 @@ riga di avanzamento ogni 10 messaggi. **Alla fine** viene stampato il resoconto:
 operation log completo, core memory, archivio, e domande con le relative
 risposte.
 
-Le diciassette domande sono anche i punti di valutazione di **FAMA** (Memora,
+Le 56 domande sono anche i punti di valutazione di **FAMA** (Memora,
 arXiv:2604.20006): ognuna porta in fama.py dei criteri binari - cosa la risposta
 deve contenere, cosa non deve piu' contenere - e il resoconto ne ricava un
 punteggio. Lo calcola due volte, con gli stessi criteri: una sulla risposta, che
@@ -79,7 +86,7 @@ operation_matrix.py sa sommare con le altre dello stesso commit.
 Le assert sono strutturali (invarianti che devono valere qualunque cosa decida il
 modello), non sul contenuto: con un LLM vero pretendere una classificazione
 esatta renderebbe il test inutilizzabile. **Anche FAMA e' misurata e stampata,
-mai asserita**: con diciassette domande e temperature 1.0 una soglia
+mai asserita**: con 56 domande e temperature 1.0 una soglia
 trasformerebbe la varianza del campionamento in un test che fallisce a caso.
 
 Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG in .config, e i due modelli
@@ -89,7 +96,7 @@ spiegando cosa.
 
 Attenzione: ogni messaggio costa 4-6 chiamate reali al modello (sufficienza,
 eventuale retrieval, risposta della retrieve, risposta dell'assistente,
-consolidamento, eventuale split). Su 117 messaggi sono diverse centinaia di
+consolidamento, eventuale split). Su 232 messaggi sono diverse centinaia di
 chiamate: conviene partire con MEMORY_LONGRUN_MESSAGES basso. Con i modelli
 sul cluster il limite non e' la quota ma la latenza, quindi il tempo dipende
 dal carico delle GPU su cui girano.
@@ -98,7 +105,7 @@ Esecuzione:
     pytest memory_service/test/test_long_term_interaction.py -v -s
 
 Variabili utili:
-    MEMORY_LONGRUN_MESSAGES      quanti messaggi iniettare (default: tutti e 117)
+    MEMORY_LONGRUN_MESSAGES      quanti messaggi iniettare (default: tutti e 232)
     MEMORY_LONGRUN_DELAY         secondi di pausa fra un messaggio e l'altro
                                  (default 0). Sul cluster non ci sono rate limit
                                  da rispettare, ma serve se l'endpoint e'
@@ -109,6 +116,11 @@ Variabili utili:
     MEMORY_CORE_MEMORY_LIMIT     limite di caratteri della core memory (1500)
     MEMORY_LONGRUN_RESULTS       dove aggiungere le operazioni della run (default:
                                  test/longrun_operations.jsonl)
+    MEMORY_LONGRUN_CALIBRATION   se impostata, il file a cui aggiungere la traccia
+                                 per calibrate_utility.py: le memorie attive a ogni
+                                 domanda, con i loro voti. La run gira con l'eviction
+                                 spenta, perche' una memoria tolta prima di una
+                                 domanda non potrebbe mai risultare servita
 """
 
 import ast
@@ -148,9 +160,9 @@ PROGRESS_EVERY = 10
 ID_WIDTH = 8
 
 # --------------------------------------------------------------------------- #
-# La conversazione: 117 messaggi dell'utente (100 fatti e 17 domande)
+# La conversazione: 232 messaggi dell'utente (176 fatti e 56 domande)
 #
-# Quali siano le diciassette lo dice fama.QUESTIONS, non la punteggiatura:
+# Quali siano le 56 lo dice fama.QUESTIONS, non la punteggiatura:
 # l'ultimo messaggio chiede un riassunto senza punto interrogativo, ed e' una
 # domanda come le altre.
 # --------------------------------------------------------------------------- #
@@ -159,10 +171,14 @@ CONVERSATION = [
     # --- presentazione: l'utente si racconta, sono tutti fatti nuovi ------- #
     "Ciao, mi chiamo Bianca.",
     "Ho 29 anni.",
+    "Il mio compleanno e' il 12 marzo.",
     "Vivo a Palermo, in centro.",
     "Lavoro come fisioterapista in una clinica privata.",
+    "Non ho la patente, mi muovo in bici o con i mezzi.",
     "Sono vegetariana da sei anni.",
     "Sono allergica alle arachidi, e' un'allergia seria.",
+    "Ho l'asma da quando ero piccola, porto sempre l'inalatore.",
+    "Prendo la levotiroxina ogni mattina a digiuno per la tiroide.",
     "Il mio obiettivo giornaliero e' 2000 calorie.",
     "Punto a 60 grammi di proteine al giorno.",
     "Non bevo alcolici.",
@@ -170,110 +186,221 @@ CONVERSATION = [
     "Nel pomeriggio preferisco il te' verde.",
     "Ho un cane che si chiama Argo.",
     "Argo e' un labrador di quattro anni.",
+    "Argo non puo' mangiare il pollo, gli fa male.",
     "Vado a correre tre volte a settimana.",
     "Corro la mattina presto, prima del lavoro.",
     "Il mio piatto preferito e' la parmigiana di melanzane.",
     "Odio il gusto della liquirizia.",
     "Mia sorella si chiama Chiara e vive a Milano.",
     "Mia madre e' celiaca, in casa cuciniamo senza glutine.",
+    "La mia migliore amica si chiama Giulia, ci conosciamo dal liceo.",
     "Suono il pianoforte da quando avevo otto anni.",
     "Leggo soprattutto romanzi storici.",
+    "Porto gli occhiali da vista, sono miope.",
     "Vado a dormire verso le undici di sera.",
     "Mi sveglio alle sei e mezza.",
+    "Sul balcone ho un piccolo orto con pomodori e basilico.",
     "Sono intollerante al lattosio, ma solo leggermente.",
     "Faccio yoga il sabato mattina.",
+    "La domenica guardo sempre la Formula 1.",
 
     "Oggi al lavoro ho avuto una giornata lunga, sette pazienti.",  # chiacchiere
     "Che cosa sai della mia alimentazione?",  # DOMANDA: fatti della presentazione
     "Ti ripeto che sono allergica alle arachidi.",  # redundant: allergia
     "In realta' l'obiettivo ora e' 2200 calorie, ho aumentato.",  # update: calorie
     "Qual e' il mio obiettivo calorico giornaliero?",  # DOMANDA: 2200, non 2000
+    "Buongiorno!",  # chiacchiere
+    "Ricordati che ho l'asma, l'inalatore ce l'ho sempre in borsa.",  # redundant: asma
+    "Ho qualche problema respiratorio?",  # DOMANDA: l'asma
     "Ho comprato una bicicletta nuova, una gravel grigia.",  # new
+    "Oggi ho comprato un ombrello rosso.",  # new
     "Come ti dicevo, mi chiamo Bianca.",  # redundant: nome
+    "Ti ricordi come mi chiamo?",  # DOMANDA: il nome
     "Argo ha compiuto cinque anni la settimana scorsa.",  # update: eta' del cane
+    "Medito dieci minuti appena sveglia.",  # new
     "Non sopporto i film dell'orrore, mi mettono ansia.",  # new
+    "Mi consigli un film da vedere stasera?",  # DOMANDA (compito): niente horror
     "Le proteine le ho portate a 75 grammi al giorno.",  # update: proteine
     "Il caffe' lo prendo la mattina, mai dopo.",  # redundant: caffe'
+    "Sto imparando lo spagnolo con un'app, dieci minuti al giorno.",  # new
     "Mi sono trasferita: sempre Palermo, ma ora vivo a Mondello.",  # update: casa
     "Sto seguendo un corso serale di lingua dei segni.",  # new
+    "La sera ascolto podcast di storia.",  # new
     "Non sono piu' vegetariana: da questo mese mangio pesce.",  # contradict: dieta
     "Che tipo di dieta seguo adesso?",  # DOMANDA: deve riflettere la contraddizione
+    "Oggi piove da stamattina, che noia.",  # chiacchiere
+    "Mi consigli cosa cucinare per cena stasera?",  # DOMANDA (compito): pesce, niente arachidi
     "Il mio colore preferito e' il verde bottiglia.",  # new
     "Corro quattro volte a settimana adesso, non piu' tre.",  # update: corsa
     "Mia sorella Chiara e' sempre a Milano.",  # redundant: sorella
     "Dimentica il mio indirizzo.",  # delete: casa
     "Sai dirmi dove abito?",  # DOMANDA: dopo il delete non deve saperlo
+    "Il medico mi ha aumentato la levotiroxina a 88 microgrammi.",  # update: levotiroxina
+    "Che dose di levotiroxina prendo?",  # DOMANDA: 88 microgrammi
     "Bevo almeno due litri d'acqua al giorno.",  # new
     "Ho compiuto 30 anni il mese scorso.",  # update: eta'
     "Il caffe' l'ho eliminato del tutto, mi agitava troppo.",  # contradict: caffe'
     "Cosa bevo di solito la mattina?",  # DOMANDA: non deve piu' dire caffe'
+    "Sono allergica anche alla penicillina, l'ho scoperto da poco.",  # new
+    "A quali farmaci sono allergica?",  # DOMANDA: la penicillina
     "Ho una collezione di dischi in vinile, soprattutto jazz.",  # new
+    "Ho paura di volare, per viaggiare preferisco treno e nave.",  # new
     "Confermo: niente alcolici per me.",  # redundant: alcol
     "Suono il pianoforte e da un anno anche la chitarra.",  # update: musica
     "Ad agosto vorrei andare in Grecia, forse a Naxos.",  # new
+    "Dove vorrei andare in vacanza ad agosto?",  # DOMANDA: Naxos
+    "Come sai, l'aereo mi terrorizza.",  # redundant: paura di volare
+    "Come mi conviene arrivare a Naxos?",  # DOMANDA (compito): niente aereo
     "Ho smesso di correre, mi da' fastidio il ginocchio.",  # contradict: corsa
     "Cancella l'informazione sulla mia eta'",  # delete: eta'
     "Quanti anni ho?",  # DOMANDA: dopo il delete non deve saperlo
+    "Ho iniziato un corso di fotografia il lunedi' sera.",  # new
+    "Stamattina ho perso le chiavi, poi le ho ritrovate in tasca.",  # new
     "Il sabato mattina c'e' yoga, come ogni settimana.",  # redundant: yoga
     "Ora nuoto invece di correre, due volte a settimana.",  # new
     "Chiara si e' trasferita da Milano a Torino.",  # update: sorella
     "Dove vive mia sorella?",  # DOMANDA: deve dire Torino, non Milano
+    "Ho comprato una reflex usata per il corso di fotografia.",  # new
+    "Che corso faccio il lunedi' sera?",  # DOMANDA: la fotografia
     "In inverno soffro molto il freddo alle mani.",  # new
+    "Ho comprato un tappetino nuovo per la cucina.",  # new
+    "Giulia si sposa il 14 giugno e io saro' la sua testimone.",  # new
     "Ho ricominciato a bere vino, un bicchiere a cena.",  # contradict: alcol
+    "Va bene, a dopo.",  # chiacchiere
     "Faccio la fisioterapista, come ti ho raccontato.",  # redundant: lavoro
     "Mi sono ricreduta sulla liquirizia, adesso mi piace.",  # contradict: liquirizia
     "Il mio numero fortunato e' il sette.",  # new
+    "Quando si sposa la mia amica Giulia?",  # DOMANDA: il 14 giugno
+    "Il martedi' sera faccio volontariato in un canile.",  # new
     "Yoga il sabato e da poco anche il mercoledi' sera.",  # update: yoga
     "Non conservare il nome di mia sorella, eliminalo.",  # delete: sorella
     "Come si chiama mia sorella?",  # DOMANDA: dopo il delete non deve saperlo
+    "Che caldo oggi, non si respira.",  # chiacchiere
     "Lavoro in clinica, ma ora solo part-time il pomeriggio.",  # update: lavoro
+    "Cosa faccio il martedi' sera?",  # DOMANDA: il volontariato
     "Ho una cicatrice sul ginocchio destro da bambina.",  # new
     "L'allergia vale anche per l'olio di arachidi, sto attenta.",  # update: allergia
+    "Sono allergica a qualcosa?",  # DOMANDA: arachidi e penicillina
     "Non sono intollerante al lattosio, gli esami erano sbagliati.",  # contradict
     "Mi piace cucinare, ma solo nel weekend quando ho tempo.",  # new
+    "Mi piace la liquirizia?",  # DOMANDA: si', si e' ricreduta
+    "Mi sono tagliata i capelli corti.",  # new
     "Mi sveglio alle sei adesso, mezz'ora prima.",  # update: sveglia
     "Argo non e' un labrador, e' un golden retriever.",  # contradict: razza
     "Di che razza e' il mio cane?",  # DOMANDA: deve dire golden retriever
+    "Cosa non puo' mangiare Argo?",  # DOMANDA: il pollo
+    "Argo deve fare il richiamo del vaccino il 20 ottobre.",  # new
     "Dimentica cosa ti ho detto sul vino.",  # delete: vino
     "Preferisco la montagna al mare, anche se vivo sulla costa.",  # new
+    "Cosa metto nello zaino per un'escursione in montagna?",  # DOMANDA (compito): l'inalatore
     "Leggo romanzi storici e ultimamente anche saggi.",  # update: letture
+    "Ah ok, capito.",  # chiacchiere
     "Non faccio piu' yoga, ho smesso a settembre.",  # contradict: yoga
     "Faccio ancora yoga il sabato?",  # DOMANDA: deve dire di no
+    "Ho il dentista martedi' prossimo alle tre del pomeriggio.",  # new
     "Ho l'abitudine di fare la spesa il giovedi' pomeriggio.",  # new
+    "Cerco di non spendere piu' di 50 euro a settimana per la spesa.",  # new
+    "Mi aiuti a fare la lista della spesa per giovedi'?",  # DOMANDA (compito): budget di 50 euro
     "Il te' verde lo prendo anche a merenda.",  # update: te'
+    "Quando deve fare il vaccino Argo?",  # DOMANDA: il 20 ottobre
     "Non lavoro piu' in clinica, mi sono messa in proprio.",  # contradict: lavoro
+    "Ho comprato una pianta grassa per la scrivania.",  # new
     "Sto pensando a un secondo cane per fare compagnia ad Argo.",  # new
+    "Quando ho l'appuntamento dal dentista?",  # DOMANDA: martedi' alle tre
     "Vado a dormire molto piu' tardi ora, verso l'una.",  # contradict: sonno
     "Rimuovi il dato sul lavoro che faccio.",  # delete: lavoro
     "Che lavoro faccio?",  # DOMANDA: dopo il delete non deve saperlo
+    "Sono andata dal dentista, era solo un controllo e va tutto bene.",  # update: dentista
+    "La mia vicina di casa tiene Argo quando sono in viaggio.",  # new
     "Non uso i social network, li ho cancellati l'anno scorso.",  # new
+    "Uso un'agenda di carta per gli appuntamenti.",  # new
+    "Ho cambiato telefono, ora uso un iPhone.",  # new
     "La parmigiana la faccio senza formaggio adesso.",  # update: piatto
     "Ho chiuso con il pianoforte, non lo suono piu'.",  # contradict: musica
     "Che musica ascolto o suono?",  # DOMANDA: probabile recupero dall'archivio
+    "Mi sono comprata una chitarra elettrica.",  # new
+    "Ho prenotato: ad agosto vado a Naxos con Giulia.",  # update: viaggio
+    "A chi posso lasciare Argo quando parto ad agosto?",  # DOMANDA (compito): la vicina
     "Ricorda che mangio pesce ma non carne.",  # redundant: dieta
     "Ho cambiato obiettivo: 1800 calorie, voglio dimagrire.",  # contradict: calorie
     "Quante calorie dovrei assumere ogni giorno?",  # DOMANDA: deve dire 1800
+    "Ok, grazie mille.",  # chiacchiere
+    "Il medico ha portato la levotiroxina a 100 microgrammi.",  # update: levotiroxina
+    "Che farmaco devo ricordarmi di prendere domattina?",  # DOMANDA (compito): levotiroxina 100
+    "Sono arrivata al livello B1 di spagnolo.",  # update: spagnolo
     "Elimina quello che sai sui miei orari di sonno.",  # delete: sonno
     "Non e' mia madre a essere celiaca, e' mio padre.",  # contradict: celiachia
+    "Il mio scrittore preferito e' Andrea Camilleri.",  # new
     "Il nuoto l'ho portato a tre volte a settimana.",  # update: nuoto
     "Ho adottato un gatto, si chiama Milo.",  # new
+    "Uso solo detersivi ecologici.",  # new
     "Non leggo piu' romanzi storici, ora solo gialli.",  # contradict: letture
     "Milo e' un soriano di due anni.",  # new
+    "Grazie, sei gentilissima.",  # chiacchiere
     "Cancella il riferimento a mio padre e alla celiachia.",  # delete: celiachia
     "C'e' qualcuno di celiaco nella mia famiglia?",  # DOMANDA: dopo il delete
+    "Il matrimonio di Giulia e' stato bellissimo, ho anche pianto.",  # update: matrimonio
+    "Come si chiama la mia migliore amica?",  # DOMANDA: Giulia
+    "Che lingua sto imparando?",  # DOMANDA: lo spagnolo
     "Ti ricordo ancora che sono allergica alle arachidi.",  # redundant: allergia
+    "Ti ricordo che sono allergica alla penicillina.",  # redundant: penicillina
     "In realta' Milo ha tre anni, mi sono sbagliata.",  # update: eta' del gatto
     "Ho ripreso a correre, il ginocchio sta meglio.",  # contradict: corsa
     "Che sport faccio in questo periodo?",  # DOMANDA: corsa ripresa piu' nuoto
+    "Da questo mese faccio anche pilates il giovedi' sera.",  # new
+    "Mi organizzi gli allenamenti della settimana?",  # DOMANDA (compito): corsa, nuoto, pilates
+    "Sul balcone adesso coltivo anche i peperoncini.",  # update: orto
+    "Cosa coltivo sul balcone?",  # DOMANDA: pomodori, basilico, peperoncini
+    "Ho smesso di meditare, non riesco a essere costante.",  # contradict: meditazione
+    "Medito ancora la mattina?",  # DOMANDA: ha smesso
     "Non memorizzare piu' quante calorie punto.",  # delete: calorie
+    "Argo ha fatto il vaccino, tutto a posto.",  # update: vaccino
     "Dimentica il mio colore preferito, non serve.",  # delete: colore
+    "Dimentica la storia del volontariato al canile.",  # delete: volontariato
+    "Ho impegni fissi il martedi' sera?",  # DOMANDA: dopo il delete non deve saperlo
     "Corro sempre la mattina presto, come sempre.",  # redundant: orario corsa
+    "Ci sentiamo dopo.",  # chiacchiere
+    "Te l'ho gia' detto, la patente non ce l'ho.",  # redundant: patente
+    "Come mi conviene andare al lago domenica?",  # DOMANDA (compito): niente patente
+    "Ho fatto un corso e ho superato la paura di volare.",  # contradict: paura di volare
+    "Ho ancora paura di volare?",  # DOMANDA: l'ha superata
     "Dimentica il fastidio al ginocchio di cui ti parlavo.",  # delete: ginocchio
+    "Stamattina il bus era in ritardo di venti minuti.",  # new
     "Togli dalla memoria tutto quello che riguarda i familiari.",  # delete: famiglia
     "Quali animali ho in casa?",  # DOMANDA: Argo e Milo, probabile recupero
+    "Mi sono operata agli occhi, non porto piu' gli occhiali.",  # contradict: occhiali
+    "Porto gli occhiali?",  # DOMANDA: operata, niente occhiali
+    "Quando e' il mio compleanno?",  # DOMANDA: il 12 marzo
+    "Dimentica la data del mio compleanno.",  # delete: compleanno
+    "Sai quando compio gli anni?",  # DOMANDA: dopo il delete non deve saperlo
+    "La Formula 1 non la guardo piu', mi annoia.",  # contradict: formula 1
+    "Ho finito il corso di lingua dei segni, ho il primo livello.",  # update: lingua dei segni
+    "Sto ancora facendo il corso di lingua dei segni?",  # DOMANDA: l'ha finito
     "Il mio piatto preferito resta la parmigiana.",  # redundant: piatto
+    "Quante proteine devo assumere al giorno?",  # DOMANDA: 75 grammi
+    "Continuo a bere i miei due litri d'acqua al giorno.",  # redundant: acqua
+    "Quanta acqua bevo al giorno?",  # DOMANDA: due litri
     "Non bevo piu' caffe' nemmeno la mattina, confermo.",  # redundant: caffe'
+    "Ho tolto l'orto dal balcone, dimenticalo pure.",  # delete: orto
+    "Ho ancora l'orto sul balcone?",  # DOMANDA: dopo il delete non deve saperlo
     "Punto sempre a 75 grammi di proteine.",  # redundant: proteine
+    "Mi piacciono molto i girasoli.",  # new
+    "Naxos salta, ad agosto andro' in Portogallo.",  # contradict: viaggio
+    "Dove vado in vacanza ad agosto?",  # DOMANDA: il Portogallo, non Naxos
+    "Il mio ristorante preferito e' una trattoria di pesce a Cefalu'.",  # new
+    "Mi consigli dove andare a cena domenica?",  # DOMANDA (compito): la trattoria
+    "A Natale vorrei andare a sciare in Trentino.",  # new
+    "Non mangio pesce crudo, il sushi non mi piace.",  # new
+    "Dimentica quello che ti ho detto sulla Formula 1.",  # delete: formula 1
+    "Non ho mai fumato in vita mia.",  # new
+    "Cancella il fatto che ho un iPhone.",  # delete: telefono
+    "Come ti dicevo, Giulia e' la mia migliore amica.",  # redundant: Giulia
+    "La levotiroxina la prendo sempre a digiuno, la mattina.",  # redundant: levotiroxina
+    "In casa tengo il riscaldamento basso, mi piace il fresco.",  # new
+    "Ieri ho visto un tramonto bellissimo dal lungomare.",  # new
+    "Niente sci a Natale, quest'anno resto a casa.",  # contradict: Natale
+    "Cosa faccio a Natale?",  # DOMANDA: resta a casa
+    "Chi e' il mio scrittore preferito?",  # DOMANDA: Camilleri
     "Riassumi tutto quello che sai di me.",  # DOMANDA finale: quadro complessivo
 ]
 
@@ -320,6 +447,7 @@ def _build_agent():
         core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "400")),
         collection_name=os.getenv("MEMORY_LONGRUN_COLLECTION", "longterm_test_archive"),
         **({"chroma_path": os.path.abspath(chroma_path)} if chroma_path else {}),
+        **({"eviction": False} if os.getenv("MEMORY_LONGRUN_CALIBRATION") else {}),
     )
 
     backends.reset()
@@ -333,10 +461,10 @@ def _is_question(index: int) -> bool:
 
     NON decide il ramo del grafo. Ogni messaggio, domanda o no, passa da retrieve
     e poi da insert, come nella pipeline vera: e' che le risposte alle domande
-    sono le uniche interessanti da leggere fra centodiciassette.
+    sono le uniche interessanti da leggere fra 232.
 
     A deciderlo e' la tabella dei criteri, non il punto interrogativo. Prima era
-    il contrario, e il messaggio 117 - "Riassumi tutto quello che sai di me." -
+    il contrario, e il messaggio 232 - "Riassumi tutto quello che sai di me." -
     non finiva nel resoconto per motivi di punteggiatura, pur essendo la domanda
     che mette alla prova tutta la memoria insieme.
     """
@@ -347,8 +475,32 @@ def questions_in(messages) -> int:
     return sum(1 for index in range(1, len(messages) + 1) if _is_question(index))
 
 
-def _active_memory_text(state, vector_store) -> str:
-    """Le memorie attive in questo istante: core piu' archivio, una per riga.
+def _active_memories(state, vector_store):
+    """Le memorie attive in questo istante, core poi archivio, con i voti.
+
+    Ogni voto non dato vale None, come nei campi di CoreMemoryItem.
+    """
+    judged = ("safety", "utility", "need", "gain")
+    memories = [{"id": item.id, "content": item.content,
+                 **{name: getattr(item, name) for name in judged}}
+                for item in get_active_items(state["core_memory"])]
+    try:
+        stored = vector_store.get()
+    except Exception:
+        return memories
+
+    for doc_id, content, metadata in zip(stored.get("ids") or [],
+                                         stored.get("documents") or [],
+                                         stored.get("metadatas") or []):
+        metadata = metadata or {}
+        if metadata.get("status") == "active":
+            memories.append({"id": doc_id, "content": str(content),
+                             **{name: metadata.get(name) for name in judged}})
+    return memories
+
+
+def _active_memory_text(memories) -> str:
+    """Le memorie attive di _active_memories, una per riga.
 
     E' l'oggetto su cui si misura FAMA-memoria. Solo le attive: quello che e'
     stato cancellato o superato resta in archivio come tombstone, e contarlo
@@ -358,25 +510,16 @@ def _active_memory_text(state, vector_store) -> str:
     Va letto quando il messaggio che precede la domanda e' stato consolidato, non
     al momento della domanda: vedi fama.memory_snapshot_turn.
     """
-    lines = [item.content for item in get_active_items(state["core_memory"])]
-    try:
-        stored = vector_store.get()
-    except Exception:
-        return "\n".join(lines)
-
-    documents = stored.get("documents") or []
-    metadatas = stored.get("metadatas") or []
-    for content, metadata in zip(documents, metadatas):
-        if (metadata or {}).get("status") == "active":
-            lines.append(str(content))
-    return "\n".join(lines)
+    return "\n".join(memory["content"] for memory in memories)
 
 
 def _score_memory(entries, state, vector_store):
-    """FAMA-memoria per le domande che aspettavano questo stato."""
-    memory = _active_memory_text(state, vector_store)
+    """FAMA-memoria per le domande che aspettavano questo stato, e lo stato stesso."""
+    memories = _active_memories(state, vector_store)
+    memory = _active_memory_text(memories)
     for entry in entries:
         entry["on_memory"] = fama.score(fama.QUESTIONS[entry["index"]], memory)
+        entry["snapshot"] = memories
 
 
 def _message_limit():
@@ -734,6 +877,31 @@ def _save_run(config, records, elapsed):
         safe_print(f"Operazioni della run non salvate in {path}: {error}")
 
 
+def _save_calibration_trace(config, answers):
+    """Aggiunge la traccia della run, se MEMORY_LONGRUN_CALIBRATION la chiede.
+
+    Per ogni domanda le memorie attive alla sua fotografia: e' tutto quello che
+    serve a calibrate_utility.py per togliere una memoria alla volta.
+    """
+    path = os.getenv("MEMORY_LONGRUN_CALIBRATION")
+    if not path:
+        return
+    run = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "commit": _git_commit(),
+        "model": config.llm_config.get("model_name"),
+        "consolidation_utility": config.consolidation_utility,
+        "questions": [{"index": entry["index"], "fama": entry["on_memory"].fama,
+                       "memories": entry["snapshot"]}
+                      for entry in answers if entry.get("snapshot") is not None],
+    }
+    try:
+        operation_matrix.save_run(path, run)
+        safe_print(f"Traccia di calibrazione aggiunta a {path}")
+    except OSError as error:
+        safe_print(f"Traccia di calibrazione non salvata in {path}: {error}")
+
+
 def _print_final_report(state, vector_store, config, injected, failures, elapsed,
                        answers, inherited=0, operations=()):
     safe_print("\n" + SEPARATOR)
@@ -899,6 +1067,7 @@ def test_long_term_interaction():
     _print_final_report(state, vector_store, config, len(messages), failures, elapsed,
                         answers, inherited, operations)
     _save_run(config, operations, elapsed)
+    _save_calibration_trace(config, answers)
 
     assert len(failures) < len(messages) / 2, (
         f"{len(failures)} messaggi su {len(messages)} sono falliti: "
