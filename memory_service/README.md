@@ -381,9 +381,11 @@ Nell'eviction il giudizio entra nello score come termine utility, alto vuol dire
 tenere come per gli altri termini: con `single` la voce del voto in `UTILITY_TABLE`,
 con `need_gain` la cella (need, gain) di `NEED_GAIN_TABLE`, entrambe in
 `eviction.py`. Finché non sono calibrate valgono voto / 5 e (need / 3) · (gain / 3);
-i valori calibrati li stampa `test/calibrate_utility.py` (vedi la sezione Test). In
-tutte le modalità una memoria con `safety` vera non esce mai dall'archivio per il
-limite.
+i valori calibrati li stampa `test/calibrate_utility.py` (vedi la sezione Test). Una
+memoria senza voto, perché il modello non l'ha dato o l'ha dato fuori scala, prende
+quello di mezzo (`NEUTRAL_RATINGS`: 3, oppure need 2 e gain 2), così il prune non si
+ferma. In tutte le modalità una memoria con `safety` vera non esce mai dall'archivio
+per il limite.
 
 `.env` e `.config` vengono cercati risalendo le directory a partire dalla
 working directory e dalla posizione del pacchetto. Se il nodo viene lanciato da

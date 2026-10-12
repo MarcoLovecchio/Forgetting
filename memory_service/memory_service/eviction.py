@@ -36,7 +36,9 @@ eviction_terms e nei pesi, e da li' arriva anche nel log.
                                         NEED_GAIN_TABLE, riga need e colonna
                                         gain.
                       Le due tabelle si calibrano con
-                      test/calibrate_utility.py.
+                      test/calibrate_utility.py. Una memoria senza voto - il
+                      modello non l'ha dato o era fuori scala - prende quello
+                      di mezzo, NEUTRAL_RATINGS.
 
     time_decay        il tempo da un timestamp, con una delle due curve secondo
                       eviction_time_decay_function; tutte e due valgono 1 al
@@ -142,6 +144,8 @@ PRODUCT_WEIGHTS = {"time_decay": 0.5, "frequency": 0.5}
 # Provvisorie finche' non sono calibrate: voto / 5 e (need / 3) * (gain / 3).
 # Una tabella calibrata deve restare in (0, 1], mai in discesa salendo di livello.
 UTILITY_TABLE = (0.2, 0.4, 0.6, 0.8, 1.0)
+# Il voto di mezzo di ogni scala, per una memoria che il classificatore non ha votato.
+NEUTRAL_RATINGS = {"utility": 3, "need": 2, "gain": 2}
 NEED_GAIN_TABLE = (
     # gain 1  gain 2  gain 3
     (1 / 9, 2 / 9, 3 / 9),  # need 1
@@ -284,9 +288,10 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     """
     terms = {}
     if config.consolidation_utility == "single":
-        terms["utility"] = utility_term(metadata["utility"])
+        terms["utility"] = utility_term(metadata.get("utility", NEUTRAL_RATINGS["utility"]))
     elif config.consolidation_utility == "need_gain":
-        terms["utility"] = need_gain_term(metadata["need"], metadata["gain"])
+        terms["utility"] = need_gain_term(metadata.get("need", NEUTRAL_RATINGS["need"]),
+                                          metadata.get("gain", NEUTRAL_RATINGS["gain"]))
     if config.eviction_time_decay:
         decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
         terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now)

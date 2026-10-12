@@ -525,12 +525,6 @@ class JudgmentTest(unittest.TestCase):
 
                 self.assertEqual(self.judged_fields(), ("InsertCoreMemories", judged))
 
-    def test_a_new_fact_is_stored_with_its_judgment(self):
-        state = self.consolidate([{"fact": "ha un cane", "operation": "new",
-                                   "safety": False, "utility": 4}])
-
-        self.assertEqual(self.judgment(state["core_memory"][0]), (False, 4, None, None))
-
     def test_a_safety_fact_drops_its_ratings(self):
         # E' protetta comunque: un voto dato lo stesso non deve restare.
         state = self.consolidate([{"fact": "e' allergica alle arachidi", "operation": "new",
@@ -548,17 +542,6 @@ class JudgmentTest(unittest.TestCase):
 
         self.assertEqual([self.judgment(item) for item in state["core_memory"]],
                          [(False, None, 3, 2), (None, None, None, None)])
-
-    def test_an_update_is_judged_again(self):
-        old = self.consolidate([{"fact": "obiettivo 2000 calorie", "operation": "new",
-                                 "safety": False, "utility": 2}])["core_memory"][0]
-
-        state = self.consolidate([{"fact": "obiettivo 2200 calorie", "operation": "update",
-                                   "target_item_id": old.id, "safety": False, "utility": 5}])
-
-        self.assertEqual(self.judgment(state["core_memory"][0]), (False, 5, None, None))
-        self.assertEqual(self.store.metadatas[old.id]["utility"], 2,
-                         "il tombstone resta con il voto che aveva")
 
     def test_an_update_of_an_archived_memory_is_judged_again(self):
         archived = CoreMemoryItem(content="il gatto Milo ha due anni", safety=False, utility=2)

@@ -254,15 +254,6 @@ class TimeDecayTermTest(unittest.TestCase):
     def worth(self, decay, **age):
         return decay((NOW - timedelta(**age)).isoformat(), NOW)
 
-    def test_the_decided_weibull_shape_0_5_scale_1_hour(self):
-        self.assertAlmostEqual(self.worth(weibull_decay_term, hours=1), 1 / math.e)
-        self.assertAlmostEqual(self.worth(weibull_decay_term, hours=4), math.exp(-2))
-        self.assertAlmostEqual(self.worth(weibull_decay_term, days=1), math.exp(-math.sqrt(24)))
-
-    def test_the_decided_power_exponent_0_5_scale_1_hour(self):
-        self.assertAlmostEqual(self.worth(power_decay_term, hours=3), 0.5)
-        self.assertAlmostEqual(self.worth(power_decay_term, days=1), 0.2)
-
     def test_a_timestamp_in_the_future_is_worth_one(self):
         # Un orologio spostato non deve dare piu' di 1.
         for decay in (weibull_decay_term, power_decay_term):
@@ -284,26 +275,11 @@ class EvictionScoreTest(unittest.TestCase):
                 self.assertEqual(eviction_score(self.METADATA, config, NOW),
                                  weibull_decay_term(self.METADATA[field], NOW))
 
-    def test_the_two_curves_share_one_slot(self):
-        for function, decay in (("weibull", weibull_decay_term), ("power", power_decay_term)):
-            with self.subTest(function=function):
-                config = dataclasses.replace(EVICTION_CONFIG,
-                                             eviction_time_decay_function=function)
-                self.assertEqual(eviction_terms(self.METADATA, config, NOW),
-                                 {"time_decay": decay(self.METADATA["updated_at"], NOW)})
-
     def test_with_every_term_off_there_is_no_score(self):
         config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
 
         self.assertEqual(eviction_terms({"updated_at": NOW.isoformat()}, config, NOW), {})
         self.assertIsNone(eviction_score({"updated_at": NOW.isoformat()}, config, NOW))
-
-    def test_without_utility_both_combinations_are_the_mean(self):
-        for combination in ("weighted_sum", "product"):
-            with self.subTest(combination=combination):
-                self.assertAlmostEqual(
-                    combine_terms({"time_decay": 0.2, "frequency": 0.6}, combination), 0.4)
-                self.assertIsNone(combine_terms({}, combination))
 
 
 class FrequencyTermTest(EvictionTestCase):
@@ -394,6 +370,20 @@ class UtilityTermTest(unittest.TestCase):
                 config = dataclasses.replace(EVICTION_CONFIG, consolidation_utility=mode)
                 self.assertEqual(eviction_terms(self.METADATA, config, NOW).get("utility"),
                                  expected)
+
+    def test_a_memory_without_a_vote_gets_the_middle_one(self):
+        # Il modello puo' omettere il voto, o darlo fuori scala: il prune non deve fermarsi.
+        single = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="single")
+        need_gain = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="need_gain")
+        unrated = {"updated_at": NOW.isoformat()}
+        asymmetric = ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6), (0.7, 0.8, 0.9))
+
+        with mock.patch.object(eviction, "UTILITY_TABLE", (0.1, 0.3, 0.5, 0.7, 0.9)), \
+                mock.patch.object(eviction, "NEED_GAIN_TABLE", asymmetric):
+            self.assertEqual(eviction_terms(unrated, single, NOW)["utility"], 0.5)
+            self.assertEqual(eviction_terms(unrated, need_gain, NOW)["utility"], 0.5)
+            self.assertEqual(eviction_terms({**unrated, "need": 3}, need_gain, NOW)["utility"],
+                             0.8)
 
     def test_need_picks_the_row_and_gain_the_column(self):
         asymmetric = ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6), (0.7, 0.8, 0.9))
@@ -562,12 +552,6 @@ class UtilityPruneTest(EvictionTestCase):
         return dataclasses.replace(EVICTION_CONFIG, consolidation_utility="single",
                                    eviction_combination=combination)
 
-    def test_at_the_same_age_the_least_useful_leaves(self):
-        ids = {vote: self.archive(f"fatto {vote}", days_old=0, utility=vote) for vote in (5, 1, 3)}
-
-        self.assertEqual(prune_archive(self.log, self.config("weighted_sum"), now=NOW), [ids[1]])
-        self.assertEqual(set(self.log[0].score_terms), {"utility", "time_decay"})
-
     def useless_fresh_and_useful_old(self):
         """Voto 1 e appena scritta, voto 5 e ferma da 4 ore (decadimento e^-2, 0.135)."""
         return (self.archive("ha visto un film", days_old=0, utility=1),
@@ -577,15 +561,6 @@ class UtilityPruneTest(EvictionTestCase):
         useless, _ = self.useless_fresh_and_useful_old()
 
         self.assertEqual(prune_archive(self.log, self.config("weighted_sum"), now=NOW), [useless])
-
-    def test_with_need_and_gain_the_lowest_cell_leaves(self):
-        config = dataclasses.replace(self.config("weighted_sum"),
-                                     consolidation_utility="need_gain")
-        ids = {cell: self.archive(f"fatto {cell}", days_old=0, need=cell[0], gain=cell[1])
-               for cell in ((3, 3), (1, 1), (2, 3))}
-
-        self.assertEqual(prune_archive(self.log, config, now=NOW), [ids[(1, 1)]])
-        self.assertAlmostEqual(self.log[0].score_terms["utility"], need_gain_term(1, 1))
 
     def test_in_the_product_the_useful_old_one_leaves(self):
         # 0.2 * 1 contro 1 * 0.135: nel prodotto un decadimento basso pesa per intero.

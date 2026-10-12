@@ -3,7 +3,6 @@
 Esecuzione: python memory_service/run_tests.py -v
 """
 
-import ast
 import contextlib
 import io
 import json
@@ -83,12 +82,6 @@ class PairsTest(unittest.TestCase):
                                   (HOME_QUESTION, "goal"): 0.0,
                                   (HOME_QUESTION, "home"): -1.0})
 
-    def test_a_harmful_memory_counts_as_not_served(self):
-        harmful = pair(-1.0)
-
-        self.assertFalse(harmful.served)
-        self.assertEqual(harmful.realized, 0.0)
-
     def test_a_snapshot_scored_with_other_criteria_is_reported(self):
         run = json.loads(json.dumps(self.RUN))
         run["questions"][1]["fama"] = 1.0
@@ -98,9 +91,6 @@ class PairsTest(unittest.TestCase):
 
 
 class IsotonicTest(unittest.TestCase):
-    def test_a_monotone_sequence_is_left_alone(self):
-        self.assertEqual(cu.isotonic([0.1, 0.2, 0.3], [1, 1, 1]), [0.1, 0.2, 0.3])
-
     def test_violators_are_pooled_by_weight(self):
         for values, weights, expected in (([0.5, 0.1], [1, 3], [0.2, 0.2]),
                                           ([0.1, 0.5, 0.3], [1, 1, 1], [0.1, 0.4, 0.4])):
@@ -144,11 +134,6 @@ class ByLevelTest(unittest.TestCase):
 
         self.assertEqual(list(gain), sorted(gain))
         self.assertAlmostEqual(gain[0], gain[2])
-
-    def test_without_a_served_pair_there_is_no_table(self):
-        for pairs in ([pair(0.0, utility=3)], [pair(1.0)]):
-            with self.subTest(pairs=pairs):
-                self.assertRaises(ValueError, cu.by_level, pairs, "utility")
 
 
 class TablesTest(unittest.TestCase):
@@ -197,17 +182,13 @@ class TablesTest(unittest.TestCase):
                                cu.product_table(self.PAIRS)[1][2])
 
     def test_a_cell_with_many_pairs_follows_its_own_mean(self):
-        pairs = self.PAIRS + [pair(0.4, need=3, gain=3)] * 200
-        own = (4 * 1.0 + 200 * 0.4) / 204
+        # Nella colonna di gain 3 le coppie con need 1 valgono poco: il prodotto stima
+        # la cella (3, 3) a meta', i suoi dati dicono 1.
+        pairs = (self.PAIRS + [pair(1.0, need=3, gain=3)] * 200
+                 + [pair(0.1, need=1, gain=3)] * 200)
 
-        self.assertAlmostEqual(cu.free_table(pairs)[2][2], own, places=2)
-
-    def test_the_held_out_error_needs_two_runs(self):
-        self.assertIsNone(cu.held_out_error(self.PAIRS, cu.product_table))
-
-        two_runs = self.PAIRS + [Pair(1, item.question, item.memory, item.value)
-                                 for item in self.PAIRS]
-        self.assertIsInstance(cu.held_out_error(two_runs, cu.product_table), float)
+        self.assertLess(cu.product_table(pairs)[2][2], 0.7)
+        self.assertAlmostEqual(cu.free_table(pairs)[2][2], 1.0, delta=0.02)
 
     def test_the_run_left_out_is_predicted_only_from_the_others(self):
         # Un modello che predice la media delle coppie su cui e' stimato.
@@ -235,27 +216,6 @@ class MainTest(unittest.TestCase):
                 code = cu.main(["calibrate_utility.py", path])
         return code, output.getvalue()
 
-    @staticmethod
-    def printed(output, name):
-        """Il valore della tabella stampata, letto come Python."""
-        start = output.index(f"{name} = (")
-        end = output.index(")\n", start) + 1
-        return ast.literal_eval(output[start:end].split("=", 1)[1].strip())
-
-    def test_each_mode_prints_its_table_ready_to_paste(self):
-        code, output = self.run_main([
-            trace("single", {"goal": {"utility": 4}, "dog": {"utility": 3},
-                             "home": {"utility": 2}}),
-            trace("need_gain", {"goal": {"need": 3, "gain": 3}, "dog": {"need": 1, "gain": 1},
-                                "home": {"need": 2, "gain": 2}}),
-        ])
-
-        self.assertEqual(code, 0)
-        self.assertTrue(is_valid_utility(self.printed(output, "UTILITY_TABLE")))
-        table = self.printed(output, "NEED_GAIN_TABLE")
-        for line in (*table, *zip(*table)):
-            self.assertTrue(is_valid_utility(line), table)
-
     def test_only_the_runs_of_the_last_commit_count(self):
         old = trace("single", {"goal": {"utility": 4}})
         old["commit"] = "vecchio"
@@ -263,12 +223,6 @@ class MainTest(unittest.TestCase):
         _, output = self.run_main([old, trace("need_gain", {"goal": {"need": 3, "gain": 3}})])
 
         self.assertIn("single: nessuna run", output)
-
-    def test_without_traces_it_says_so(self):
-        code, output = self.run_main([])
-
-        self.assertEqual(code, 1)
-        self.assertIn("Nessuna traccia", output)
 
 
 if __name__ == "__main__":

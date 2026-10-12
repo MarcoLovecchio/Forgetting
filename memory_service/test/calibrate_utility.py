@@ -247,11 +247,10 @@ def held_out_error(pairs: Sequence[Pair],
                    ) -> Optional[float]:
     """Errore quadratico medio sulle coppie di ogni run, con la tabella delle altre.
 
-    None con meno di due run, o se nessuna run lasciata fuori si puo' predire.
+    None se nessuna run lasciata fuori si puo' predire: con una run sola le altre
+    non ci sono, e la tabella non si stima.
     """
     runs = sorted({pair.run for pair in pairs})
-    if len(runs) < 2:
-        return None
     errors = []
     for run in runs:
         try:
