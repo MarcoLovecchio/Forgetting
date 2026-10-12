@@ -19,6 +19,7 @@ Esecuzione: python memory_service/run_tests.py -v
 """
 
 import dataclasses
+import json
 import os
 import sys
 import time
@@ -31,6 +32,7 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
         sys.path.insert(0, path)
 
 from langchain_core.messages import HumanMessage  # noqa: E402
+from langchain_core.utils.function_calling import convert_to_openai_tool  # noqa: E402
 
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig  # noqa: E402
@@ -42,6 +44,7 @@ from memory_service.consolidation import (  # noqa: E402
     record_uses,
     reinforce_archived_item,
     retrieve_active_archival_memories,
+    serialize_operation_log_for_response,
     serialize_retrieved_for_response,
     supersede_archived_item,
     supersede_item,
@@ -474,6 +477,158 @@ class RetrievalCountTest(unittest.TestCase):
         self.archive("il gatto Milo")
 
         self.assertIn("il gatto Milo", retrieve_active_archival_memories("gatto", k=1))
+
+
+class JudgmentTest(unittest.TestCase):
+    """safety, utility, need e gain: dati su new e update, tenuti su redundant."""
+
+    def setUp(self):
+        self.llm = ScriptedChatModel(tool_responses={}, default_content="ok")
+        self.store = FakeVectorStore()
+        backends.reset()
+        backends.configure(llm=self.llm, vector_store=self.store, config=LIFECYCLE_CONFIG)
+        self.use("single")
+
+    def tearDown(self):
+        MemoryAgent.reset_instance()
+        backends.reset()
+
+    def use(self, mode):
+        MemoryAgent.reset_instance()
+        self.agent = MemoryAgent(config=dataclasses.replace(
+            LIFECYCLE_CONFIG, consolidation_utility=mode))
+
+    def consolidate(self, memories):
+        self.llm.script({"InsertCoreMemories": {"memories": memories}})
+        self.agent.append_message("un messaggio qualsiasi", "user")
+        self.agent.append_message("ok", "assistant")
+        return self.agent.run_memory_agent("insert")
+
+    @staticmethod
+    def judgment(item):
+        return item.safety, item.utility, item.need, item.gain
+
+    def judged_fields(self):
+        """Il nome del tool di consolidation e i campi che chiede oltre alla classificazione."""
+        tool, = self.llm.invocations[-1]["bound"]
+        function = convert_to_openai_tool(tool)["function"]
+        fields = set(function["parameters"]["properties"]["memories"]["items"]["properties"])
+        return function["name"], fields - {"fact", "operation", "target_item_id"}
+
+    def test_each_mode_binds_its_schema_under_the_same_name(self):
+        for mode, judged in (("none", set()), ("single", {"safety", "utility"}),
+                             ("need_gain", {"safety", "need", "gain"})):
+            with self.subTest(mode=mode):
+                self.use(mode)
+                self.consolidate([])
+
+                self.assertEqual(self.judged_fields(), ("InsertCoreMemories", judged))
+
+    def test_a_new_fact_is_stored_with_its_judgment(self):
+        state = self.consolidate([{"fact": "ha un cane", "operation": "new",
+                                   "safety": False, "utility": 4}])
+
+        self.assertEqual(self.judgment(state["core_memory"][0]), (False, 4, None, None))
+
+    def test_a_safety_fact_drops_its_ratings(self):
+        # E' protetta comunque: un voto dato lo stesso non deve restare.
+        state = self.consolidate([{"fact": "e' allergica alle arachidi", "operation": "new",
+                                   "safety": True, "utility": 5, "need": 3, "gain": 3}])
+
+        self.assertEqual(self.judgment(state["core_memory"][0]), (True, None, None, None))
+
+    def test_a_rating_out_of_its_scale_counts_as_not_given(self):
+        state = self.consolidate([
+            {"fact": "ha un cane", "operation": "new", "safety": "false", "need": "3",
+             "gain": 2.0, "utility": True},
+            {"fact": "corre la mattina", "operation": "new", "safety": "forse", "utility": 0,
+             "need": 4, "gain": 2.5},
+        ])
+
+        self.assertEqual([self.judgment(item) for item in state["core_memory"]],
+                         [(False, None, 3, 2), (None, None, None, None)])
+
+    def test_an_update_is_judged_again(self):
+        old = self.consolidate([{"fact": "obiettivo 2000 calorie", "operation": "new",
+                                 "safety": False, "utility": 2}])["core_memory"][0]
+
+        state = self.consolidate([{"fact": "obiettivo 2200 calorie", "operation": "update",
+                                   "target_item_id": old.id, "safety": False, "utility": 5}])
+
+        self.assertEqual(self.judgment(state["core_memory"][0]), (False, 5, None, None))
+        self.assertEqual(self.store.metadatas[old.id]["utility"], 2,
+                         "il tombstone resta con il voto che aveva")
+
+    def test_an_update_of_an_archived_memory_is_judged_again(self):
+        archived = CoreMemoryItem(content="il gatto Milo ha due anni", safety=False, utility=2)
+        archive_items([archived])
+
+        state = self.consolidate([{"fact": "il gatto Milo ha tre anni", "operation": "update",
+                                   "target_item_id": archived.id, "safety": False,
+                                   "utility": 4}])
+
+        self.assertEqual(self.judgment(state["core_memory"][0]), (False, 4, None, None))
+        self.assertEqual(state["operation_log"][-1].ratings, {"utility": 4})
+
+    def test_a_redundant_keeps_the_ratings_it_had(self):
+        item = self.consolidate([{"fact": "ha un cane", "operation": "new",
+                                  "safety": False, "utility": 2}])["core_memory"][0]
+        archived = CoreMemoryItem(content="corre la mattina", safety=False, utility=2)
+        archive_items([archived])
+
+        state = self.consolidate([
+            {"fact": "ha un cane", "operation": "redundant", "target_item_id": item.id,
+             "safety": True, "utility": 5},
+            {"fact": "corre la mattina", "operation": "redundant",
+             "target_item_id": archived.id, "safety": True, "utility": 5},
+        ])
+
+        self.assertEqual(self.judgment(state["core_memory"][0]), (False, 2, None, None))
+        metadata = self.store.metadatas[archived.id]
+        self.assertEqual((metadata["safety"], metadata["utility"]), (False, 2))
+
+    def test_the_log_shows_the_judgment_of_new_and_update_with_safety_only_when_true(self):
+        state = self.consolidate([
+            {"fact": "ha un cane", "operation": "new", "safety": False, "utility": 4},
+            {"fact": "e' allergica alle arachidi", "operation": "new", "safety": True},
+        ])
+        dog = state["core_memory"][0]
+        state = self.consolidate([
+            {"fact": "ha un cane di nome Argo", "operation": "update",
+             "target_item_id": dog.id, "safety": False, "utility": 5},
+            {"fact": "e' allergica alle arachidi", "operation": "redundant",
+             "target_item_id": state["core_memory"][1].id},
+        ])
+
+        self.assertEqual([(entry.op_type, entry.ratings) for entry in state["operation_log"]],
+                         [("create", {"utility": 4}), ("create", {"safety": True}),
+                          ("update", {"utility": 5}), ("redundant", None)])
+        published = json.loads(serialize_operation_log_for_response(state["operation_log"])[2])
+        self.assertEqual(published["ratings"], {"utility": 5})
+
+    def test_with_need_and_gain_the_log_shows_both(self):
+        self.use("need_gain")
+
+        state = self.consolidate([{"fact": "ha un cane", "operation": "new", "safety": False,
+                                   "need": 2, "gain": 3}])
+
+        self.assertEqual(state["operation_log"][0].ratings, {"need": 2, "gain": 3})
+
+    def test_without_a_judgment_the_log_shows_none(self):
+        self.use("none")
+
+        state = self.consolidate([{"fact": "ha un cane", "operation": "new"}])
+
+        self.assertIsNone(state["operation_log"][0].ratings)
+
+    def test_the_ratings_travel_to_the_archive_and_the_missing_ones_stay_out(self):
+        # Chroma non accetta None nei metadata.
+        item = CoreMemoryItem(content="ha un cane", safety=False, need=3, gain=1)
+        archive_items([item])
+
+        metadata = self.store.metadatas[item.id]
+        self.assertEqual((metadata["safety"], metadata["need"], metadata["gain"]), (False, 3, 1))
+        self.assertNotIn("utility", metadata)
 
 
 if __name__ == "__main__":

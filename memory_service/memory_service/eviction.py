@@ -16,12 +16,21 @@ inserimento e si controlla alla fine del turno, dopo i tombstone. Se e'
 superato, esce il PRUNE_FRACTION delle memorie attive - arrotondato per eccesso -
 con lo score piu' basso. Se resta superato, al turno dopo ne esce un'altra quota.
 
+Le memorie con safety vera non escono mai: sono tolte dalle candidate prima di
+ogni calcolo, senza uno score. La quota pero' resta calcolata su tutte le attive,
+perche' e' quella che serve a rientrare nel limite.
+
 Lo score
 --------
 Ogni termine e' una funzione a parte, con valori in [0, 1], alto vuol dire da
-tenere. eviction_terms calcola i termini accesi, per nome, e combine_terms ne fa
-la media; ogni termine ha il suo switch in MemoryConfig, come eviction. Un
-termine nuovo va aggiunto in eviction_terms, e da li' arriva anche nel log.
+tenere. eviction_terms calcola i termini accesi, per nome, e combine_terms li
+combina. time_decay e frequency hanno il loro switch in MemoryConfig, come
+eviction; utility segue consolidation_utility. Un termine nuovo va aggiunto in
+eviction_terms e nei pesi, e da li' arriva anche nel log.
+
+    utility_term      il voto da 1 a 5 che il classificatore da' a ogni fatto
+                      con consolidation_utility `single`, diviso per 5: da 0.2
+                      a 1. Entra solo in quella modalita'.
 
     time_decay        il tempo da un timestamp, con una delle due curve secondo
                       eviction_time_decay_function; tutte e due valgono 1 al
@@ -47,8 +56,17 @@ termine nuovo va aggiunto in eviction_terms, e da li' arriva anche nel log.
                       come per il time decay, se ne usa sempre uno solo. Entra
                       con eviction_frequency.
 
+combine_terms segue eviction_combination:
+
+    weighted_sum      0.5 utility + 0.25 time_decay + 0.25 frequency
+    product           utility * (0.5 time_decay + 0.5 frequency)
+
+I pesi si riproporzionano sui termini accesi: senza frequency la somma pesata e'
+2/3 utility + 1/3 time_decay, il prodotto utility * time_decay. Senza utility le
+due formule sono la media dei termini accesi.
+
 Con tutti i termini spenti non esce niente. Le memorie escono tutte insieme: gli
-score si calcolano una volta sola, sulle attive di quel momento.
+score si calcolano una volta sola, sulle candidate di quel momento.
 
 Cosa tocca e cosa no
 --------------------
@@ -103,7 +121,7 @@ from typing import Dict, List, Optional, Tuple
 
 from memory_service import backends
 from memory_service.config import MemoryConfig
-from memory_service.consolidation import OperationLogEntry
+from memory_service.consolidation import RATING_SCALES, OperationLogEntry
 
 EVICTED_STATUSES = ("superseded", "deleted")
 
@@ -112,6 +130,8 @@ DECAY_SHAPE = 0.5
 DECAY_SCALE_HOURS = 1
 POWER_EXPONENT = 0.5
 POWER_SCALE_HOURS = 1
+WEIGHTED_SUM_WEIGHTS = {"utility": 0.5, "time_decay": 0.25, "frequency": 0.25}
+PRODUCT_WEIGHTS = {"time_decay": 0.5, "frequency": 0.5}
 
 
 def _find_tombstones(store) -> List[Tuple[str, str]]:
@@ -228,6 +248,11 @@ def frequency_term(count: int, count_max: int) -> float:
     return count / count_max
 
 
+def utility_term(utility: int) -> float:
+    """Il voto del classificatore da 0.2 a 1: utility / 5."""
+    return utility / RATING_SCALES["utility"]
+
+
 def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
                    frequency_max: Optional[int] = None) -> Dict[str, float]:
     """I termini accesi, per nome: sono anche i sotto-score che il log riporta.
@@ -237,6 +262,8 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     tutte. Serve solo con eviction_frequency.
     """
     terms = {}
+    if config.consolidation_utility == "single":
+        terms["utility"] = utility_term(metadata["utility"])
     if config.eviction_time_decay:
         decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
         terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now)
@@ -245,16 +272,28 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     return terms
 
 
-def combine_terms(terms: Dict[str, float]) -> Optional[float]:
-    """Media dei termini, in [0, 1]: None se non ce n'e' nessuno."""
+def weighted_mean(terms: Dict[str, float], weights: Dict[str, float]) -> float:
+    """Media dei termini con i loro pesi, riproporzionati su quelli presenti."""
+    total = sum(weights[name] for name in terms)
+    return sum(weights[name] * value for name, value in terms.items()) / total
+
+
+def combine_terms(terms: Dict[str, float], combination: str) -> Optional[float]:
+    """Lo score dai termini, in [0, 1]: None se non ce n'e' nessuno.
+
+    Senza utility le due combinazioni sono la stessa media.
+    """
     if not terms:
         return None
-    return sum(terms.values()) / len(terms)
+    if combination == "product" and "utility" in terms:
+        rest = {name: value for name, value in terms.items() if name != "utility"}
+        return terms["utility"] * (weighted_mean(rest, PRODUCT_WEIGHTS) if rest else 1)
+    return weighted_mean(terms, WEIGHTED_SUM_WEIGHTS)
 
 
 def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optional[float]:
     """Lo score di una memoria: il piu' basso esce per primo. None se nessun termine e' acceso."""
-    return combine_terms(eviction_terms(metadata, config, now))
+    return combine_terms(eviction_terms(metadata, config, now), config.eviction_combination)
 
 
 def prune_count(active: int, fraction: float = PRUNE_FRACTION) -> int:
@@ -267,11 +306,13 @@ def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
                   now: Optional[datetime] = None) -> List[str]:
     """Toglie le memorie attive con lo score piu' basso.
 
-    Ne toglie prune_count delle attive, tutte insieme. Con tutti i termini spenti
-    non ce n'e' nessuna con uno score, e non esce niente. Restituisce gli id
-    rimossi, e per ciascuno aggiunge al log una voce `prune` con lo score e i
-    termini. Come evict_archived_tombstones non solleva se lo store fallisce, e
-    il log registra solo le rimozioni riuscite.
+    Ne toglie prune_count delle attive, tutte insieme, scegliendole fra quelle
+    senza safety: le protette restano fuori prima di ogni calcolo, anche dal
+    conteggio piu' alto della frequenza. Con tutti i termini spenti non ce n'e'
+    nessuna con uno score, e non esce niente. Restituisce gli id rimossi, e per
+    ciascuno aggiunge al log una voce `prune` con lo score e i termini. Come
+    evict_archived_tombstones non solleva se lo store fallisce, e il log registra
+    solo le rimozioni riuscite.
 
     Non guarda il limite: se l'archivio lo supera lo decide il grafo, con
     archive_over_limit, prima di arrivare qui. Il filtro `status: active` e' lo
@@ -287,14 +328,18 @@ def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
     ids = result.get("ids") or []
     documents = result.get("documents") or [""] * len(ids)
     metadatas = result.get("metadatas") or [{}] * len(ids)
-    frequency_max = (max((metadata[frequency_field(config)] for metadata in metadatas), default=0)
+    candidates = [(doc_id, content, metadata)
+                  for doc_id, content, metadata in zip(ids, documents, metadatas)
+                  if not metadata.get("safety")]
+    frequency_max = (max((metadata[frequency_field(config)] for _, _, metadata in candidates),
+                         default=0)
                      if config.eviction_frequency else None)
     now = now or datetime.now()
 
     scored = []
-    for doc_id, content, metadata in zip(ids, documents, metadatas):
+    for doc_id, content, metadata in candidates:
         terms = eviction_terms(metadata, config, now, frequency_max)
-        score = combine_terms(terms)
+        score = combine_terms(terms, config.eviction_combination)
         if score is not None:
             scored.append((score, doc_id, content, terms))
     targets = sorted(scored, key=lambda target: target[:2])[:prune_count(len(ids))]

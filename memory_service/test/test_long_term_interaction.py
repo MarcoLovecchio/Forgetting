@@ -415,6 +415,13 @@ def _clock_iso(text):
     return str(text).split("T")[-1][:8]
 
 
+def _judgment(values):
+    """safety, utility, need e gain dati dal classificatore; vuoto se non ce n'e'."""
+    given = [f"{name} {values.get(name)}" for name in ("safety", "utility", "need", "gain")
+             if values.get(name) is not None]
+    return " | " + " ".join(given) if given else ""
+
+
 def _last_answer(state):
     """La risposta composta da generate_answer: e' l'ultimo messaggio del turno.
 
@@ -461,7 +468,8 @@ def _print_operation_log(log):
             score = f" | score {entry.score:.3f}" + (f" ({terms})" if terms else "")
         safe_print(f"  {number:>3}  {entry.op_type:<10} | item {_short(entry.item_id)}"
                    f" | related {_short(entry.related_item_id)}"
-                   f" | {_clock(entry.timestamp)}{score} | {entry.content}")
+                   f" | {_clock(entry.timestamp)}{score}{_judgment(entry.ratings or {})}"
+                   f" | {entry.content}")
 
 
 def _print_core_memory(state, limit):
@@ -477,7 +485,7 @@ def _print_core_memory(state, limit):
         safe_print(f"  - [{_short(item.id)}] {item.content}")
         safe_print(f"      updated {_clock(item.updated_at)}"
                    f" | retrieved {_clock(item.retrieved_at)} ({item.n_retrieve})"
-                   f" | used {item.n_used}")
+                   f" | used {item.n_used}{_judgment(item.model_dump())}")
 
 
 def _print_archive(vector_store):
@@ -504,7 +512,8 @@ def _print_archive(vector_store):
         safe_print(f"  - [{_short(doc_id)}] ({status}) {content}")
         safe_print(f"      updated {_clock_iso(metadata.get('updated_at'))}"
                    f" | retrieved {_clock_iso(metadata.get('retrieved_at'))}"
-                   f" ({metadata.get('n_retrieve')}) | used {metadata.get('n_used')}")
+                   f" ({metadata.get('n_retrieve')}) | used {metadata.get('n_used')}"
+                   f"{_judgment(metadata)}")
 
     summary = ", ".join(f"{name} {count}" for name, count in sorted(counters.items()))
     safe_print(f"\n  Riepilogo status: {summary}")
@@ -712,6 +721,7 @@ def _save_run(config, records, elapsed):
         "core_memory_limit": config.core_memory_limit,
         "retrieval_mode": config.retrieval_mode,
         "track_used": config.counts_used,
+        "consolidation_utility": config.consolidation_utility,
         "archive_candidates_k": ARCHIVE_CANDIDATES_K,
         "node_sampling": NODE_SAMPLING,
         "seconds": round(elapsed, 1),
@@ -734,7 +744,8 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
                f"di cui {len(answers)} domande")
     safe_print(f"Durata: {elapsed:.1f}s")
     safe_print(f"Modello: {config.llm_config.get('model_name')}")
-    safe_print(f"Recupero: {config.retrieval_mode} | usi contati: {config.counts_used}")
+    safe_print(f"Recupero: {config.retrieval_mode} | usi contati: {config.counts_used}"
+               f" | utility: {config.consolidation_utility}")
     safe_print(f"Archivio: {config.chroma_path} / {config.collection_name}")
     if inherited:
         safe_print(f"\033[33mATTENZIONE: l'archivio conteneva gia' {inherited} documenti "

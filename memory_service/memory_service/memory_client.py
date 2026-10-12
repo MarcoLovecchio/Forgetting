@@ -64,8 +64,10 @@ def print_operations(operation_log):
             terms = ', '.join(f'{name} {value:.3f}'
                               for name, value in (operation.get('score_terms') or {}).items())
             score = f" | score: {operation['score']:.3f}" + (f' ({terms})' if terms else '')
+        ratings = ''.join(f' | {name}: {value}'
+                          for name, value in (operation.get('ratings') or {}).items())
         print(f"  - {operation['op_type']:<10} | item: {operation['item_id']}"
-              f" | related: {related}{score} | {operation.get('content')}")
+              f" | related: {related}{score}{ratings} | {operation.get('content')}")
 
 
 def main(args=None):

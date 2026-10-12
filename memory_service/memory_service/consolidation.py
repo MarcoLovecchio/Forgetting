@@ -22,6 +22,11 @@ delete       the user explicitly asked to forget a fact     the item becomes
                                                             "deleted"
 ===========  =============================================  =======================
 
+With MemoryConfig.consolidation_utility the classifier also judges every new and
+every updated fact, in the same call: a safety flag and, unless it is set, either
+a single utility rating from 1 to 5 (single) or need and gain from 1 to 3
+(need_gain). An update is judged again; a redundant keeps the ratings it had.
+
 Items that stop being active (superseded or deleted) are written to the archive
 as tombstones and dropped from core memory: ``core_memory`` in the agent state
 only ever holds active items, while the history survives a restart. The same is
@@ -37,9 +42,9 @@ exceeded - is deliberately not handled here.
 
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from memory_service import backends
 
@@ -68,6 +73,12 @@ class CoreMemoryItem(BaseModel):
     retrieved_at: datetime = Field(default_factory=datetime.now)
     n_used: int = 0
 
+    # None when not given: consolidation_utility off, or a safety fact.
+    safety: Optional[bool] = None
+    utility: Optional[int] = None
+    need: Optional[int] = None
+    gain: Optional[int] = None
+
     @model_validator(mode="before")
     @classmethod
     def _one_creation_instant(cls, data: Any) -> Any:
@@ -88,6 +99,8 @@ class OperationLogEntry(BaseModel):
     content: Optional[str] = None
     score: Optional[float] = None
     score_terms: Optional[Dict[str, float]] = None
+    # create and update only: see logged_ratings.
+    ratings: Optional[Dict[str, Union[bool, int]]] = None
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
@@ -136,6 +149,121 @@ class InsertCoreMemories(BaseModel):
         "among the known memories."))
 
 
+class SafetyJudgedOperation(MemoryOperation):
+    """A classified fact, flagged when forgetting it could put the user at risk."""
+
+    safety: Optional[bool] = Field(default=None, description=(
+        "True only if forgetting this fact could put the user at risk: without it the "
+        "assistant could harm the user or put them in danger, as with an allergy, a medical "
+        "condition or treatment, a physical limitation, or something the user must avoid for "
+        "their health or safety. False for everything else, however important it is to the "
+        "user. Only for new and update: leave it out for redundant and delete."))
+
+
+class UtilityJudgedOperation(SafetyJudgedOperation):
+    """A classified fact, with its safety flag and one utility rating."""
+
+    utility: Optional[Literal[1, 2, 3, 4, 5]] = Field(default=None, description=(
+        "How valuable it will be to keep this fact and find it again in future "
+        "conversations. Weigh two things together: how likely the assistant is to need it "
+        "to answer or help the user, and how much worse the answer would be without it. "
+        "A fact needed rarely can still score high if missing it would cause a serious "
+        "error; a fact that matters a lot to the user can still score low if it will "
+        "hardly ever affect an answer. "
+        "Judge the fact itself, as you wrote it: not how often or how recently the user "
+        "said it, not how new or surprising it is, not how detailed it is. Do not invent "
+        "a goal of the user that the messages do not show. "
+        "1: negligible - incidental, or only about the current conversation; there is no "
+        "concrete reason to expect it will help later. "
+        "2: low - it could help in a narrow situation that may never come up, or it will "
+        "soon be outdated, like a passing mood or a one-off event that is over; little is "
+        "lost without it. "
+        "3: moderate - stable background, such as a hobby, a taste, an opinion or a past "
+        "experience: there is a credible chance it helps when its topic comes up, but how "
+        "often is uncertain. "
+        "4: high - a lasting preference, habit, routine, constraint, ongoing activity, or "
+        "a person or animal close to the user, that will regularly shape answers in its "
+        "area; or an upcoming commitment or appointment, until it has passed. Forgetting "
+        "it would noticeably worsen later answers. "
+        "5: critical - both likely to be needed and costly to forget, or a fact whose "
+        "absence could make the assistant answer wrongly, such as the core facts of who "
+        "the user is. "
+        "Only for new and update, and only when safety is false: leave it out for redundant "
+        "and delete, and when safety is true."))
+
+
+class NeedGainJudgedOperation(SafetyJudgedOperation):
+    """A classified fact, with its safety flag, need and gain."""
+
+    need: Optional[Literal[1, 2, 3]] = Field(default=None, description=(
+        "NEED: how likely the assistant is to need this fact again, to answer the user, "
+        "personalize a reply or keep continuity with what was said before. Only the "
+        "likelihood of use: how much the fact helps when it is used is gain, rated "
+        "separately. "
+        "Judge the fact itself, as you wrote it: not how often or how recently the user "
+        "said it, not how new or surprising it is. Do not invent a goal of the user that "
+        "the messages do not show. "
+        "1: unlikely - incidental, or only about the current conversation; little concrete "
+        "reason to expect it will come up again. "
+        "2: possible - useful only if a particular topic or situation comes up, or soon "
+        "outdated, like a passing state or a one-off event that is over. "
+        "3: likely - a lasting preference, habit, routine, constraint, ongoing activity, "
+        "or a person or animal close to the user, that will come up again; or an upcoming "
+        "commitment or appointment, until it has passed. "
+        "Only for new and update, and only when safety is false: leave it out for redundant "
+        "and delete, and when safety is true."))
+    gain: Optional[Literal[1, 2, 3]] = Field(default=None, description=(
+        "GAIN: when this fact is needed, how much having it improves the assistant's "
+        "answer compared with not having it. Rate it as if the situation that needs it "
+        "had already come up, however rare that situation is: how often it happens is "
+        "need, rated separately. "
+        "1: little - the assistant could give an adequate answer without it; the fact adds "
+        "a detail but changes nothing that matters. "
+        "2: clear - with it the answer is more accurate, more personal or more consistent "
+        "with what the user said before, but nothing goes wrong without it. "
+        "3: critical - without it the assistant could give a wrong answer, break an "
+        "important constraint of the user, or lose track of something essential about who "
+        "the user is. "
+        "Only for new and update, and only when safety is false: leave it out for redundant "
+        "and delete, and when safety is true."))
+
+
+# The model sees the same tool name in every mode: only the schema changes.
+class InsertCoreMemoriesWithUtility(InsertCoreMemories):
+    __doc__ = InsertCoreMemories.__doc__ + """
+
+    Every new and every update also carries a judgment of the fact you wrote, given after
+    classifying it: safety, true only if forgetting the fact could put the user at risk,
+    and, when safety is false, utility, how useful the fact will be in future
+    conversations. Redundant and delete carry neither."""
+
+    model_config = ConfigDict(title="InsertCoreMemories")
+
+    memories: List[UtilityJudgedOperation] = Field(
+        description=InsertCoreMemories.model_fields["memories"].description)
+
+
+class InsertCoreMemoriesWithNeedGain(InsertCoreMemories):
+    __doc__ = InsertCoreMemories.__doc__ + """
+
+    Every new and every update also carries a judgment of the fact you wrote, given after
+    classifying it: safety, true only if forgetting the fact could put the user at risk,
+    and, when safety is false, need and gain, rated separately. Redundant and delete carry
+    neither."""
+
+    model_config = ConfigDict(title="InsertCoreMemories")
+
+    memories: List[NeedGainJudgedOperation] = Field(
+        description=InsertCoreMemories.model_fields["memories"].description)
+
+
+CONSOLIDATION_TOOLS = {
+    "none": InsertCoreMemories,
+    "single": InsertCoreMemoriesWithUtility,
+    "need_gain": InsertCoreMemoriesWithNeedGain,
+}
+
+
 class MemorySplitDecision(BaseModel):
     """Where a single core memory should live from now on."""
 
@@ -179,6 +307,43 @@ def normalize_operation(operation: Any) -> Optional[str]:
     if not isinstance(operation, str):
         return None
     return _OPERATION_ALIASES.get(operation.strip().lower())
+
+
+RATING_SCALES = {"utility": 5, "need": 3, "gain": 3}
+
+
+def _flag(value: Any) -> Optional[bool]:
+    """A boolean as the model wrote it, also as the string true or false."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    return None
+
+
+def _rating(value: Any, top: int) -> Optional[int]:
+    """An integer from 1 to `top`, also written as a string; anything else is not given."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not number.is_integer() or not 1 <= number <= top:
+        return None
+    return int(number)
+
+
+def read_ratings(raw_operation: dict) -> Dict[str, Any]:
+    """safety, utility, need and gain of an operation, as CoreMemoryItem fields.
+
+    A safety fact is protected whatever its usefulness: its ratings are dropped
+    even when the model gave them.
+    """
+    safety = _flag(raw_operation.get("safety"))
+    ratings = {name: None if safety else _rating(raw_operation.get(name), top)
+               for name, top in RATING_SCALES.items()}
+    return {"safety": safety, **ratings}
 
 
 # --------------------------------------------------------------------------- #
@@ -226,16 +391,20 @@ def serialize_operation_log_for_response(log: Iterable[OperationLogEntry]) -> Li
 def archive_metadata(item: CoreMemoryItem) -> dict:
     """Every CoreMemoryItem field except the content, which is the document itself.
 
-    Chroma only accepts scalars in the metadata, hence the empty string instead of
-    None and the ISO timestamps.
+    Chroma only accepts scalars in the metadata, hence the ISO timestamps, and a
+    rating that was never given is left out instead of being None.
     """
-    return {
+    metadata = {
         "status": item.status,
         "updated_at": item.updated_at.isoformat(),
         "n_retrieve": item.n_retrieve,
         "n_used": item.n_used,
         "retrieved_at": item.retrieved_at.isoformat(),
     }
+    for name in ("safety", *RATING_SCALES):
+        if getattr(item, name) is not None:
+            metadata[name] = getattr(item, name)
+    return metadata
 
 
 def archive_items(items: Iterable[CoreMemoryItem]) -> str:
@@ -409,10 +578,26 @@ def build_candidate_memories(
 # Operations on a core memory item
 # --------------------------------------------------------------------------- #
 
-def create_item(content: str, log: List[OperationLogEntry]) -> CoreMemoryItem:
-    """A fact nothing in memory covers yet."""
-    item = CoreMemoryItem(content=content)
-    log.append(OperationLogEntry(op_type="create", item_id=item.id, content=content))
+def logged_ratings(item: CoreMemoryItem) -> Optional[Dict[str, Union[bool, int]]]:
+    """The judgment of an item as the log shows it, None when there is nothing to show.
+
+    Safety only when true; then the ratings that were given.
+    """
+    shown = {"safety": True} if item.safety else {}
+    shown.update({name: getattr(item, name) for name in RATING_SCALES
+                  if getattr(item, name) is not None})
+    return shown or None
+
+
+def create_item(
+    content: str,
+    log: List[OperationLogEntry],
+    ratings: Optional[Dict[str, Any]] = None,
+) -> CoreMemoryItem:
+    """A fact nothing in memory covers yet, with the ratings from read_ratings."""
+    item = CoreMemoryItem(content=content, **(ratings or {}))
+    log.append(OperationLogEntry(op_type="create", item_id=item.id, content=content,
+                                 ratings=logged_ratings(item)))
     return item
 
 
@@ -439,17 +624,19 @@ def supersede_item(
     old_item: CoreMemoryItem,
     new_content: str,
     log: List[OperationLogEntry],
+    ratings: Optional[Dict[str, Any]] = None,
 ) -> CoreMemoryItem:
     """Replace a core item with a newer version that points back at it.
 
     The newer version inherits n_retrieve and n_used: it is the same fact, evolved.
+    The ratings are not inherited: an update is judged again.
     """
     _retire_item(old_item, "superseded")
     new_item = CoreMemoryItem(content=new_content, n_retrieve=old_item.n_retrieve,
-                              n_used=old_item.n_used)
+                              n_used=old_item.n_used, **(ratings or {}))
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
-        related_item_id=old_item.id, content=new_content))
+        related_item_id=old_item.id, content=new_content, ratings=logged_ratings(new_item)))
     return new_item
 
 
@@ -486,20 +673,22 @@ def supersede_archived_item(
     item_id: str,
     new_content: str,
     log: List[OperationLogEntry],
+    ratings: Optional[Dict[str, Any]] = None,
 ) -> Optional[CoreMemoryItem]:
     """Flag an archived memory as superseded; the newer version starts in core memory.
 
-    The newer version inherits n_retrieve and n_used, as in supersede_item.
+    The newer version inherits n_retrieve and n_used and is judged again, as in
+    supersede_item.
     """
     archived = _rewrite_archive_metadata(item_id, status="superseded")
     if archived is None:
         return None
     new_item = CoreMemoryItem(content=new_content,
                               n_retrieve=archived["metadata"]["n_retrieve"],
-                              n_used=archived["metadata"]["n_used"])
+                              n_used=archived["metadata"]["n_used"], **(ratings or {}))
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
-        related_item_id=item_id, content=new_content))
+        related_item_id=item_id, content=new_content, ratings=logged_ratings(new_item)))
     return new_item
 
 
@@ -586,8 +775,11 @@ def apply_memory_operations(
             print(f"\tNo target for '{operation}', storing {fact!r} as a new memory")
             operation = "new"
 
+        # Only new and update are judged: a redundant keeps the ratings it had.
+        ratings = read_ratings(raw_operation)
+
         if operation == "new":
-            items.append(create_item(fact, log))
+            items.append(create_item(fact, log, ratings))
             counters["new"] += 1
 
         elif target_item is not None:
@@ -597,7 +789,7 @@ def apply_memory_operations(
             elif operation == "delete":
                 delete_item(target_item, log)
             else:  # update
-                items.append(supersede_item(target_item, fact, log))
+                items.append(supersede_item(target_item, fact, log, ratings))
             counters[operation] += 1
 
         else:
@@ -607,7 +799,7 @@ def apply_memory_operations(
             elif operation == "delete":
                 delete_archived_item(target_id, log)
             else:  # update
-                new_item = supersede_archived_item(target_id, fact, log)
+                new_item = supersede_archived_item(target_id, fact, log, ratings)
                 if new_item is not None:
                     items.append(new_item)
             counters[operation] += 1

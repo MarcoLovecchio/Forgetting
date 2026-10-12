@@ -12,17 +12,16 @@ from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 
 def tool_name_of(tool: Any) -> str:
-    """Name a bound tool is exposed with, for both @tool functions and models."""
-    for attribute in ("name", "__name__"):
-        value = getattr(tool, attribute, None)
-        if isinstance(value, str):
-            return value
-    if isinstance(tool, dict):
-        return tool.get("name", "")
-    return type(tool).__name__
+    """Name a bound tool is exposed with: the one the real model sees.
+
+    Not the class name: a model may carry another title in its schema, as the
+    consolidation tools do to share the name InsertCoreMemories.
+    """
+    return convert_to_openai_tool(tool)["function"]["name"]
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -31,7 +30,8 @@ class ScriptedChatModel(BaseChatModel):
     ``tool_responses`` maps a tool name to the arguments the model should
     "decide" to call it with. When none of the bound tools is scripted, the
     model replies with ``default_content``. Every invocation is recorded in
-    ``invocations``, with the tools it was bound to.
+    ``invocations``, with the names of the tools it was bound to and the tools
+    themselves.
     """
 
     tool_responses: Dict[str, Dict[str, Any]] = {}
@@ -49,8 +49,9 @@ class ScriptedChatModel(BaseChatModel):
         run_manager: Optional[CallbackManagerForLLMRun] = None,
         **kwargs: Any,
     ) -> ChatResult:
-        bound_tools = [tool_name_of(tool) for tool in (kwargs.get("tools") or [])]
-        self.invocations.append({"tools": bound_tools})
+        bound = list(kwargs.get("tools") or [])
+        bound_tools = [tool_name_of(tool) for tool in bound]
+        self.invocations.append({"tools": bound_tools, "bound": bound})
 
         message = AIMessage(content=self.default_content)
         for name in bound_tools:

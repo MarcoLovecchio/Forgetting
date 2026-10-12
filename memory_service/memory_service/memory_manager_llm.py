@@ -11,8 +11,8 @@ from typing import Annotated, Dict, Any, List, Literal, Optional, TypedDict
 from memory_service import backends
 from memory_service.config import MemoryConfig
 from memory_service.consolidation import (
+    CONSOLIDATION_TOOLS,
     CoreMemoryItem,
-    InsertCoreMemories,
     OperationLogEntry,
     SplitCoreAndArchivalMemory,
     apply_memory_operations,
@@ -426,15 +426,8 @@ def exceed_core_memory_limit(state: AgentState, runtime: Runtime[MemoryConfig]) 
         return True
     return False
 
-def summarize_memories_node(state: AgentState, runtime: Runtime[MemoryConfig]):
-
-    keep = max(1, runtime.context.maximum_historical_messages)
-    exceeding_messages = state['messages'][:-keep]
-    print(f"\tSummarizing {len(exceeding_messages)} exceeding messages")
-    user_messages, assistant_messages = split_by_speaker(exceeding_messages)
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a tool that extracts facts about the user and classifies each one
+# La classificazione: uguale in ogni modalita' di consolidation_utility.
+CONSOLIDATION_SYSTEM = """You are a tool that extracts facts about the user and classifies each one
         against the memories the assistant already has, given to you as id: content pairs
         coming from both core and archival memory.
         For each fact you extract, decide which operation applies; the operations are
@@ -465,8 +458,9 @@ def summarize_memories_node(state: AgentState, runtime: Runtime[MemoryConfig]):
         fact that appears only there gets no operation - not even a redundant.
         A known memory the user did not refer to gets no operation.
         Facts that are always true together belong in one memory.
-        Two operations never share the same fact text."""),
-        ("human", """For context only, what the assistant replied - do NOT extract facts from here:
+        Two operations never share the same fact text."""
+
+CONSOLIDATION_HUMAN = """For context only, what the assistant replied - do NOT extract facts from here:
 
 {assistant_messages}
 
@@ -477,11 +471,63 @@ What the user said - this is where the facts come from:
 
 {user_messages}
 
-First decide what kind of message this is, then store every piece of information about the user it contains.""")
-    ])
+First decide what kind of message this is, then store every piece of information about the user it contains."""
+
+# Dopo la classificazione, solo con consolidation_utility: prima safety, poi i voti.
+SAFETY_STEP = """
+
+        Then judge every new and every update - never a redundant or a delete - on the fact
+        as you wrote it: for an update, the complete new memory.
+
+        3. Safety: would forgetting this fact put the user at risk? Set safety to true only
+           when, without it, the assistant could harm the user or put them in danger: an
+           allergy, a medical condition or treatment, a physical limitation, something the
+           user must avoid for their health or safety. Everything else is false, however
+           important it is to the user. When safety is true, stop here: the memory is
+           protected whatever its usefulness, so give it no rating."""
+
+UTILITY_STEP = """
+
+        4. Utility: rate utility, how valuable keeping this fact will be in future
+           conversations, on the scale the tool describes. The rating is about the fact, not
+           about this message: a fact is not more useful because the user repeated it or just
+           said it, and not less useful because it came up in small talk."""
+
+NEED_GAIN_STEP = """
+
+        4. Need and gain: rate need and gain separately, on the scales the tool describes:
+           need is how likely the fact will be needed again, gain is how much it improves the
+           answer when it is. Rate one without looking at the other. The ratings are about the
+           fact, not about this message: a fact is not more useful because the user repeated
+           it or just said it, and not less useful because it came up in small talk."""
+
+CONSOLIDATION_PROMPTS = {
+    mode: ChatPromptTemplate.from_messages([
+        ("system", CONSOLIDATION_SYSTEM + steps),
+        ("human", CONSOLIDATION_HUMAN + request)])
+    for mode, steps, request in (
+        ("none", "", ""),
+        ("single", SAFETY_STEP + UTILITY_STEP,
+         " Then flag every new and update for safety and, unless safety is true, rate its"
+         " utility."),
+        ("need_gain", SAFETY_STEP + NEED_GAIN_STEP,
+         " Then flag every new and update for safety and, unless safety is true, rate its"
+         " need and its gain."),
+    )
+}
+
+
+def summarize_memories_node(state: AgentState, runtime: Runtime[MemoryConfig]):
+
+    keep = max(1, runtime.context.maximum_historical_messages)
+    exceeding_messages = state['messages'][:-keep]
+    print(f"\tSummarizing {len(exceeding_messages)} exceeding messages")
+    user_messages, assistant_messages = split_by_speaker(exceeding_messages)
+
+    mode = runtime.context.consolidation_utility
     summarizer_llm = get_llm("consolidation").bind_tools(
-        [InsertCoreMemories], tool_choice=REQUIRED)
-    chain = prompt | summarizer_llm
+        [CONSOLIDATION_TOOLS[mode]], tool_choice=REQUIRED)
+    chain = CONSOLIDATION_PROMPTS[mode] | summarizer_llm
     core_memories = build_candidate_memories(state["core_memory"], user_messages)
     known_memories = "\n".join(f"{item_id}: {content}" for item_id, content in core_memories.items())
     response = _timed("consolidation", lambda: chain.invoke({

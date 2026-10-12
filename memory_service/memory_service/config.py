@@ -116,9 +116,11 @@ class MemoryConfig:
     eviction_time_decay_field: Literal["updated_at", "retrieved_at"] = "updated_at"
     eviction_time_decay_function: Literal["weibull", "power"] = "weibull"
     eviction_frequency: bool = False
+    eviction_combination: Literal["weighted_sum", "product"] = "weighted_sum"
     retrieval_mode: Literal["decide", "always_llm_query"] = "decide"
     generate_answer: bool = True
     track_used: bool = False
+    consolidation_utility: Literal["none", "single", "need_gain"] = "none"
 
     # Archival memory (ChromaDB)
     chroma_path: str = "./chroma_db"

@@ -126,4 +126,5 @@ def _print_operation_log(state: dict) -> None:
     for entry in log:
         safe_print(f"  - op: {entry.op_type:<10} | item: {entry.item_id}"
                    f" | related: {entry.related_item_id or '-'}")
-        safe_print(f"      time: {entry.timestamp} | content: {entry.content}")
+        ratings = "".join(f" | {name}: {value}" for name, value in (entry.ratings or {}).items())
+        safe_print(f"      time: {entry.timestamp}{ratings} | content: {entry.content}")

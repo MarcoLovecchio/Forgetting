@@ -43,13 +43,16 @@ Ogni entry di `operation_log` è il JSON di un `OperationLogEntry`:
 ```json
 {"op_type": "update", "item_id": "c8f90d30-...", "related_item_id": "7ca3ad4f-...",
  "content": "L'utente mangia pesce", "score": null, "score_terms": null,
- "timestamp": "2026-08-24T18:23:39.059368"}
+ "ratings": {"utility": 4}, "timestamp": "2026-08-24T18:23:39.059368"}
 ```
 
 `op_type` è uno fra `create`, `redundant`, `update`, `delete`, `archive`, `evict`,
 `prune`. `score` e `score_terms` sono valorizzati solo nelle voci `prune`: lo score
 con cui la memoria è uscita dall'archivio e i termini che lo compongono, per nome
-(oggi solo `{"time_decay": 0.126}`).
+(per esempio `{"utility": 0.8, "time_decay": 0.126}`). `ratings` è valorizzato solo
+nelle voci `create` e `update` con `consolidation_utility` acceso: il giudizio del
+classificatore sulla memoria, cioè `utility` oppure `need` e `gain`, e `safety` solo
+quando è vero (allora i voti non ci sono).
 
 Il log riporta **solo le operazioni della chiamata corrente**, non tutto lo
 storico: `state["operation_log"]` cresce per tutta la vita del nodo e `get_memory`
@@ -308,7 +311,7 @@ d'ambiente (lette da `.env` / `.config`):
 | `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `2` | messaggi mantenuti prima del riassunto. **Tenerlo pari**: con un numero dispari la coda della finestra è una risposta dell'assistente, e ogni consolidamento riceve la fine di uno scambio più l'inizio del successivo invece di una coppia (utente, assistente) intera |
 | `MEMORY_CORE_MEMORY_LIMIT` | `400` | caratteri massimi della core memory |
-| `MEMORY_ARCHIVE_LIMIT` | `50` | memorie **attive** in archivio oltre le quali interviene eviction. Non blocca l'inserimento: lo controlla il router `exceed_archive_limit` del grafo alla fine di ogni `insert` e, se superato, nel nodo `prune_archive` esce il 10% delle memorie attive con lo score più basso, tutte insieme (`eviction.prune_archive`, voce `prune` nel log). Lo score è la media dei termini accesi: il decadimento nel tempo (`eviction_time_decay`), una Weibull o una power law secondo `eviction_time_decay_function` (`weibull` di default, `power`), entrambe con scala di un'ora, calcolato su `updated_at` o `retrieved_at` secondo `eviction_time_decay_field`; la frequenza (`eviction_frequency`), cioè `n_used` quando gli usi si contano (`track_used`, vedi sotto) e `n_retrieve` altrimenti, diviso per il più alto fra le attive. Gira solo con `MemoryConfig.eviction` acceso: gli switch si cambiano solo nel codice (`config.py`), senza variabile d'ambiente |
+| `MEMORY_ARCHIVE_LIMIT` | `50` | memorie **attive** in archivio oltre le quali interviene eviction. Non blocca l'inserimento: lo controlla il router `exceed_archive_limit` del grafo alla fine di ogni `insert` e, se superato, nel nodo `prune_archive` esce il 10% delle memorie attive con lo score più basso, tutte insieme (`eviction.prune_archive`, voce `prune` nel log). Le memorie con `safety` vera non sono mai candidate e non ricevono uno score, ma la quota resta il 10% di tutte le attive. Lo score combina i termini accesi: utility (vedi `consolidation_utility` sotto), il decadimento nel tempo (`eviction_time_decay`), una Weibull o una power law secondo `eviction_time_decay_function` (`weibull` di default, `power`), entrambe con scala di un'ora, calcolato su `updated_at` o `retrieved_at` secondo `eviction_time_decay_field`; la frequenza (`eviction_frequency`), cioè `n_used` quando gli usi si contano (`track_used`, vedi sotto) e `n_retrieve` altrimenti, diviso per il più alto fra le candidate. `eviction_combination` sceglie come: `weighted_sum` (default) è 0.5 utility + 0.25 decadimento + 0.25 frequenza, `product` è utility × (0.5 decadimento + 0.5 frequenza); i pesi si riproporzionano sui termini accesi, e senza utility entrambe sono la media dei termini. Gira solo con `MemoryConfig.eviction` acceso: gli switch si cambiano solo nel codice (`config.py`), senza variabile d'ambiente |
 | `MEMORY_GENERATE_ANSWER` | `false` | se il ramo `retrieve` debba anche **comporre una risposta** all'utente. **Spenta di default**: nessun campo del servizio la restituisce — l'archivio arriva al chiamante tramite `retrieved_memories` — quindi finiva solo in `last_messages` come un turno che l'utente non ha mai letto. Tenendola spenta si risparmia una chiamata per ogni `retrieve`, resta una coppia (utente, assistente) per scambio invece di tre messaggi, e la memoria smette di citare sé stessa dentro il consolidamento. `true` la riaccende |
 | `MEMORY_CHROMA_PATH` | `./chroma_db` | cartella dell'archivio (risolta in path assoluto) |
 | `MEMORY_COLLECTION_NAME` | `memory_archive` | collezione ChromaDB |
@@ -333,6 +336,28 @@ adesso; il recupero continua a contare `n_retrieve` ma non tocca più `retrieved
 che diventa l'ultimo uso. Il termine di frequenza dell'eviction passa da `n_retrieve`
 a `n_used`. Con `generate_answer` spento non c'è una lista da leggere e lo switch non
 ha effetto.
+
+`consolidation_utility` (solo in `config.py`) fa giudicare al classificatore, nella
+stessa chiamata, ogni fatto `new` e ogni `update`:
+
+- `none` (default): nessun giudizio, prompt e tool di sempre;
+- `single`: `safety` e un voto `utility` da 1 a 5;
+- `need_gain`: `safety` e due voti da 1 a 3, `need` (quanto è probabile che il fatto
+  serva) e `gain` (quanto migliora la risposta quando serve); `utility` resta vuoto.
+
+La parte di classificazione del prompt resta identica nelle tre modalità: le due nuove
+aggiungono in coda un passo per `safety` e uno per i voti, e lo schema del tool cambia
+mantenendo il nome `InsertCoreMemories`. `safety` è vero solo se dimenticare il fatto
+può mettere a rischio l'utente (un'allergia, una condizione medica): in quel caso i voti
+non si danno e, se il modello li dà lo stesso, vengono scartati. Un `update` viene
+giudicato di nuovo, un `redundant` tiene i voti che aveva, un `delete` non ne ha. Un voto
+fuori scala conta come non dato. I quattro campi stanno in `CoreMemoryItem` e nei
+metadata dell'archivio, dove un valore mancante è assente invece che `None`.
+
+Nell'eviction, con `single`, il voto entra nello score come utility / 5 (da 0.2 a 1,
+alto vuol dire da tenere come gli altri termini); con `need_gain` need e gain non
+entrano ancora nello score. In tutte le modalità una memoria con `safety` vera non esce
+mai dall'archivio per il limite.
 
 `.env` e `.config` vengono cercati risalendo le directory a partire dalla
 working directory e dalla posizione del pacchetto. Se il nodo viene lanciato da

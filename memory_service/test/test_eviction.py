@@ -42,6 +42,7 @@ from memory_service.eviction import (  # noqa: E402
     power_decay_term,
     prune_archive,
     prune_count,
+    utility_term,
     weibull_decay_term,
 )
 from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
@@ -58,6 +59,8 @@ EVICTION_CONFIG = MemoryConfig(
     eviction_time_decay_field="updated_at",
     eviction_time_decay_function="weibull",
     eviction_frequency=False,
+    eviction_combination="weighted_sum",
+    consolidation_utility="none",
     track_used=False,
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
@@ -81,9 +84,10 @@ class EvictionTestCase(unittest.TestCase):
     def tearDown(self):
         backends.reset()
 
-    def archive(self, content, status="active", days_old=None, now=NOW, retrieved_days_old=None):
+    def archive(self, content, status="active", days_old=None, now=NOW, retrieved_days_old=None,
+                **judgment):
         """Un item in archivio, come lo lascia il core split."""
-        item = CoreMemoryItem(content=content, status=status)
+        item = CoreMemoryItem(content=content, status=status, **judgment)
         if days_old is not None:
             item.updated_at = now - timedelta(days=days_old)
         if retrieved_days_old is not None:
@@ -292,9 +296,12 @@ class EvictionScoreTest(unittest.TestCase):
         self.assertEqual(eviction_terms({"updated_at": NOW.isoformat()}, config, NOW), {})
         self.assertIsNone(eviction_score({"updated_at": NOW.isoformat()}, config, NOW))
 
-    def test_the_score_is_the_mean_of_the_terms(self):
-        self.assertAlmostEqual(combine_terms({"a": 0.2, "b": 0.6}), 0.4)
-        self.assertIsNone(combine_terms({}))
+    def test_without_utility_both_combinations_are_the_mean(self):
+        for combination in ("weighted_sum", "product"):
+            with self.subTest(combination=combination):
+                self.assertAlmostEqual(
+                    combine_terms({"time_decay": 0.2, "frequency": 0.6}, combination), 0.4)
+                self.assertIsNone(combine_terms({}, combination))
 
 
 class FrequencyTermTest(EvictionTestCase):
@@ -364,6 +371,40 @@ class FrequencyTermTest(EvictionTestCase):
         config = dataclasses.replace(self.USES_COUNTED, generate_answer=False)
 
         self.assertEqual(prune_archive(self.log, config, now=NOW), [never_retrieved])
+
+
+class UtilityTermTest(unittest.TestCase):
+    """Il voto 1-5 del classificatore nello score, e come si combina con gli altri termini."""
+
+    METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(), "utility": 4}
+    TERMS = {"utility": 0.8, "time_decay": 0.4, "frequency": 0.2}
+
+    def test_the_vote_over_five(self):
+        for vote, expected in ((1, 0.2), (3, 0.6), (5, 1.0)):
+            with self.subTest(vote=vote):
+                self.assertAlmostEqual(utility_term(vote), expected)
+
+    def test_only_the_single_mode_brings_it(self):
+        for mode, expected in (("none", None), ("need_gain", None), ("single", 0.8)):
+            with self.subTest(mode=mode):
+                config = dataclasses.replace(EVICTION_CONFIG, consolidation_utility=mode)
+                self.assertEqual(eviction_terms(self.METADATA, config, NOW).get("utility"),
+                                 expected)
+
+    def test_the_weighted_sum_is_half_utility_and_a_quarter_each(self):
+        self.assertAlmostEqual(combine_terms(self.TERMS, "weighted_sum"),
+                               0.5 * 0.8 + 0.25 * 0.4 + 0.25 * 0.2)
+
+    def test_the_product_is_utility_times_the_mean_of_the_others(self):
+        self.assertAlmostEqual(combine_terms(self.TERMS, "product"), 0.8 * (0.4 + 0.2) / 2)
+
+    def test_the_weights_follow_the_terms_switched_on(self):
+        # Senza frequency: 2/3 utility e 1/3 time decay; il prodotto e' utility * decay.
+        terms = {"utility": 0.8, "time_decay": 0.5}
+
+        self.assertAlmostEqual(combine_terms(terms, "weighted_sum"), (2 * 0.8 + 0.5) / 3)
+        self.assertAlmostEqual(combine_terms(terms, "product"), 0.8 * 0.5)
+        self.assertAlmostEqual(combine_terms({"utility": 0.8}, "product"), 0.8)
 
 
 class PruneCountTest(unittest.TestCase):
@@ -465,6 +506,61 @@ class PruneArchiveTest(EvictionTestCase):
         config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field="retrieved_at")
 
         self.assertEqual(self.prune(config), [unretrieved])
+
+
+class SafetyTest(EvictionTestCase):
+    """Le memorie con safety vera non sono candidate: nessuno score, mai fuori."""
+
+    def test_the_oldest_stays_when_protected_and_still_counts_in_the_quota(self):
+        ids = {days: self.archive(f"fatto {days}", days_old=days, safety=days == 10)
+               for days in range(11)}
+
+        removed = prune_archive(self.log, EVICTION_CONFIG, now=NOW)
+
+        self.assertCountEqual(removed, [ids[9], ids[8]], "il 10% di 11 attive, protette comprese")
+        self.assertNotIn(ids[10], [entry.item_id for entry in self.log])
+
+    def test_a_protected_memory_is_out_of_the_frequency_max(self):
+        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False,
+                                     eviction_frequency=True)
+        for content, n_retrieve, safety in (("e' allergica alle arachidi", 8, True),
+                                            ("ha un cane", 2, False), ("ha un gatto", 4, False)):
+            archive_items([CoreMemoryItem(content=content, n_retrieve=n_retrieve, safety=safety)])
+
+        prune_archive(self.log, config, now=NOW)
+
+        self.assertEqual(self.log[0].content, "ha un cane")
+        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 su un massimo di 4")
+
+
+class UtilityPruneTest(EvictionTestCase):
+    """Con consolidation_utility single il voto entra nella scelta."""
+
+    def config(self, combination):
+        return dataclasses.replace(EVICTION_CONFIG, consolidation_utility="single",
+                                   eviction_combination=combination)
+
+    def test_at_the_same_age_the_least_useful_leaves(self):
+        ids = {vote: self.archive(f"fatto {vote}", days_old=0, utility=vote) for vote in (5, 1, 3)}
+
+        self.assertEqual(prune_archive(self.log, self.config("weighted_sum"), now=NOW), [ids[1]])
+        self.assertEqual(set(self.log[0].score_terms), {"utility", "time_decay"})
+
+    def useless_fresh_and_useful_old(self):
+        """Voto 1 e appena scritta, voto 5 e ferma da 4 ore (decadimento e^-2, 0.135)."""
+        return (self.archive("ha visto un film", days_old=0, utility=1),
+                self.archive("ha un cane", days_old=4 / 24, utility=5))
+
+    def test_in_the_weighted_sum_the_useless_fresh_one_leaves(self):
+        useless, _ = self.useless_fresh_and_useful_old()
+
+        self.assertEqual(prune_archive(self.log, self.config("weighted_sum"), now=NOW), [useless])
+
+    def test_in_the_product_the_useful_old_one_leaves(self):
+        # 0.2 * 1 contro 1 * 0.135: nel prodotto un decadimento basso pesa per intero.
+        _, useful = self.useless_fresh_and_useful_old()
+
+        self.assertEqual(prune_archive(self.log, self.config("product"), now=NOW), [useful])
 
 
 class WiredIntoTheAgentTest(EvictionTestCase):
