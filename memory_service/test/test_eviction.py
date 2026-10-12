@@ -39,12 +39,9 @@ from memory_service.eviction import (  # noqa: E402
     eviction_score,
     eviction_terms,
     frequency_term,
-    novelty_term,
-    novelty_terms,
     power_decay_term,
     prune_archive,
     prune_count,
-    similarity_matrix,
     weibull_decay_term,
 )
 from memory_service.memory_manager_llm import MemoryAgent  # noqa: E402
@@ -60,8 +57,6 @@ EVICTION_CONFIG = MemoryConfig(
     eviction_time_decay=True,
     eviction_time_decay_field="updated_at",
     eviction_time_decay_function="weibull",
-    eviction_novelty=False,
-    eviction_novelty_mode="nearest",
     eviction_frequency=False,
     track_used=False,
     chroma_path="/tmp/not-used",
@@ -301,73 +296,6 @@ class EvictionScoreTest(unittest.TestCase):
         self.assertAlmostEqual(combine_terms({"a": 0.2, "b": 0.6}), 0.4)
         self.assertIsNone(combine_terms({}))
 
-    def test_the_novelty_joins_the_terms_when_switched_on(self):
-        config = dataclasses.replace(EVICTION_CONFIG, eviction_novelty=True)
-
-        self.assertEqual(eviction_terms(self.METADATA, config, NOW, novelty=0.4),
-                         {"time_decay": weibull_decay_term(self.METADATA["updated_at"], NOW),
-                          "novelty": 0.4})
-
-
-class NoveltyTermTest(unittest.TestCase):
-    """La novelty grezza di una memoria, dalle sue similarita' con le altre."""
-
-    def test_nearest_is_one_minus_the_closest(self):
-        self.assertAlmostEqual(novelty_term([0.2, 0.9, 0.5], "nearest"), 0.1)
-
-    def test_k_nearest_averages_the_k_closest(self):
-        self.assertAlmostEqual(novelty_term([0.1, 0.9, 0.5], "k_nearest", k=2), 0.3)
-
-    def test_with_fewer_than_k_it_uses_what_there_is(self):
-        self.assertAlmostEqual(novelty_term([0.1, 0.9, 0.5], "k_nearest", k=5), 0.5)
-
-    def test_alone_it_is_worth_one(self):
-        for mode in ("nearest", "k_nearest"):
-            with self.subTest(mode=mode):
-                self.assertEqual(novelty_term([], mode), 1.0)
-
-
-class SimilarityMatrixTest(unittest.TestCase):
-    def test_it_is_the_cosine_whatever_the_length(self):
-        similarity = similarity_matrix({"a": [3, 4], "b": [6, 8], "c": [1, 0]})
-
-        self.assertAlmostEqual(similarity["a"]["b"], 1.0)
-        self.assertAlmostEqual(similarity["a"]["c"], 0.6)
-        self.assertAlmostEqual(similarity["c"]["b"], 0.6)
-        self.assertNotIn("a", similarity["a"], "una memoria non e' vicina di se' stessa")
-
-
-class NoveltyTermsTest(unittest.TestCase):
-    """La novelty di ogni memoria fra quelle date, relativa alla piu' distinta."""
-
-    def test_a_duplicate_is_worth_zero_and_the_most_distinct_one(self):
-        similarity = similarity_matrix({"a": [1, 0], "b": [1, 0], "c": [0, 1]})
-
-        self.assertEqual(novelty_terms(["a", "b", "c"], similarity, "nearest"),
-                         {"a": 0.0, "b": 0.0, "c": 1.0})
-
-    def test_the_values_are_relative_to_the_most_distinct(self):
-        # a-b 0.8, b-c 0.6, a-c 0: grezze 0.2, 0.2, 0.4.
-        similarity = similarity_matrix({"a": [1, 0], "b": [0.8, 0.6], "c": [0, 1]})
-
-        novelty = novelty_terms(["a", "b", "c"], similarity, "nearest")
-
-        for doc_id, expected in (("a", 0.5), ("b", 0.5), ("c", 1.0)):
-            self.assertAlmostEqual(novelty[doc_id], expected)
-
-    def test_only_the_listed_memories_are_compared(self):
-        # Senza b, il suo doppione a non ha piu' nessuno vicino.
-        similarity = similarity_matrix({"a": [1, 0], "b": [1, 0], "c": [0, 1]})
-
-        self.assertEqual(novelty_terms(["a", "c"], similarity, "nearest"),
-                         {"a": 1.0, "c": 1.0})
-
-    def test_all_identical_are_worth_zero(self):
-        similarity = similarity_matrix({"a": [1, 0], "b": [2, 0]})
-
-        self.assertEqual(novelty_terms(["a", "b"], similarity, "nearest"),
-                         {"a": 0.0, "b": 0.0})
-
 
 class FrequencyTermTest(EvictionTestCase):
     """Il termine di frequenza: un conteggio relativo al piu' alto, su n_retrieve o n_used."""
@@ -539,73 +467,6 @@ class PruneArchiveTest(EvictionTestCase):
         self.assertEqual(self.prune(config), [unretrieved])
 
 
-class NoveltyPruneTest(EvictionTestCase):
-    """Con la novelty accesa escono prima le memorie simili ad altre."""
-
-    NOVELTY_ONLY = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False,
-                                       eviction_novelty=True)
-
-    def archive_with_vector(self, content, vector, **kwargs):
-        doc_id = self.archive(content, **kwargs)
-        self.store.embeddings[doc_id] = vector
-        return doc_id
-
-    def prune(self, config):
-        return prune_archive(self.log, config, now=NOW)
-
-    def test_a_duplicate_leaves_before_a_distinct_memory(self):
-        twins = {self.archive_with_vector("ha un cane", [1, 0]),
-                 self.archive_with_vector("ha un cane di nome Argo", [1, 0])}
-        self.archive_with_vector("corre la mattina", [0, 1])
-
-        removed = self.prune(self.NOVELTY_ONLY)
-
-        self.assertEqual(len(removed), 1)
-        self.assertIn(removed[0], twins)
-        self.assertEqual(self.log[0].score_terms, {"novelty": 0.0})
-
-    def test_of_two_duplicates_only_one_leaves(self):
-        # Quota 2 su 11. Tutte insieme uscirebbero i due gemelli, i piu' bassi;
-        # una alla volta, dopo il primo l'altro non ha piu' un doppione.
-        config = dataclasses.replace(self.NOVELTY_ONLY, eviction_time_decay=True)
-        twins = {self.archive_with_vector(f"gemello {n}", [1] + [0] * 9, days_old=0)
-                 for n in range(2)}
-        for n in range(1, 10):
-            self.archive_with_vector(f"fatto {n}", [0] * n + [1] + [0] * (9 - n),
-                                     days_old=2 / 24)
-
-        removed = self.prune(config)
-
-        self.assertEqual(len(removed), 2)
-        self.assertEqual(len(twins & set(removed)), 1)
-        self.assertEqual(set(self.log[0].score_terms), {"time_decay", "novelty"})
-
-    def crowded_topic_and_twins(self):
-        """Sei memorie sullo stesso argomento, simili 0.8 fra loro, e due gemelli isolati."""
-        crowded = {self.archive_with_vector(
-            f"argomento {n}", [1] + [0.5 if i == n else 0 for i in range(6)] + [0])
-            for n in range(6)}
-        twins = {self.archive_with_vector(f"gemello {n}", [0] * 7 + [1]) for n in range(2)}
-        return crowded, twins
-
-    def test_nearest_sees_the_twins(self):
-        _, twins = self.crowded_topic_and_twins()
-
-        removed = self.prune(self.NOVELTY_ONLY)
-
-        self.assertEqual(len(removed), 1)
-        self.assertIn(removed[0], twins)
-
-    def test_k_nearest_sees_the_crowded_topic(self):
-        crowded, _ = self.crowded_topic_and_twins()
-        config = dataclasses.replace(self.NOVELTY_ONLY, eviction_novelty_mode="k_nearest")
-
-        removed = self.prune(config)
-
-        self.assertEqual(len(removed), 1)
-        self.assertIn(removed[0], crowded)
-
-
 class WiredIntoTheAgentTest(EvictionTestCase):
     """Tombstone e prune nel ramo insert, a switch acceso; il prune solo oltre il limite."""
 
@@ -708,20 +569,6 @@ class WiredIntoTheAgentTest(EvictionTestCase):
         operations = self.agent.last_operations()
         self.assertEqual([(entry.op_type, entry.item_id) for entry in operations],
                          [("prune", old)])
-
-    def test_with_novelty_a_duplicate_is_pruned_in_the_same_insert(self):
-        self.use_agent(eviction=True, eviction_time_decay=False, eviction_novelty=True,
-                       archive_memory_limit=2)
-        twins = {self.archive("ha un cane di nome Argo"), self.archive("ha un cane di nome Argo")}
-        distinct = self.archive("corre ogni mattina al parco")
-
-        self.insert([])
-
-        gone = [entry.item_id for entry in self.agent.last_operations()
-                if entry.op_type == "prune"]
-        self.assertEqual(len(gone), 1)
-        self.assertIn(gone[0], twins)
-        self.assertEqual(self.store.status_of(distinct), "active")
 
 
 if __name__ == "__main__":
