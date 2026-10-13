@@ -62,11 +62,8 @@ class MemoryServer(Node):
         the node, and get_memory is called often enough that sending the entire
         history every time would cost more with every interaction.
         """
-        operations = []
-        if hasattr(self.memory_agent, "last_operations"):
-            operations = self.memory_agent.last_operations()
         response.operation_log = to_string_list(
-            serialize_operation_log_for_response(operations))
+            serialize_operation_log_for_response(self.memory_agent.last_operations()))
 
     def update_memory_callback(self, request, response):
         self.get_logger().info(
@@ -104,8 +101,8 @@ class MemoryServer(Node):
 
         try:
             # Run the agent in retrieve mode, on the message the user just sent:
-            # senza, il recupero cercherebbe in archivio partendo dall'ultimo
-            # messaggio gia' in memoria invece che dalla domanda corrente.
+            # without it, retrieval would search the archive starting from the last
+            # user message already in memory instead of from the current question.
             state = self.memory_agent.run_memory_agent(
                 interaction_mode='retrieve', query=request.user_input)
 

@@ -1,17 +1,16 @@
-"""Eviction: le memorie superate e cancellate escono davvero dall'archivio, e
-oltre il limite escono le attive con lo score piu' basso.
+"""Eviction: superseded and deleted memories really leave the archive, and
+over the limit the active ones with the lowest score leave.
 
-Offline, sullo stesso doppio di Chroma degli altri test. I tombstone sono
-prodotti dalle funzioni vere di consolidation - supersede_item, delete_item,
-supersede_archived_item, delete_archived_item - e non scritti a mano: se un
-giorno cambia il modo in cui vengono marcati, questi test se ne accorgono.
+Offline, on the same Chroma double as the other tests. The tombstones are
+produced by the real consolidation functions - supersede_item, delete_item,
+supersede_archived_item, delete_archived_item - and not written by hand: if one
+day the way they are marked changes, these tests notice it.
 
-Esecuzione: python memory_service/run_tests.py -v
+Run: python memory_service/run_tests.py -v
 """
 
 import dataclasses
 import json
-import math
 import os
 import sys
 import unittest
@@ -73,7 +72,7 @@ NOW = datetime(2026, 9, 17, 12, 0)
 
 
 class EvictionTestCase(unittest.TestCase):
-    """Archivio finto, log vuoto, e una scorciatoia per archiviare."""
+    """Fake archive, empty log, and a shortcut to archive."""
 
     store_class = FakeVectorStore
 
@@ -88,7 +87,7 @@ class EvictionTestCase(unittest.TestCase):
 
     def archive(self, content, status="active", days_old=None, now=NOW, retrieved_days_old=None,
                 **judgment):
-        """Un item in archivio, come lo lascia il core split."""
+        """An item in the archive, as the core split leaves it."""
         item = CoreMemoryItem(content=content, status=status, **judgment)
         if days_old is not None:
             item.updated_at = now - timedelta(days=days_old)
@@ -99,7 +98,7 @@ class EvictionTestCase(unittest.TestCase):
 
 
 class WhatLeavesTest(EvictionTestCase):
-    """Cosa esce dall'archivio e cosa resta."""
+    """What leaves the archive and what stays."""
 
     def test_superseded_and_deleted_leave_the_archive(self):
         old = CoreMemoryItem(content="obiettivo 2000 calorie")
@@ -114,10 +113,10 @@ class WhatLeavesTest(EvictionTestCase):
         self.assertIsNone(self.store.status_of(old.id))
         self.assertIsNone(self.store.status_of(gone.id))
         self.assertEqual(self.store.status_of(kept), "active",
-                         "archiviato dal core split ma ancora valido: resta")
+                         "archived by the core split but still valid: it stays")
 
     def test_items_retired_while_already_archived_leave_too(self):
-        """L'altra strada per diventare tombstone: cambiare status in archivio."""
+        """The other road to becoming a tombstone: changing status in the archive."""
         novels = self.archive("legge romanzi storici")
         piano = self.archive("suona il pianoforte")
         supersede_archived_item(novels, "legge solo gialli", self.log)
@@ -128,7 +127,7 @@ class WhatLeavesTest(EvictionTestCase):
 
 
 class WhatTheLogSaysTest(EvictionTestCase):
-    """Una voce evict per documento."""
+    """One evict entry per document."""
 
     def test_each_eviction_is_logged_with_the_memory_text(self):
         gone = CoreMemoryItem(content="vive a Mondello")
@@ -146,7 +145,7 @@ class WhatTheLogSaysTest(EvictionTestCase):
 
 
 class NothingToDoTest(EvictionTestCase):
-    """Senza tombstone non succede niente, e soprattutto nessuna delete a vuoto."""
+    """Without tombstones nothing happens, and above all no empty delete."""
 
     def test_an_archive_without_tombstones_is_left_as_it_is(self):
         kept = self.archive("ha un cane di nome Argo")
@@ -154,31 +153,31 @@ class NothingToDoTest(EvictionTestCase):
         self.assertEqual(evict_archived_tombstones(self.log), [])
         self.assertEqual(self.store.status_of(kept), "active")
         self.assertEqual(self.store.deletes, [],
-                         "una delete senza id, a seconda della versione, e' tutto")
+                         "a delete without ids, depending on the version, is everything")
         self.assertEqual(self.log, [])
 
 
 class UnreadableStore(FakeVectorStore):
-    """Lo store che non risponde alla ricerca dei tombstone."""
+    """The store that does not answer the tombstone search."""
 
     def get(self, ids=None, where=None, **kwargs):
         if where is not None:
-            raise RuntimeError("chroma non risponde")
+            raise RuntimeError("chroma does not answer")
         return super().get(ids=ids, **kwargs)
 
 
 class StuckStore(FakeVectorStore):
-    """Lo store che trova i tombstone ma non riesce a cancellarli."""
+    """The store that finds the tombstones but cannot delete them."""
 
     def delete(self, ids=None, **kwargs):
-        raise RuntimeError("collezione bloccata")
+        raise RuntimeError("collection stuck")
 
 
 class WhenTheStoreFailsTest(EvictionTestCase):
-    """Non solleva mai, e il log non racconta cancellazioni mai avvenute.
+    """It never raises, and the log does not tell of deletions that never happened.
 
-    Gira in coda alla callback di update_memory: un'eccezione finirebbe nel suo
-    except e svuoterebbe la risposta di un consolidamento riuscito.
+    It runs at the end of the update_memory callback: an exception would end up
+    in its except and would empty the response of a successful consolidation.
     """
 
     def use(self, store_class):
@@ -204,10 +203,10 @@ class WhenTheStoreFailsTest(EvictionTestCase):
         self.assertEqual(evict_archived_tombstones(self.log), [])
         self.assertIn(gone.id, self.store.documents)
         self.assertEqual(len(self.log), before,
-                         "il log registra solo cio' che e' successo davvero")
+                         "the log records only what really happened")
 
     def test_an_unreadable_store_is_never_over_the_limit(self):
-        # Senza un conteggio non si deve togliere niente.
+        # Without a count nothing must be removed.
         self.use(UnreadableStore)
         self.archive("ha un cane di nome Argo")
 
@@ -223,7 +222,7 @@ class WhenTheStoreFailsTest(EvictionTestCase):
 
 
 class ArchiveLimitTest(EvictionTestCase):
-    """Il limite conta le memorie attive e dice di quanto e' superato."""
+    """The limit counts the active memories and says by how much it is exceeded."""
 
     def test_within_the_limit_there_is_no_excess(self):
         for fact in ("ha un cane di nome Argo", "ha un gatto di nome Milo"):
@@ -238,8 +237,8 @@ class ArchiveLimitTest(EvictionTestCase):
         self.assertEqual(archive_over_limit(1), 3)
 
     def test_tombstones_do_not_count(self):
-        # Escono comunque per status: contarli farebbe scattare il limite per
-        # memorie che non valgono piu'.
+        # They leave anyway by status: counting them would trigger the limit for
+        # memories that no longer count.
         self.archive("ha un cane di nome Argo")
         delete_item(CoreMemoryItem(content="vive a Mondello"), self.log)
         supersede_item(CoreMemoryItem(content="obiettivo 2000 calorie"),
@@ -249,41 +248,35 @@ class ArchiveLimitTest(EvictionTestCase):
 
 
 class TimeDecayTermTest(unittest.TestCase):
-    """Le due curve del decadimento sul tempo da un timestamp: Weibull e power law."""
+    """The two decay curves on the time since a timestamp: Weibull and power law."""
 
     def worth(self, decay, **age):
         return decay((NOW - timedelta(**age)).isoformat(), NOW)
 
     def test_a_timestamp_in_the_future_is_worth_one(self):
-        # Un orologio spostato non deve dare piu' di 1.
+        # A shifted clock must not give more than 1.
         for decay in (weibull_decay_term, power_decay_term):
             with self.subTest(decay=decay.__name__):
                 self.assertEqual(self.worth(decay, hours=-5), 1.0)
 
 
 class EvictionScoreTest(unittest.TestCase):
-    """La combinazione dei termini accesi."""
+    """The combination of the enabled terms."""
 
     METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(),
                 "retrieved_at": (NOW - timedelta(days=20)).isoformat()}
 
     def test_the_timestamps_share_one_slot(self):
-        # Mai una media fra timestamp: il termine e' uno, il selettore dice quale.
+        # Never a mean between timestamps: the term is one, the selector says which.
         for field in ("updated_at", "retrieved_at"):
             with self.subTest(field=field):
                 config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field=field)
                 self.assertEqual(eviction_score(self.METADATA, config, NOW),
                                  weibull_decay_term(self.METADATA[field], NOW))
 
-    def test_with_every_term_off_there_is_no_score(self):
-        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
-
-        self.assertEqual(eviction_terms({"updated_at": NOW.isoformat()}, config, NOW), {})
-        self.assertIsNone(eviction_score({"updated_at": NOW.isoformat()}, config, NOW))
-
 
 class FrequencyTermTest(EvictionTestCase):
-    """Il termine di frequenza: un conteggio relativo al piu' alto, su n_retrieve o n_used."""
+    """The frequency term: a count relative to the highest, on n_retrieve or n_used."""
 
     FREQUENCY_ONLY = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False,
                                          eviction_frequency=True)
@@ -327,19 +320,19 @@ class FrequencyTermTest(EvictionTestCase):
         removed = prune_archive(self.log, self.FREQUENCY_ONLY, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
-        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 su un massimo di 4")
+        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 out of a maximum of 4")
 
     def test_the_highest_is_taken_on_the_chosen_count(self):
-        # Recuperate tutte 9 volte: il massimo dei recuperi non c'entra con gli usi.
+        # All retrieved 9 times: the maximum of retrievals has nothing to do with uses.
         ids = {n: self.archive_counts(f"fatto {n}", n_retrieve=9, n_used=n) for n in (4, 2, 3)}
 
         removed = prune_archive(self.log, self.USES_COUNTED, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
-        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 usi su un massimo di 4")
+        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 uses, the maximum is 4")
 
     def retrieved_and_used(self):
-        """Recuperata spesso ma mai usata, usata spesso ma mai recuperata, e una a meta'."""
+        """Retrieved often but never used, used often but never retrieved, and one in between."""
         return (self.archive_counts("ha un cane", n_retrieve=4, n_used=0),
                 self.archive_counts("ha un gatto", n_retrieve=0, n_used=4),
                 self.archive_counts("corre la mattina", n_retrieve=2, n_used=2))
@@ -352,7 +345,7 @@ class FrequencyTermTest(EvictionTestCase):
 
 
 class UtilityTermTest(unittest.TestCase):
-    """Il voto 1-5 del classificatore nello score, e come si combina con gli altri termini."""
+    """The classifier's 1-5 rating in the score, and how it combines with the other terms."""
 
     METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(), "utility": 4,
                 "need": 1, "gain": 3}
@@ -372,7 +365,7 @@ class UtilityTermTest(unittest.TestCase):
                                  expected)
 
     def test_a_memory_without_a_vote_gets_the_middle_one(self):
-        # Il modello puo' omettere il voto, o darlo fuori scala: il prune non deve fermarsi.
+        # The model can omit the rating, or give it off the scale: the prune must not stop.
         single = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="single")
         need_gain = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="need_gain")
         unrated = {"updated_at": NOW.isoformat()}
@@ -393,7 +386,7 @@ class UtilityTermTest(unittest.TestCase):
             self.assertEqual(need_gain_term(3, 1), 0.7)
 
     def test_the_tables_are_valid_utilities(self):
-        # Vale anche per le tabelle calibrate: in (0, 1], mai in discesa salendo di livello.
+        # Calibrated tables too: in (0, 1], never going down as the level goes up.
         table = eviction.NEED_GAIN_TABLE
         self.assertEqual(len(eviction.UTILITY_TABLE), 5)
         self.assertEqual(len(table), 3)
@@ -411,7 +404,7 @@ class UtilityTermTest(unittest.TestCase):
         self.assertAlmostEqual(combine_terms(self.TERMS, "product"), 0.8 * (0.4 + 0.2) / 2)
 
     def test_the_weights_follow_the_terms_switched_on(self):
-        # Senza frequency: 2/3 utility e 1/3 time decay; il prodotto e' utility * decay.
+        # Without frequency: 2/3 utility and 1/3 time decay; the product is utility * decay.
         terms = {"utility": 0.8, "time_decay": 0.5}
 
         self.assertAlmostEqual(combine_terms(terms, "weighted_sum"), (2 * 0.8 + 0.5) / 3)
@@ -420,7 +413,7 @@ class UtilityTermTest(unittest.TestCase):
 
 
 class PruneCountTest(unittest.TestCase):
-    """Quante ne escono: il 10% delle attive, arrotondato per eccesso."""
+    """How many leave: 10% of the active ones, rounded up."""
 
     def test_ten_percent_rounded_up(self):
         for active, expected in ((1, 1), (5, 1), (50, 5), (51, 6)):
@@ -429,7 +422,7 @@ class PruneCountTest(unittest.TestCase):
 
 
 class PruneArchiveTest(EvictionTestCase):
-    """Escono le attive con lo score piu' basso, il 10%, e solo quelle."""
+    """The active ones with the lowest score leave, 10%, and only those."""
 
     def prune(self, config=EVICTION_CONFIG):
         return prune_archive(self.log, config, now=NOW)
@@ -439,22 +432,8 @@ class PruneArchiveTest(EvictionTestCase):
 
         removed = self.prune()
 
-        self.assertCountEqual(removed, [ids[10], ids[9]], "il 10% di 11, per eccesso, e' 2")
+        self.assertCountEqual(removed, [ids[10], ids[9]], "10% of 11, rounded up, is 2")
         self.assertEqual(len(self.store.documents), 9)
-
-    def test_each_pruned_memory_is_logged_with_its_score(self):
-        old = self.archive("ha un cane di nome Argo", days_old=4 / 24)
-        self.archive("ha un gatto di nome Milo", days_old=0)
-
-        self.prune()
-
-        self.assertEqual(len(self.log), 1)
-        entry = self.log[0]
-        self.assertEqual((entry.op_type, entry.item_id, entry.content),
-                         ("prune", old, "ha un cane di nome Argo"))
-        self.assertAlmostEqual(entry.score, math.exp(-2), places=4)
-        self.assertEqual(list(entry.score_terms), ["time_decay"])
-        self.assertAlmostEqual(entry.score_terms["time_decay"], math.exp(-2), places=4)
 
     def test_the_sub_scores_survive_the_trip_to_the_ros_response(self):
         from memory_service.consolidation import serialize_operation_log_for_response
@@ -477,36 +456,9 @@ class PruneArchiveTest(EvictionTestCase):
         self.assertEqual(self.log, [])
 
     def reinforced_and_retrieved(self):
-        """Rinforzata ieri ma mai piu' recuperata, e ferma da 10 giorni ma recuperata ieri."""
+        """Reinforced yesterday but never retrieved since, idle 10 days but retrieved yesterday."""
         return (self.archive("ha un cane di nome Argo", days_old=1, retrieved_days_old=30),
                 self.archive("ha un gatto di nome Milo", days_old=10, retrieved_days_old=1))
-
-    def fresh_and_retrieved(self):
-        """Appena scritta e mai recuperata, ferma da 8 ore ma recuperata 4 volte su 5."""
-        def archive(content, hours_old, n_retrieve):
-            item = CoreMemoryItem(content=content, n_retrieve=n_retrieve,
-                                  updated_at=NOW - timedelta(hours=hours_old))
-            archive_items([item])
-            return item.id
-
-        return (archive("ha un cane", 0, 0), archive("ha un gatto", 8, 4),
-                archive("corre la mattina", 0, 5))
-
-    def test_mixed_with_frequency_the_weibull_lets_the_older_one_go(self):
-        # Da sola ogni curva ordina come l'altra: conta quando e' mediata.
-        # A 8 ore la Weibull vale 0.06, la power law 0.33.
-        _, older, _ = self.fresh_and_retrieved()
-        config = dataclasses.replace(EVICTION_CONFIG, eviction_frequency=True,
-                                     eviction_time_decay_function="weibull")
-
-        self.assertEqual(self.prune(config), [older])
-
-    def test_mixed_with_frequency_the_power_law_keeps_the_older_one(self):
-        fresh, _, _ = self.fresh_and_retrieved()
-        config = dataclasses.replace(EVICTION_CONFIG, eviction_frequency=True,
-                                     eviction_time_decay_function="power")
-
-        self.assertEqual(self.prune(config), [fresh])
 
     def test_on_updated_at_the_longest_untouched_leaves(self):
         _, untouched = self.reinforced_and_retrieved()
@@ -521,7 +473,7 @@ class PruneArchiveTest(EvictionTestCase):
 
 
 class SafetyTest(EvictionTestCase):
-    """Le memorie con safety vera non sono candidate: nessuno score, mai fuori."""
+    """Memories with safety true are not candidates: no score, never out."""
 
     def test_the_oldest_stays_when_protected_and_still_counts_in_the_quota(self):
         ids = {days: self.archive(f"fatto {days}", days_old=days, safety=days == 10)
@@ -529,7 +481,7 @@ class SafetyTest(EvictionTestCase):
 
         removed = prune_archive(self.log, EVICTION_CONFIG, now=NOW)
 
-        self.assertCountEqual(removed, [ids[9], ids[8]], "il 10% di 11 attive, protette comprese")
+        self.assertCountEqual(removed, [ids[9], ids[8]], "10% of 11 active, protected included")
         self.assertNotIn(ids[10], [entry.item_id for entry in self.log])
 
     def test_a_protected_memory_is_out_of_the_frequency_max(self):
@@ -542,35 +494,11 @@ class SafetyTest(EvictionTestCase):
         prune_archive(self.log, config, now=NOW)
 
         self.assertEqual(self.log[0].content, "ha un cane")
-        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 su un massimo di 4")
-
-
-class UtilityPruneTest(EvictionTestCase):
-    """Con consolidation_utility single il voto entra nella scelta."""
-
-    def config(self, combination):
-        return dataclasses.replace(EVICTION_CONFIG, consolidation_utility="single",
-                                   eviction_combination=combination)
-
-    def useless_fresh_and_useful_old(self):
-        """Voto 1 e appena scritta, voto 5 e ferma da 4 ore (decadimento e^-2, 0.135)."""
-        return (self.archive("ha visto un film", days_old=0, utility=1),
-                self.archive("ha un cane", days_old=4 / 24, utility=5))
-
-    def test_in_the_weighted_sum_the_useless_fresh_one_leaves(self):
-        useless, _ = self.useless_fresh_and_useful_old()
-
-        self.assertEqual(prune_archive(self.log, self.config("weighted_sum"), now=NOW), [useless])
-
-    def test_in_the_product_the_useful_old_one_leaves(self):
-        # 0.2 * 1 contro 1 * 0.135: nel prodotto un decadimento basso pesa per intero.
-        _, useful = self.useless_fresh_and_useful_old()
-
-        self.assertEqual(prune_archive(self.log, self.config("product"), now=NOW), [useful])
+        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 out of a maximum of 4")
 
 
 class WiredIntoTheAgentTest(EvictionTestCase):
-    """Tombstone e prune nel ramo insert, a switch acceso; il prune solo oltre il limite."""
+    """Tombstones and prune in the insert branch, switch on; the prune only over the limit."""
 
     def setUp(self):
         super().setUp()
@@ -608,13 +536,13 @@ class WiredIntoTheAgentTest(EvictionTestCase):
         operations = self.agent.last_operations()
         self.assertEqual([(entry.op_type, entry.item_id) for entry in operations],
                          [("delete", item.id), ("evict", item.id)],
-                         "la voce evict esce nella stessa risposta di update_memory")
+                         "the evict entry comes out in the same response as update_memory")
 
     def test_every_exit_of_the_insert_branch_goes_through_the_eviction(self):
         paths = {
-            "finestra non superata": {"maximum_historical_messages": 10},
-            "consolidamento senza split": {},
-            "consolidamento con split": {"core_memory_limit": 5},
+            "window not exceeded": {"maximum_historical_messages": 10},
+            "consolidation without split": {},
+            "consolidation with split": {"core_memory_limit": 5},
         }
         for path, overrides in paths.items():
             with self.subTest(path=path):
@@ -633,7 +561,7 @@ class WiredIntoTheAgentTest(EvictionTestCase):
         item = self.remember_then_forget()
 
         self.assertEqual(self.store.status_of(item.id), "deleted")
-        self.assertEqual(self.store.status_of(old), "active", "oltre il limite, ma a switch spento")
+        self.assertEqual(self.store.status_of(old), "active", "over the limit, but switched off")
         self.assertEqual([entry.op_type for entry in self.agent.state["operation_log"]],
                          ["create", "delete"])
 

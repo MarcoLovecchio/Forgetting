@@ -7,9 +7,9 @@ that is used by the memory agent: all it needs is a chat model and a couple of
 limits. Keeping the configuration here makes the package buildable, runnable and
 testable on its own.
 
-Every value can be overridden through the environment, so the runtime behaviour
-is unchanged with respect to the previous implementation (same ``LLM_CONFIG``
-entry, same API key, same Chroma path).
+The models, the limits and the archive are read from the environment (see
+``from_environment``). The switches are changed only in the code, except
+``generate_answer``, which also has ``MEMORY_GENERATE_ANSWER``.
 """
 
 import ast
@@ -137,7 +137,7 @@ class MemoryConfig:
 
     @property
     def counts_used(self) -> bool:
-        """track_used vale solo con generate_answer: la lista degli usi esce dalla risposta."""
+        """track_used needs generate_answer: the list of uses comes from the answer."""
         return self.track_used and self.generate_answer
 
     @classmethod

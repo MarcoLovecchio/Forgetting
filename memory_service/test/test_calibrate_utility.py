@@ -1,6 +1,6 @@
-"""La calibrazione di UTILITY_TABLE e NEED_GAIN_TABLE, senza modello.
+"""The calibration of UTILITY_TABLE and NEED_GAIN_TABLE, without a model.
 
-Esecuzione: python memory_service/run_tests.py -v
+Run: python memory_service/run_tests.py -v
 """
 
 import contextlib
@@ -28,8 +28,8 @@ HOME = "The user lives in Mondello."
 NUTS = "The user is allergic to peanuts."
 
 
-# Due domande di comodo, staccate dalla conversazione del test lungo: GOAL_QUESTION
-# vuole il 2200, HOME_QUESTION non vuole l'indirizzo cancellato.
+# Two stand-in questions, detached from the long test's conversation: GOAL_QUESTION
+# wants the 2200, HOME_QUESTION does not want the deleted address.
 GOAL_QUESTION, HOME_QUESTION = 1001, 1002
 QUESTIONS = {
     GOAL_QUESTION: fama.EvaluationQuestion(GOAL_QUESTION, "prova", (
@@ -47,7 +47,7 @@ def setUpModule():
 
 
 def trace(mode, ratings):
-    """Una run con le due domande di comodo."""
+    """A run with the two stand-in questions."""
     def memory(name, content):
         return {"id": name, "content": content, **ratings.get(name, {})}
 
@@ -69,7 +69,7 @@ def is_valid_utility(line):
 
 
 class PairsTest(unittest.TestCase):
-    """Ogni coppia vale FAMA-memoria con la memoria meno FAMA-memoria senza."""
+    """Each pair is worth FAMA-memory with the memory minus FAMA-memory without."""
 
     RUN = trace("single", {"goal": {"utility": 4}, "dog": {"utility": 3},
                            "home": {"utility": 2}})
@@ -100,13 +100,13 @@ class IsotonicTest(unittest.TestCase):
 
 
 class ByLevelTest(unittest.TestCase):
-    """need e gain per livello, avvicinati a tutti i livelli insieme e poi monotoni."""
+    """need and gain per level, pulled toward all the levels together and then monotone."""
 
     PAIRS = [pair(1.0, utility=5), pair(0.5, utility=5), pair(0.0, utility=5),
              pair(0.0, utility=1), pair(0.0, utility=1), pair(1.0)]
 
     def test_need_and_gain_are_shrunk_toward_all_levels(self):
-        # Tutti i livelli: servite 2 su 5, gain medio 0.75. La coppia senza voto non conta.
+        # All levels: 2 of 5 served, mean gain 0.75. The pair without a rating does not count.
         levels = cu.by_level(self.PAIRS, "utility")
 
         self.assertEqual((levels.pairs, levels.served), ((2, 0, 0, 0, 3), (0, 0, 0, 0, 2)))
@@ -117,7 +117,7 @@ class ByLevelTest(unittest.TestCase):
             self.assertAlmostEqual(got, 0.75)
 
     def test_a_level_against_the_order_is_pooled(self):
-        # Il livello 1 serve sempre, il 3 quasi mai: la stima non puo' scendere salendo.
+        # Level 1 always serves, level 3 almost never: the estimate cannot go down going up.
         pairs = [pair(1.0, need=1), pair(1.0, need=1)] + [pair(0.0, need=3)] * 3 + [
             pair(1.0, need=3)]
 
@@ -164,7 +164,7 @@ class TablesTest(unittest.TestCase):
                 self.assertAlmostEqual(table[i][j], need[i] * gain[j])
 
     def test_the_free_table_is_monotone_even_when_the_data_are_not(self):
-        # need 1 e gain 1 vale piu' di tutte le altre celle.
+        # need 1 and gain 1 is worth more than all the other cells.
         pairs = self.PAIRS + [pair(1.0, need=1, gain=1)] * 20
 
         table = cu.normalized(cu.free_table(pairs))
@@ -177,13 +177,13 @@ class TablesTest(unittest.TestCase):
                          cu.free_table(self.PAIRS + [pair(0.0, need=2, gain=2)] * 5))
 
     def test_an_empty_cell_takes_the_value_of_the_product(self):
-        # Nessuna coppia con need 2 e gain 3.
+        # No pair with need 2 and gain 3.
         self.assertAlmostEqual(cu.free_table(self.PAIRS)[1][2],
                                cu.product_table(self.PAIRS)[1][2])
 
     def test_a_cell_with_many_pairs_follows_its_own_mean(self):
-        # Nella colonna di gain 3 le coppie con need 1 valgono poco: il prodotto stima
-        # la cella (3, 3) a meta', i suoi dati dicono 1.
+        # In the gain 3 column the pairs with need 1 are worth little: the product puts
+        # cell (3, 3) at half, its own data say 1.
         pairs = (self.PAIRS + [pair(1.0, need=3, gain=3)] * 200
                  + [pair(0.1, need=1, gain=3)] * 200)
 
@@ -191,7 +191,7 @@ class TablesTest(unittest.TestCase):
         self.assertAlmostEqual(cu.free_table(pairs)[2][2], 1.0, delta=0.02)
 
     def test_the_run_left_out_is_predicted_only_from_the_others(self):
-        # Un modello che predice la media delle coppie su cui e' stimato.
+        # A model that predicts the mean of the pairs it is estimated on.
         def mean_model(train):
             mean = sum(item.realized for item in train) / len(train)
             return ((mean,) * 3,) * 3
@@ -203,7 +203,7 @@ class TablesTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    """Dalle tracce alle tabelle da incollare in eviction.py."""
+    """From the traces to the tables to paste into eviction.py."""
 
     def run_main(self, runs):
         with tempfile.TemporaryDirectory() as folder:
@@ -222,7 +222,7 @@ class MainTest(unittest.TestCase):
 
         _, output = self.run_main([old, trace("need_gain", {"goal": {"need": 3, "gain": 3}})])
 
-        self.assertIn("single: nessuna run", output)
+        self.assertIn("single: no runs", output)
 
 
 if __name__ == "__main__":

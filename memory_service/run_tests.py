@@ -29,10 +29,10 @@ TEST_MODULES = (
     "test_memory_agent",
     "test_consolidation",
     "test_config",
-    "test_fama",  # la metrica del test lungo, senza il test lungo
+    "test_fama",  # the long test's metric, without the long test
     "test_eviction",
     "test_operation_matrix",
-    "test_calibrate_utility",  # le tabelle di utility dalle tracce del test lungo
+    "test_calibrate_utility",  # the utility tables from the long test's traces
     "test_memory_server",  # skipped when rclpy is not available
 )
 

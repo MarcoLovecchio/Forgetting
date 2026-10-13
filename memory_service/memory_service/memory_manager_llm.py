@@ -40,8 +40,8 @@ class AgentState(TypedDict):
 def get_llm(node: str = ""):
     """Chat model used by the nodes of the graph, one set of settings per node.
 
-    Il nome sceglie una voce di NODE_SAMPLING: vedi config.py per accendere o
-    spegnere il ragionamento, o cambiare il campionamento, di un nodo solo.
+    The name picks an entry of NODE_SAMPLING: see config.py to turn reasoning on
+    or off, or to change the sampling, of a single node.
     """
     return backends.get_llm(node)
 
@@ -77,12 +77,12 @@ NODE_STATS: Dict[str, Dict[str, float]] = {}
 
 
 def reset_node_stats() -> None:
-    """Azzera i contatori: si misura una run, non la vita del processo."""
+    """Reset the counters: what is measured is a run, not the life of the process."""
     NODE_STATS.clear()
 
 
 def _timed(node: str, call):
-    """Esegue la chiamata al modello registrando durata e token."""
+    """Run the model call, recording duration and tokens."""
     started = time.perf_counter()
     response = call()
     elapsed = time.perf_counter() - started
@@ -100,7 +100,7 @@ NO_SEARCH_NEEDED = "No archive search: the facts at hand were enough."
 
 
 def split_by_speaker(messages):
-    """Le due voci separate: i fatti vengono dall'utente, il resto e' contesto."""
+    """The two entries kept apart: the facts come from the user, the rest is context."""
     said_by_user = [m for m in messages if isinstance(m, HumanMessage)]
     said_by_assistant = [m for m in messages if not isinstance(m, HumanMessage)]
     return messages_to_str(said_by_user), messages_to_str(said_by_assistant)
@@ -118,19 +118,20 @@ class NoSearchNeeded(BaseModel):
 
 
 def query_and_history(state: AgentState):
-    """Domanda a cui rispondere e storico che la precede.
+    """Question to answer and the history that precedes it.
 
-    Il ramo di recupero ha bisogno di sapere che cosa sta chiedendo l'utente.
-    Se il chiamante l'ha passata (GetMemory.user_input -> current_query) si usa
-    quella, e tutti i messaggi in memoria sono storico.
+    The retrieval branch needs to know what the user is asking. If the caller
+    passed it (GetMemory.user_input -> current_query) that is used, and all the
+    messages in memory are history.
 
-    Altrimenti si ripiega sull'ultimo messaggio **dell'utente**, non sull'ultimo
-    messaggio e basta. La differenza conta: intent_recognition chiama get_memory
-    senza user_input, e a quel punto l'ultimo messaggio in memoria e' la
-    spiegazione che explainability ha appeso al giro prima. Ripiegando su quella
-    si cercherebbe in archivio con le parole dell'assistente e gli si
-    risponderebbe come se fosse una domanda - la stessa retroazione che abbiamo
-    tolto dal lato del consolidamento, rimasta in piedi da questo.
+    Otherwise it falls back on the last message **of the user**, not just on the
+    last message. The difference matters: some callers - explainability,
+    inner_speech, intent_recognition at startup - call get_memory without
+    user_input, and the last message in memory can be the explanation that
+    explainability appended on the previous turn. Falling back on that, the
+    archive would be searched with the assistant's words and they would be
+    answered as if they were a question - the same feedback loop we removed from
+    the consolidation side, still standing on this one.
     """
     query = str(state.get("current_query") or "").strip()
     messages = state.get("messages") or []
@@ -246,7 +247,7 @@ def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
 
         if tool_name == "retrieve_memory":
             print(f"Invoking retrieve_memory with args: {tool_args}")
-            # Quando gli usi si contano, retrieved_at lo aggiorna generate_answer.
+            # When uses are counted, generate_answer updates retrieved_at.
             result = retrieve_memory.invoke(
                 {**tool_args, "stamp_retrieved_at": not runtime.context.counts_used})
         elif tool_name == "NoSearchNeeded":
@@ -426,7 +427,7 @@ def exceed_core_memory_limit(state: AgentState, runtime: Runtime[MemoryConfig]) 
         return True
     return False
 
-# La classificazione: uguale in ogni modalita' di consolidation_utility.
+# The classification: the same in every consolidation_utility mode.
 CONSOLIDATION_SYSTEM = """You are a tool that extracts facts about the user and classifies each one
         against the memories the assistant already has, given to you as id: content pairs
         coming from both core and archival memory.
@@ -473,7 +474,7 @@ What the user said - this is where the facts come from:
 
 First decide what kind of message this is, then store every piece of information about the user it contains."""
 
-# Dopo la classificazione, solo con consolidation_utility: prima safety, poi i voti.
+# After the classification, only with consolidation_utility: safety first, then the ratings.
 SAFETY_STEP = """
 
         Then judge every new and every update - never a redundant or a delete - on the fact
@@ -590,7 +591,7 @@ Return one decision for every memory listed above.""")])
 
 
 def eviction_node(state: AgentState, runtime: Runtime[MemoryConfig]):
-    """Fine del ramo insert: via i tombstone."""
+    """End of the insert branch: the tombstones go."""
     if not runtime.context.eviction:
         return {}
     log = list(state["operation_log"])
@@ -685,12 +686,12 @@ class MemoryAgent():
 
     # Function to run the agent
     def run_memory_agent(self, interaction_mode="retrieve", query=None):
-        """Esegue il grafo.
+        """Run the graph.
 
-        `query` e' il messaggio dell'utente a cui il ramo retrieve deve
-        rispondere. Senza, il recupero ripiega sull'ultimo messaggio in memoria -
-        che e' la risposta del giro precedente, non quello che l'utente sta
-        chiedendo adesso.
+        `query` is the user message the retrieve branch has to answer. Without
+        it, retrieval falls back on the last user message in memory - the
+        question of the previous turn, not what the user is asking right now
+        (see query_and_history).
         """
         # Anything logged from here on belongs to this run.
         self._log_offset = len(self.state["operation_log"])

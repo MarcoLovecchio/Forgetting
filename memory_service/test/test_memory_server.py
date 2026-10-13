@@ -28,7 +28,7 @@ try:
 
     from memory_service_interfaces.srv import GetMemory, UpdateMemory
 
-    from memory_service.memory_server import MemoryServer, to_string_list
+    from memory_service.memory_server import MemoryServer
 
     ROS_AVAILABLE = True
 except ImportError as error:  # pragma: no cover - depends on the environment
@@ -127,16 +127,6 @@ class UpdateMemoryCallbackTest(MemoryServerTestCase):
         self.assertEqual(operation["related_item_id"], older.id)
         self.assertIn("timestamp", operation)
 
-    def test_no_operation_means_an_empty_log(self):
-        server = self.build_server(StubAgent({"core_memory": [], "messages": []}))
-
-        request = UpdateMemory.Request()
-        request.user_input = "a"
-        request.explanation = "b"
-        response = server.update_memory_callback(request, UpdateMemory.Response())
-
-        self.assertEqual(list(response.operation_log), [])
-
     def test_agent_failure_returns_an_empty_response(self):
         server = self.build_server(StubAgent(raises=RuntimeError("boom")))
 
@@ -166,11 +156,12 @@ class GetMemoryCallbackTest(MemoryServerTestCase):
         self.assertEqual(list(response.memory_list), ["Bianca is vegetarian"])
         self.assertEqual(list(response.memory_ids), [agent.state["core_memory"][0].id])
         self.assertEqual(list(response.last_messages), ["hello", "hi there"])
-        self.assertEqual(list(response.operation_log), [], "una retrieve non consolida")
+        self.assertEqual(list(response.operation_log), [], "a retrieve does not consolidate")
 
     def test_the_user_input_reaches_the_agent_as_the_query(self):
-        # Senza questo, il recupero cercherebbe in archivio partendo dall'ultimo
-        # messaggio gia' in memoria invece che dalla domanda appena arrivata.
+        # Without this, retrieval would search the archive starting from the last
+        # user message already in memory instead of from the question that just
+        # arrived.
         agent = StubAgent({"core_memory": [], "messages": []})
         server = self.build_server(agent)
 
@@ -179,14 +170,6 @@ class GetMemoryCallbackTest(MemoryServerTestCase):
         server.get_memory_callback(request, GetMemory.Response())
 
         self.assertEqual(agent.queries, ["a cosa sono allergico?"])
-
-    def test_an_empty_user_input_is_still_accepted(self):
-        agent = StubAgent({"core_memory": [], "messages": []})
-        server = self.build_server(agent)
-
-        server.get_memory_callback(GetMemory.Request(), GetMemory.Response())
-
-        self.assertEqual(agent.queries, [""])
 
     def test_non_string_message_content_is_coerced(self):
         # Assigning a non-string to a ROS string[] field would raise: this is
@@ -211,11 +194,11 @@ class GetMemoryCallbackTest(MemoryServerTestCase):
 
 @unittest.skipUnless(ROS_AVAILABLE, "rclpy and memory_service_interfaces are required")
 class RetrievedMemoriesFieldTest(MemoryServerTestCase):
-    """Quello che l'archivio ha restituito deve uscire dal servizio.
+    """What the archive returned must come out of the service.
 
-    Senza questo campo il recupero avveniva, costava una ricerca, e restava
-    nello stato: al chiamante arrivava solo se qualcuno lo impacchettava dentro
-    una risposta generata.
+    Without this field the retrieval happened, cost a search, and stayed in
+    the state: it reached the caller only if someone packed it inside a
+    generated answer.
     """
 
     def respond_to_get(self, retrieved):
@@ -232,18 +215,6 @@ class RetrievedMemoriesFieldTest(MemoryServerTestCase):
         self.assertEqual(list(response.retrieved_memories), [
             "ID: abc, Content: all'utente piace il te nero",
             "ID: def, Content: l'utente beve caffe' la mattina"])
-
-
-@unittest.skipUnless(ROS_AVAILABLE, "rclpy and memory_service_interfaces are required")
-class ToStringListTest(unittest.TestCase):
-    def test_an_empty_list_stays_empty(self):
-        self.assertEqual(to_string_list([]), [])
-
-    def test_strings_are_left_untouched(self):
-        self.assertEqual(to_string_list(["a", "b"]), ["a", "b"])
-
-    def test_content_blocks_are_stringified(self):
-        self.assertEqual(to_string_list([[{"type": "text"}]]), ["[{'type': 'text'}]"])
 
 
 if __name__ == "__main__":

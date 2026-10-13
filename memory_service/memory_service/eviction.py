@@ -1,126 +1,131 @@
-"""Eviction: cosa esce dall'archivio per sempre.
+"""Eviction: what leaves the archive for good.
 
-Consolidation non cancella mai niente. Una memoria superata o dimenticata smette
-di essere attiva e resta in archivio come tombstone, con lo status che lo dice:
-il recupero e la classificazione la ignorano perche' filtrano `status: active`
-dentro lo store, ma documento, vettore e testo sono ancora li'.
+Consolidation never deletes anything. A superseded or forgotten memory stops
+being active and stays in the archive as a tombstone, with the status that says
+so: retrieval and classification ignore it because they filter `status: active`
+inside the store, but document, vector and text are still there.
 
-Questo modulo li toglie davvero, con due criteri.
+This module really removes them, with two criteria.
 
-Il primo e' lo status, senza eccezioni: tutto cio' che e' `superseded` o
-`deleted` esce dalla collezione.
+The first is the status, with no exceptions: everything that is `superseded` or
+`deleted` leaves the collection.
 
-Il secondo e' il limite dell'archivio, archive_memory_limit
-(MEMORY_ARCHIVE_LIMIT): un numero di memorie attive che non blocca nessun
-inserimento e si controlla alla fine del turno, dopo i tombstone. Se e'
-superato, esce il PRUNE_FRACTION delle memorie attive - arrotondato per eccesso -
-con lo score piu' basso. Se resta superato, al turno dopo ne esce un'altra quota.
+The second is the archive limit, archive_memory_limit
+(MEMORY_ARCHIVE_LIMIT): a number of active memories that blocks no insertion
+and is checked at the end of the turn, after the tombstones. If it is
+exceeded, the PRUNE_FRACTION of the active memories - rounded up - with the
+lowest score leaves. If it is still exceeded, another share leaves on the next
+turn.
 
-Le memorie con safety vera non escono mai: sono tolte dalle candidate prima di
-ogni calcolo, senza uno score. La quota pero' resta calcolata su tutte le attive,
-perche' e' quella che serve a rientrare nel limite.
+Memories with safety true never leave: they are taken out of the candidates
+before any computation, without a score. The share is still computed on all the
+active ones, though, because that is what it takes to get back within the limit.
 
-Lo score
---------
-Ogni termine e' una funzione a parte, con valori in [0, 1], alto vuol dire da
-tenere. eviction_terms calcola i termini accesi, per nome, e combine_terms li
-combina. time_decay e frequency hanno il loro switch in MemoryConfig, come
-eviction; utility segue consolidation_utility. Un termine nuovo va aggiunto in
-eviction_terms e nei pesi, e da li' arriva anche nel log.
+The score
+---------
+Each term is a separate function, with values in [0, 1], high meaning keep.
+eviction_terms computes the enabled terms, by name, and combine_terms combines
+them. time_decay and frequency have their own switch in MemoryConfig, like
+eviction; utility follows consolidation_utility. A new term is added in
+eviction_terms and in the weights, and from there it also reaches the log.
 
-    utility           il giudizio del classificatore, secondo
-                      consolidation_utility; con `none` non c'e':
-                        utility_term    `single`: la voce di UTILITY_TABLE
-                                        per il voto da 1 a 5;
-                        need_gain_term  `need_gain`: la cella di
-                                        NEED_GAIN_TABLE, riga need e colonna
+    utility           the classifier's judgment, according to
+                      consolidation_utility; with `none` it is not there:
+                        utility_term    `single`: the entry of UTILITY_TABLE
+                                        for the rating from 1 to 5;
+                        need_gain_term  `need_gain`: the cell of
+                                        NEED_GAIN_TABLE, row need and column
                                         gain.
-                      Le due tabelle si calibrano con
-                      test/calibrate_utility.py. Una memoria senza voto - il
-                      modello non l'ha dato o era fuori scala - prende quello
-                      di mezzo, NEUTRAL_RATINGS.
+                      The two tables are calibrated with
+                      test/calibrate_utility.py. A memory without a rating - the
+                      model did not give it or it was off the scale - takes the
+                      middle one, NEUTRAL_RATINGS.
 
-    time_decay        il tempo da un timestamp, con una delle due curve secondo
-                      eviction_time_decay_function; tutte e due valgono 1 al
-                      momento del timestamp e occupano lo stesso posto nella
-                      media:
-                        weibull_decay_term  exp(-(t/scala)^forma), forma 0.5 e
-                                            scala 1 ora: 1/e dopo un'ora;
-                        power_decay_term    (1 + t/scala)^-d, d 0.5 e scala
-                                            1 ora: 0.5 dopo 3 ore, 0.2 dopo
-                                            un giorno, con la coda lunga della
+    time_decay        the time since a timestamp, with one of the two curves
+                      according to eviction_time_decay_function; both are 1 at
+                      the moment of the timestamp and take the same slot in the
+                      mean:
+                        weibull_decay_term  exp(-(t/scale)^shape), shape 0.5 and
+                                            scale 1 hour: 1/e after an hour;
+                        power_decay_term    (1 + t/scale)^-d, d 0.5 and scale
+                                            1 hour: 0.5 after 3 hours, 0.2 after
+                                            a day, with the long tail of the
                                             power law.
-                      Da sole ordinano le memorie allo stesso modo, perche'
-                      dipendono dallo stesso timestamp: la scelta conta quando
-                      il decadimento e' mediato con altri termini. Il
-                      timestamp e' updated_at o retrieved_at, secondo
-                      eviction_time_decay_field, e se ne usa sempre uno solo.
-                      Quando gli usi si contano, retrieved_at e' l'ultimo uso.
+                      On their own they rank the memories the same way, because
+                      they depend on the same timestamp: the choice matters when
+                      the decay is averaged with other terms. The timestamp is
+                      updated_at or retrieved_at, according to
+                      eviction_time_decay_field, and only one is ever used.
+                      When uses are counted, retrieved_at is the last use.
 
-    frequency_term    un conteggio diviso per il piu' alto fra le attive: lineare
-                      e relativo all'archivio, come LFU e N_visit di MemoryOS.
-                      Il conteggio e' n_used quando gli usi si contano
-                      (track_used, con generate_answer), n_retrieve altrimenti:
-                      come per il time decay, se ne usa sempre uno solo. Entra
-                      con eviction_frequency.
+    frequency_term    a count divided by the highest among the candidates, the
+                      active memories without safety: linear and relative to
+                      the archive, like LFU and N_visit
+                      of MemoryOS. The count is n_used when uses are counted
+                      (track_used, with generate_answer), n_retrieve otherwise:
+                      as for the time decay, only one is ever used. It enters
+                      with eviction_frequency.
 
-combine_terms segue eviction_combination:
+combine_terms follows eviction_combination:
 
     weighted_sum      0.5 utility + 0.25 time_decay + 0.25 frequency
     product           utility * (0.5 time_decay + 0.5 frequency)
 
-I pesi si riproporzionano sui termini accesi: senza frequency la somma pesata e'
-2/3 utility + 1/3 time_decay, il prodotto utility * time_decay. Senza utility le
-due formule sono la media dei termini accesi.
+The weights are rescaled over the enabled terms: without frequency the weighted
+sum is 2/3 utility + 1/3 time_decay, the product utility * time_decay. Without
+utility the two formulas are the mean of the enabled terms.
 
-Con tutti i termini spenti non esce niente. Le memorie escono tutte insieme: gli
-score si calcolano una volta sola, sulle candidate di quel momento.
+With every term off nothing leaves. The memories leave all together: the scores
+are computed only once, on the candidates of that moment.
 
-Cosa tocca e cosa no
---------------------
-Solo l'archivio. La core memory non contiene mai tombstone - e' un invariante:
-un item che smette di essere attivo viene archiviato nello stesso momento - e
-l'operation log resta com'e': le voci che nominano un id rimosso restano, con i
-related_item_id che da qui in poi puntano a documenti che non esistono piu'.
+What it touches and what not
+----------------------------
+Only the archive. The core memory never holds tombstones - it is an invariant:
+an item that stops being active is archived at the same moment - and the
+operation log stays as it is: the entries naming a removed id stay, with
+related_item_id values that from here on point to documents that no longer
+exist.
 
-Ogni documento rimosso aggiunge al log una voce, con il testo della memoria come
-tutte le altre: `evict` per un tombstone, `prune` per una memoria attiva, con lo
-score in `score` e i termini che lo compongono in `score_terms`. Ha un costo, ed e' bene saperlo: il testo di un fatto che
-l'utente ha chiesto di dimenticare ne guadagna una copia nel log, che vive in RAM
-per tutta la vita del nodo e viaggia nella risposta del servizio.
+Each removed document adds an entry to the log, with the text of the memory like
+all the others: `evict` for a tombstone, `prune` for an active memory, with the
+score in `score` and the terms that make it up in `score_terms`. It has a cost,
+and it is worth knowing: the text of a fact the user asked to forget gains a copy
+in the log, which lives in RAM for the whole life of the node and travels in the
+service's response.
 
-Quando gira
------------
-Solo se MemoryConfig.eviction e' acceso: si cambia solo nel codice, nessuna
-variabile d'ambiente lo legge.
+When it runs
+------------
+Only if MemoryConfig.eviction is on: it is changed only in the code, no
+environment variable reads it.
 
-Una volta per insert, nel nodo evict_archive del grafo, in cui confluiscono tutte
-le uscite del ramo insert: dopo il consolidamento, che e' dove nascono superseded
-e deleted. Cosi' i tombstone di un turno spariscono nello stesso turno, e non c'e'
-concorrenza con la chiamata successiva sulla stessa collezione. Da li' il router
-exceed_archive_limit manda al nodo prune_archive solo se le attive superano il
-limite, come gli altri due limiti del ramo. Il ramo retrieve non la esegue: non
-produce tombstone e non aggiunge memorie. Nodi e router leggono gli switch dal
-runtime context, la MemoryConfig che run_memory_agent passa a invoke.
+Once per insert, in the evict_archive node of the graph, where all the exits of
+the insert branch converge: after consolidation, which is where superseded and
+deleted are born. So the tombstones of a turn disappear in the same turn, and
+there is no concurrency with the next call on the same collection. From there
+the exceed_archive_limit router sends to the prune_archive node only if the
+active ones exceed the limit, like the other two limits of the branch. The
+retrieve branch does not run it: it produces no tombstones and adds no
+memories. Nodes and routers read the switches from the runtime context, the
+MemoryConfig that run_memory_agent passes to invoke.
 
-Le voci evict e prune cadono dopo l'offset fissato all'inizio del run, quindi
-last_operations() le pubblica nella stessa risposta di update_memory.
+The evict and prune entries fall after the offset fixed at the start of the run,
+so last_operations() publishes them in the same response as update_memory.
 
-Con l'eviction accesa
----------------------
-I tombstone smettono di restare in archivio, e chi lo presupponeva si regola
-cosi':
+With eviction on
+----------------
+Tombstones stop staying in the archive, and whatever assumed it adjusts like
+this:
 
     test_long_term_interaction
-        ogni item uscito dalla core memory e' in archivio oppure ha una voce
-        evict o prune nel log
+        every item that left the core memory is in the archive or has an
+        evict or prune entry in the log
     test_consolidation
-        gira con l'eviction spenta: il passo 5 guarda il tombstone, il 7 che il
-        recupero lo escluda
+        runs with eviction off: step 5 looks at the tombstone, step 7 checks
+        that retrieval excludes it
 
-Un'avvertenza sul nome: il docstring di consolidation.py usa "eviction" in un
-altro senso, per cio' che esce dalla core memory quando supera il budget - che
-oggi fa il core split. Qui eviction vuol dire uscire dall'archivio.
+Not to be confused with the core split, which moves memories from the core
+memory to the archive when the core exceeds its budget: here eviction means
+leaving the archive.
 """
 
 import math
@@ -141,10 +146,10 @@ POWER_SCALE_HOURS = 1
 WEIGHTED_SUM_WEIGHTS = {"utility": 0.5, "time_decay": 0.25, "frequency": 0.25}
 PRODUCT_WEIGHTS = {"time_decay": 0.5, "frequency": 0.5}
 
-# Provvisorie finche' non sono calibrate: voto / 5 e (need / 3) * (gain / 3).
-# Una tabella calibrata deve restare in (0, 1], mai in discesa salendo di livello.
+# Provisional until they are calibrated: rating / 5 and (need / 3) * (gain / 3).
+# A calibrated table must stay in (0, 1], never going down as the level goes up.
 UTILITY_TABLE = (0.2, 0.4, 0.6, 0.8, 1.0)
-# Il voto di mezzo di ogni scala, per una memoria che il classificatore non ha votato.
+# The middle rating of each scale, for a memory the classifier did not rate.
 NEUTRAL_RATINGS = {"utility": 3, "need": 2, "gain": 2}
 NEED_GAIN_TABLE = (
     # gain 1  gain 2  gain 3
@@ -155,11 +160,11 @@ NEED_GAIN_TABLE = (
 
 
 def _find_tombstones(store) -> List[Tuple[str, str]]:
-    """(id, testo) dei documenti da togliere, nell'ordine di EVICTED_STATUSES.
+    """(id, text) of the documents to remove, in the order of EVICTED_STATUSES.
 
-    Una get per status con un filtro di uguaglianza, invece di una sola con
-    `$in`: costa una lettura locale in piu' e funziona con qualunque versione di
-    chromadb, mentre l'operatore non c'e' sempre stato.
+    One get per status with an equality filter, instead of a single one with
+    `$in`: it costs one more local read and works with any version of chromadb,
+    while the operator has not always been there.
     """
     found = []
     for status in EVICTED_STATUSES:
@@ -171,17 +176,17 @@ def _find_tombstones(store) -> List[Tuple[str, str]]:
 
 
 def evict_archived_tombstones(log: List[OperationLogEntry]) -> List[str]:
-    """Toglie dall'archivio le memorie superate e cancellate.
+    """Remove the superseded and deleted memories from the archive.
 
-    Restituisce gli id rimossi, e per ciascuno aggiunge al log una voce `evict`.
+    Return the removed ids, and for each one add an `evict` entry to the log.
 
-    Non solleva mai: gira nell'ultimo nodo del ramo insert, dentro la callback di
-    update_memory, e un'eccezione finirebbe nel suo except, che svuota la
-    risposta anche quando il consolidamento e' andato a buon fine. Se lo store
-    non risponde, stampa e non rimuove niente.
+    It never raises: it runs in the last node of the insert branch, inside the
+    update_memory callback, and an exception would end up in its except, which
+    empties the response even when consolidation succeeded. If the store does
+    not answer, it prints and removes nothing.
 
-    Il log registra solo cio' che e' successo davvero: le voci si aggiungono dopo
-    che la cancellazione e' riuscita, mai prima.
+    The log records only what really happened: the entries are added after the
+    deletion succeeded, never before.
     """
     try:
         store = backends.get_vector_store()
@@ -207,11 +212,11 @@ def evict_archived_tombstones(log: List[OperationLogEntry]) -> List[str]:
 
 
 def archive_over_limit(limit: int) -> int:
-    """Di quante memorie attive l'archivio supera il limite: 0 se lo rispetta.
+    """By how many active memories the archive exceeds the limit: 0 if it respects it.
 
-    Conta solo le attive, perche' i tombstone escono comunque per status. Non
-    rimuove niente. Non solleva mai: se lo store non risponde stampa e
-    restituisce 0, cosi' un conteggio mancato non fa togliere memorie.
+    It counts only the active ones, because the tombstones leave anyway by status.
+    It removes nothing. It never raises: if the store does not answer it prints
+    and returns 0, so a missed count does not make memories leave.
     """
     try:
         result = backends.get_vector_store().get(where={"status": "active"}) or {}
@@ -227,10 +232,10 @@ def archive_over_limit(limit: int) -> int:
 
 
 def hours_since(timestamp: str, now: datetime) -> float:
-    """Ore trascorse da timestamp, mai negative.
+    """Hours elapsed since timestamp, never negative.
 
-    Un timestamp nel futuro conta 0: succede davvero, perche' i timestamp sono ora
-    locale e a fine ora legale l'orologio torna indietro.
+    A timestamp in the future counts 0: it really happens, because the timestamps
+    are local time and at the end of daylight saving time the clock goes back.
     """
     elapsed = now - datetime.fromisoformat(timestamp)
     return max(0.0, elapsed.total_seconds() / 3600)
@@ -239,14 +244,14 @@ def hours_since(timestamp: str, now: datetime) -> float:
 def weibull_decay_term(timestamp: str, now: datetime,
                        scale_hours: float = DECAY_SCALE_HOURS,
                        shape: float = DECAY_SHAPE) -> float:
-    """Weibull sul tempo trascorso da timestamp: 1 al momento, 1/e a scale_hours."""
+    """Weibull on the time elapsed since timestamp: 1 at the moment, 1/e at scale_hours."""
     return math.exp(-((hours_since(timestamp, now) / scale_hours) ** shape))
 
 
 def power_decay_term(timestamp: str, now: datetime,
                      scale_hours: float = POWER_SCALE_HOURS,
                      exponent: float = POWER_EXPONENT) -> float:
-    """Power law sul tempo trascorso da timestamp: (1 + t/scale_hours)^-exponent, 1 al momento."""
+    """Power law on the time since timestamp: (1 + t/scale_hours)^-exponent, 1 at the moment."""
     return (1 + hours_since(timestamp, now) / scale_hours) ** -exponent
 
 
@@ -254,14 +259,14 @@ DECAY_FUNCTIONS = {"weibull": weibull_decay_term, "power": power_decay_term}
 
 
 def frequency_field(config: MemoryConfig) -> str:
-    """Il conteggio del termine di frequenza: n_used quando gli usi si contano."""
+    """The count of the frequency term: n_used when uses are counted."""
     return "n_used" if config.counts_used else "n_retrieve"
 
 
 def frequency_term(count: int, count_max: int) -> float:
-    """Il conteggio di una memoria rispetto al piu' alto: count / count_max.
+    """The count of a memory relative to the highest one: count / count_max.
 
-    Se il piu' alto e' 0, nessuna e' mai stata contata: vale 0 per tutte.
+    If the highest is 0, none has ever been counted: it is 0 for all of them.
     """
     if count_max == 0:
         return 0.0
@@ -269,22 +274,22 @@ def frequency_term(count: int, count_max: int) -> float:
 
 
 def utility_term(utility: int) -> float:
-    """La voce di UTILITY_TABLE per il voto 1-5 del classificatore."""
+    """The entry of UTILITY_TABLE for the classifier's 1-5 rating."""
     return UTILITY_TABLE[utility - 1]
 
 
 def need_gain_term(need: int, gain: int) -> float:
-    """La cella di NEED_GAIN_TABLE: riga need, colonna gain."""
+    """The cell of NEED_GAIN_TABLE: row need, column gain."""
     return NEED_GAIN_TABLE[need - 1][gain - 1]
 
 
 def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
                    frequency_max: Optional[int] = None) -> Dict[str, float]:
-    """I termini accesi, per nome: sono anche i sotto-score che il log riporta.
+    """The enabled terms, by name: they are also the sub-scores the log reports.
 
-    `frequency_max`, il conteggio piu' alto fra le attive sul campo di
-    frequency_field, dipende dalle altre memorie, quindi lo calcola chi le ha
-    tutte. Serve solo con eviction_frequency.
+    `frequency_max`, the highest count among the candidates on the field of
+    frequency_field, depends on the other memories, so whoever has them all
+    computes it. It is needed only with eviction_frequency.
     """
     terms = {}
     if config.consolidation_utility == "single":
@@ -301,15 +306,15 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
 
 
 def weighted_mean(terms: Dict[str, float], weights: Dict[str, float]) -> float:
-    """Media dei termini con i loro pesi, riproporzionati su quelli presenti."""
+    """Mean of the terms with their weights, rescaled over the ones present."""
     total = sum(weights[name] for name in terms)
     return sum(weights[name] * value for name, value in terms.items()) / total
 
 
 def combine_terms(terms: Dict[str, float], combination: str) -> Optional[float]:
-    """Lo score dai termini, in [0, 1]: None se non ce n'e' nessuno.
+    """The score from the terms, in [0, 1]: None if there is none.
 
-    Senza utility le due combinazioni sono la stessa media.
+    Without utility the two combinations are the same mean.
     """
     if not terms:
         return None
@@ -320,31 +325,31 @@ def combine_terms(terms: Dict[str, float], combination: str) -> Optional[float]:
 
 
 def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optional[float]:
-    """Lo score di una memoria: il piu' basso esce per primo. None se nessun termine e' acceso."""
+    """The score of a memory: the lowest leaves first. None if no term is enabled."""
     return combine_terms(eviction_terms(metadata, config, now), config.eviction_combination)
 
 
 def prune_count(active: int, fraction: float = PRUNE_FRACTION) -> int:
-    """Quante memorie escono su `active`: la frazione, arrotondata per eccesso.
+    """How many memories leave out of `active`: the fraction, rounded up.
     """
     return math.ceil(active * fraction)
 
 
 def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
                   now: Optional[datetime] = None) -> List[str]:
-    """Toglie le memorie attive con lo score piu' basso.
+    """Remove the active memories with the lowest score.
 
-    Ne toglie prune_count delle attive, tutte insieme, scegliendole fra quelle
-    senza safety: le protette restano fuori prima di ogni calcolo, anche dal
-    conteggio piu' alto della frequenza. Con tutti i termini spenti non ce n'e'
-    nessuna con uno score, e non esce niente. Restituisce gli id rimossi, e per
-    ciascuno aggiunge al log una voce `prune` con lo score e i termini. Come
-    evict_archived_tombstones non solleva se lo store fallisce, e il log registra
-    solo le rimozioni riuscite.
+    It removes prune_count of the active ones, all together, choosing them among
+    those without safety: the protected ones stay out before any computation,
+    even from the highest count of the frequency. With every term off none has a
+    score, and nothing leaves. Return the removed ids, and for each one add a
+    `prune` entry to the log with the score and the terms. Like
+    evict_archived_tombstones it does not raise if the store fails, and the log
+    records only the successful removals.
 
-    Non guarda il limite: se l'archivio lo supera lo decide il grafo, con
-    archive_over_limit, prima di arrivare qui. Il filtro `status: active` e' lo
-    stesso insieme su cui quella conta le memorie.
+    It does not look at the limit: whether the archive exceeds it is decided by
+    the graph, with archive_over_limit, before getting here. The `status: active`
+    filter is the same set on which that one counts the memories.
     """
     try:
         store = backends.get_vector_store()

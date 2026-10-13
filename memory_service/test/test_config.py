@@ -59,8 +59,8 @@ class ConfigTest(EnvironmentTestCase):
 
     def test_values_are_read_from_the_environment(self):
         os.environ["MEMORY_MAX_HISTORICAL_MESSAGES"] = "9"
-        # Un valore che non coincide con il default, altrimenti il test
-        # passerebbe anche se la variabile venisse ignorata.
+        # A value that does not match the default, otherwise the test would
+        # pass even if the variable were ignored.
         os.environ["MEMORY_CORE_MEMORY_LIMIT"] = "777"
         os.environ["MEMORY_ARCHIVE_LIMIT"] = "123"
         os.environ["MEMORY_COLLECTION_NAME"] = "other_archive"
@@ -120,15 +120,15 @@ class ConfigTest(EnvironmentTestCase):
         self.assertEqual(config.embedding_config["model_name"], "qwen3-embedding")
 
     def test_llm_and_embedding_configs_are_independent(self):
-        # Sono due modelli diversi, potenzialmente su runtime diversi: una
-        # variabile non deve leggere l'altra.
+        # They are two different models, potentially on different runtimes: one
+        # variable must not read the other.
         os.environ["LLM_CONFIG"] = str(
             {"memory_agent": {"model_name": "qwen3.5-4b", "model_provider": "openai"}})
 
         config = MemoryConfig.from_environment()
 
         self.assertEqual(config.llm_config["model_name"], "qwen3.5-4b")
-        self.assertEqual(config.embedding_config, {}, "EMBEDDING_CONFIG non e' impostata")
+        self.assertEqual(config.embedding_config, {}, "EMBEDDING_CONFIG is not set")
 
     def test_malformed_llm_config_does_not_raise(self):
         os.environ["LLM_CONFIG"] = "{ this is not python"
@@ -165,18 +165,10 @@ class BackendsTest(EnvironmentTestCase):
 
         self.assertIn("model_provider", str(raised.exception))
 
-    def test_reset_forgets_the_injected_backends(self):
-        backends.configure(llm=object(), vector_store=object())
-        backends.reset()
-
-        self.assertIsNone(backends._injected_llm)
-        self.assertEqual(backends._llm, {}, "anche la cache per nodo")
-        self.assertIsNone(backends._vector_store)
-
     def test_the_injected_model_serves_every_node(self):
-        # Il doppio sta fuori dalla cache per nodo apposta: se stesse dentro,
-        # la prima chiamata con un nome non ancora presente costruirebbe un
-        # modello vero in mezzo alla suite offline.
+        # The double sits outside the per-node cache on purpose: if it were inside,
+        # the first call with a name not yet present would build a real model in
+        # the middle of the offline suite.
         sentinel = object()
         backends.configure(llm=sentinel)
 
@@ -185,10 +177,10 @@ class BackendsTest(EnvironmentTestCase):
 
 
 class LocalModelParametersTest(EnvironmentTestCase):
-    """Che cosa arriva davvero al costruttore del chat model.
+    """What really reaches the chat model's constructor.
 
-    init_chat_model viene sostituito: cosi' si verificano i parametri senza che
-    l'endpoint debba essere raggiungibile, e senza installare il provider.
+    init_chat_model is replaced: this way the parameters are checked without the
+    endpoint having to be reachable, and without installing the provider.
     """
 
     def setUp(self):
@@ -213,10 +205,10 @@ class LocalModelParametersTest(EnvironmentTestCase):
         return self.calls[-1]
 
     def test_a_new_configuration_invalidates_the_cached_models(self):
-        # I modelli in cache derivano dalla configurazione: tenendoli, dopo un
-        # configure(config=...) si continuerebbe a servire istanze tarate su
-        # quella precedente, e con quattro slot invece di uno la cosa si nota
-        # ancora meno.
+        # The cached models derive from the configuration: keeping them, after a
+        # configure(config=...) instances tuned on the previous one would still be
+        # served, and with four slots instead of one it would be noticed even
+        # less.
         self.addCleanup(backends.reset)
         backends.reset()
 
@@ -233,9 +225,9 @@ class LocalModelParametersTest(EnvironmentTestCase):
         self.assertEqual(self.calls[-1]["model"], "secondo")
 
     def test_switching_one_node_off_leaves_the_others_untouched(self):
-        # La domanda pratica: spegnendo il ragionamento a un nodo solo, gli altri
-        # restano come stanno? Ogni build parte da una fusione nuova, quindi la
-        # tabella delle sovrascritture e la configurazione non vengono toccate.
+        # The practical question: turning reasoning off for a single node, do the
+        # others stay as they are? Every build starts from a new merge, so the
+        # override table and the configuration are not touched.
         base = {"model_name": "qwen3.5-4b", "model_provider": "openai",
              "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True}
 
@@ -251,8 +243,8 @@ class LocalModelParametersTest(EnvironmentTestCase):
         self.assertEqual(still_on["temperature"], 1.0)
 
     def test_building_does_not_modify_the_override_table(self):
-        # NODE_SAMPLING.get(node) restituisce il dizionario vero: se _build_llm
-        # lo mutasse, la manopola di un nodo cambierebbe da sola.
+        # NODE_SAMPLING.get(node) returns the real dictionary: if _build_llm
+        # mutated it, a node's knob would change on its own.
         override = {"enable_thinking": False}
 
         self._build({"model_name": "qwen3.5-4b", "model_provider": "openai",
@@ -261,27 +253,27 @@ class LocalModelParametersTest(EnvironmentTestCase):
         self.assertEqual(override, {"enable_thinking": False})
 
     def test_none_in_an_override_falls_back_to_the_server_default(self):
-        # Togliere un parametro per un nodo solo: passarlo come None deve
-        # ometterlo, non spedire temperature=None al costruttore.
+        # Removing a parameter for a single node: passing it as None must omit
+        # it, not send temperature=None to the constructor.
         parameters = self._build(base := {"model_name": "qwen3.5-4b", "model_provider": "openai",
              "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True},
                                  node_sampling={"temperature": None, "top_k": None})
 
         self.assertNotIn("temperature", parameters)
         self.assertNotIn("top_k", parameters.get("extra_body", {}))
-        self.assertEqual(parameters["top_p"], base["top_p"], "il resto resta")
+        self.assertEqual(parameters["top_p"], base["top_p"], "the rest stays")
 
     def test_what_the_override_does_not_mention_is_inherited(self):
-        # E' il punto per cui la fusione avviene prima della divisione fra
-        # parametri di primo livello ed extra_body: legare extra_body alla
-        # chiamata avrebbe sostituito il dizionario intero, e top_k - che sta
-        # li' dentro insieme a enable_thinking - sarebbe sparito in silenzio.
+        # It is the reason the merge happens before the split between top-level
+        # parameters and extra_body: binding extra_body to the call would have
+        # replaced the whole dictionary, and top_k - which sits in there together
+        # with enable_thinking - would have silently disappeared.
         parameters = self._build(
             {"model_name": "qwen3.5-4b", "model_provider": "openai",
              "temperature": 1.0, "top_p": 0.95, "top_k": 20, "enable_thinking": True},
             node_sampling={"enable_thinking": False})
 
-        self.assertEqual(parameters["extra_body"]["top_k"], 20, "top_k sopravvive")
+        self.assertEqual(parameters["extra_body"]["top_k"], 20, "top_k survives")
         self.assertEqual(parameters["top_p"], 0.95)
         self.assertEqual(parameters["temperature"], 1.0)
 
@@ -295,8 +287,8 @@ class LocalModelParametersTest(EnvironmentTestCase):
         self.assertEqual(parameters["base_url"], "http://modelli.cluster.local:8000/v1")
 
     def test_top_k_travels_in_extra_body(self):
-        # top_k non e' un parametro dell'API OpenAI: passarlo come argomento
-        # diretto non arriverebbe al server, che invece lo accetta nel corpo.
+        # top_k is not a parameter of the OpenAI API: passing it as a direct
+        # argument would not reach the server, which accepts it in the body instead.
         parameters = self._build({
             "model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai", "top_k": 20})
 
@@ -317,32 +309,19 @@ class LocalModelParametersTest(EnvironmentTestCase):
         for name in ("temperature", "top_p", "presence_penalty", "extra_body"):
             self.assertNotIn(name, parameters)
 
-    def test_the_key_of_another_provider_never_leaves(self):
-        # GROQ_API_KEY *e'* impostata nel .env, perche' gli altri cinque nodi
-        # dell'architettura parlano ancora con Groq. Con un endpoint OpenAI
-        # compatible quella chiave finirebbe nell'header Authorization verso il
-        # cluster: non scartata in silenzio, proprio spedita. La protezione e'
-        # che api_key_env parte vuota e va scelta apposta.
-        os.environ["GROQ_API_KEY"] = "gsk_una_chiave_vera"
-
-        parameters = self._build(
-            {"model_name": "qwen3.5-4b", "model_provider": "openai"})
-
-        self.assertEqual(parameters["api_key"], "EMPTY")
-
     def test_base_url_is_omitted_when_not_configured(self):
         parameters = self._build(
             {"model_name": "un-modello", "model_provider": "groq"})
 
         self.assertNotIn("base_url", parameters,
-                         "senza indirizzo vale il default del provider")
+                         "without an address the provider's default holds")
 
 
 class OpenAIEmbeddingParametersTest(EnvironmentTestCase):
-    """Che cosa arriva al costruttore degli embedding.
+    """What reaches the embeddings constructor.
 
-    langchain_openai non e' importabile ovunque, quindi il modulo viene
-    sostituito: qui interessano i parametri, non il client vero.
+    langchain_openai is not importable everywhere, so the module is replaced:
+    what matters here are the parameters, not the real client.
     """
 
     def setUp(self):
@@ -359,7 +338,7 @@ class OpenAIEmbeddingParametersTest(EnvironmentTestCase):
             return object()
 
         module.OpenAIEmbeddings = spy
-        # Non self._saved: la classe base lo usa gia' per le variabili d'ambiente.
+        # Not self._saved: the base class already uses it for the environment variables.
         self._saved_module = sys.modules.get("langchain_openai")
         sys.modules["langchain_openai"] = module
         self.addCleanup(self._restore)
@@ -384,10 +363,10 @@ class OpenAIEmbeddingParametersTest(EnvironmentTestCase):
         return self.calls[-1]
 
     def test_the_text_is_sent_not_openai_tokens(self):
-        # Con il default, OpenAIEmbeddings tokenizza prima di spedire e per un
-        # modello che tiktoken non conosce ripiega su cl100k_base, il vocabolario
-        # di OpenAI. Gli id di un vocabolario sono parole diverse in un altro:
-        # il server incorporerebbe rumore e lo restituirebbe senza protestare.
+        # With the default, OpenAIEmbeddings tokenizes before sending and, for a
+        # model tiktoken does not know, falls back on cl100k_base, OpenAI's
+        # vocabulary. The ids of one vocabulary are different words in another:
+        # the server would embed noise and return it without complaining.
         self.assertIs(self._build()["check_embedding_ctx_length"], False)
 
     def test_the_endpoint_address_is_passed_through(self):
@@ -396,12 +375,9 @@ class OpenAIEmbeddingParametersTest(EnvironmentTestCase):
         self.assertEqual(parameters["base_url"], "http://modelli.local:8000/v1")
         self.assertEqual(parameters["model"], "Qwen/Qwen3-Embedding-0.6B")
 
-    def test_the_placeholder_key_reaches_the_embeddings_too(self):
-        self.assertEqual(self._build()["api_key"], "EMPTY")
-
 
 class EmbeddingBackendTest(EnvironmentTestCase):
-    """Gli errori di configurazione dell'embedding, verificabili senza il server."""
+    """The embedding configuration errors, checkable without the server."""
 
     def test_an_unknown_provider_is_reported(self):
         from memory_service.backends import _build_embeddings

@@ -36,8 +36,9 @@ exception is MemoryConfig.eviction: when it is on, the tombstones leave the
 archive at the end of every insert, and so do the active memories with the
 lowest score when the archive is over its limit (see eviction.py).
 
-Eviction - deciding what to move out of core memory when the character budget is
-exceeded - is deliberately not handled here.
+Deciding what moves out of core memory when the character budget is exceeded is
+the core split's job, in memory_manager_llm.py: this module only applies its
+decisions (apply_split_decisions).
 """
 
 import uuid
@@ -525,8 +526,8 @@ def count_archived(item_ids: Iterable[str], counter: str, stamp: bool) -> None:
 def record_retrievals(item_ids: Iterable[str], stamp: bool = True) -> None:
     """Count a retrieval on archived memories: n_retrieve + 1, retrieved_at now.
 
-    Without `stamp` retrieved_at is left to record_uses: with
-    MemoryConfig.track_used it is the time of the last use.
+    Without `stamp` retrieved_at is left to record_uses: when uses are counted
+    (track_used, with generate_answer) it is the time of the last use.
     """
     count_archived(item_ids, "n_retrieve", stamp)
 

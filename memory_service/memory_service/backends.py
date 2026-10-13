@@ -101,9 +101,10 @@ PLACEHOLDER_API_KEY = "EMPTY"
 def _api_key(config: MemoryConfig, provider: str) -> Optional[str]:
     """Key to hand to the provider, or None when it must not receive one.
 
-    api_key_env is empty by default: the hosted providers find their own key
-    through their own variable, and passing None explicitly would suppress that
-    lookup instead of falling back to it.
+    With api_key_env empty the hosted providers find their own key through their
+    own variable, and passing None explicitly would suppress that lookup instead
+    of falling back to it. An openai endpoint has no lookup of its own: it gets
+    the placeholder.
     """
     api_key = os.getenv(config.api_key_env) if config.api_key_env else None
     if api_key:

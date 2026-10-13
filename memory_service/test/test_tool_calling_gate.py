@@ -1,38 +1,39 @@
-"""Il modello configurato regge lo structured output? (fase A2 della migrazione)
+"""Does the configured model handle structured output? (phase A2 of the migration)
 
-Questo e' il gate da superare prima di spendere ore nel test lungo. Tutta la
-consolidation passa da `bind_tools()`: se il modello non produce tool call
-valide, o non ricopia gli id esattamente, il resto non puo' funzionare - e
-fallisce in modi silenziosi, non con un errore.
+This is the gate to pass before spending hours on the long test. All of
+consolidation goes through `bind_tools()`: if the model does not produce valid
+tool calls, or does not copy the ids exactly, the rest cannot work - and it
+fails in silent ways, not with an error.
 
-Quello che verifica, in ordine di difficolta' crescente per il modello:
+What it checks, in order of increasing difficulty for the model:
 
-    1. risponde                      una invocazione banale, senza tool
-    2. scelta fra due strumenti      retrieve_memory o NoSearchNeeded
-    3. InsertCoreMemories            lista di oggetti annidati, enum a 5 valori
-    4. trascrizione degli id         copiare un id dal prompt alla tool call
-    5. SplitCoreAndArchivalMemory    una decisione per ogni memoria data
-    6. embedding                     il secondo modello risponde e con che
-                                     dimensionalita'
+    1. answers                       a trivial invocation, without tools
+    2. choice between two tools      retrieve_memory or NoSearchNeeded
+    3. InsertCoreMemories            list of nested objects, 5-value enum
+    4. id transcription              copying an id from the prompt to the tool call
+    5. SplitCoreAndArchivalMemory    one decision for each given memory
+    6. embedding                     the second model answers, and with what
+                                     dimensionality
 
-I punti 3 e 4 sono quelli che decidono la migrazione. Un modello piccolo puo'
-benissimo produrre JSON valido e sbagliare comunque gli id: sono due fallimenti
-diversi e vanno misurati separatamente, perche' portano a rimedi diversi (il
-primo allo structured output vincolato, il secondo all'aliasing dei prompt).
+Points 3 and 4 are the ones that decide the migration. A small model can very
+well produce valid JSON and still get the ids wrong: they are two different
+failures and must be measured separately, because they lead to different
+remedies (the first to constrained structured output, the second to prompt
+aliasing).
 
-Ogni controllo viene ripetuto piu' volte: con un LLM una singola risposta giusta
-non dice niente. Quello che conta e' il tasso.
+Every check is repeated several times: with an LLM a single right answer says
+nothing. What counts is the rate.
 
-Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG configurate, e il modello
-raggiungibile all'indirizzo del cluster. Se non lo e', l'intero file si salta
-spiegando perche'.
+Requirements: LLM_CONFIG and EMBEDDING_CONFIG configured, and the model
+reachable at the cluster's address. If it is not, the whole file is skipped
+explaining why.
 
-Esecuzione:
+Run:
     pytest memory_service/test/test_tool_calling_gate.py -v -s
 
-Variabili utili:
-    MEMORY_GATE_ATTEMPTS    quante volte ripetere ogni controllo (default 3)
-    MEMORY_GATE_THRESHOLD   tasso minimo di successo per passare (default 0.8)
+Useful variables:
+    MEMORY_GATE_ATTEMPTS    how many times to repeat each check
+    MEMORY_GATE_THRESHOLD   minimum success rate to pass
 """
 
 import os
@@ -64,16 +65,16 @@ from snapshot import SEPARATOR, safe_print  # noqa: E402
 ATTEMPTS = int(os.getenv("MEMORY_GATE_ATTEMPTS", "3"))
 THRESHOLD = float(os.getenv("MEMORY_GATE_THRESHOLD", "0.8"))
 
-# Memorie finte con id veri: servono a vedere se il modello li ricopia.
+# Fake memories with real ids: they show whether the model copies them.
 KNOWN_MEMORIES = {new_item_id(): content for content in (
     "L'utente si chiama Bianca",
     "L'utente e' vegetariana",
     "L'obiettivo giornaliero e' 2000 calorie",
 )}
 
-# Raccolti da tutti i controlli e stampati alla fine.
+# Collected from all the checks and printed at the end.
 RESULTS = []
-# Osservazioni che non sono ne' promozioni ne' bocciature.
+# Observations that are neither passes nor failures.
 NOTES = []
 
 
@@ -82,7 +83,7 @@ def _memories_for_prompt():
 
 
 def _tool_call(response, expected_name):
-    """La tool call attesa, o None se il modello non l'ha prodotta."""
+    """The expected tool call, or None if the model did not produce it."""
     for call in getattr(response, "tool_calls", None) or []:
         if call.get("name") == expected_name:
             return call
@@ -90,26 +91,26 @@ def _tool_call(response, expected_name):
 
 
 class ModelGateTestCase(unittest.TestCase):
-    """Base: costruisce il modello una volta, e salta tutto se non risponde."""
+    """Base: build the model once, and skip everything if it does not answer."""
 
     @classmethod
     def setUpClass(cls):
-        # Nessun reset: in una run normale non c'e' niente da resettare, e senza
-        # reset si puo' iniettare un modello finto per verificare che il gate
-        # discrimini davvero fra una risposta buona e una sbagliata.
+        # No reset: in a normal run there is nothing to reset, and without a
+        # reset a fake model can be injected to check that the gate really
+        # discriminates between a good answer and a wrong one.
         try:
             cls.llm = backends.get_llm()
             cls.llm.invoke("Rispondi con la parola: pronto.")
         except Exception as error:
             raise unittest.SkipTest(
-                f"modello non raggiungibile o non configurato: {type(error).__name__}: {error}")
+                f"model unreachable or not configured: {type(error).__name__}: {error}")
 
     @classmethod
     def tearDownClass(cls):
         backends.reset()
 
     def measure(self, label, attempt):
-        """Ripete `attempt` e restituisce (successi, dettagli dei fallimenti)."""
+        """Repeat `attempt` and return (successes, details of the failures)."""
         successes, failures = 0, []
         for index in range(ATTEMPTS):
             try:
@@ -119,7 +120,7 @@ class ModelGateTestCase(unittest.TestCase):
             if problem is None:
                 successes += 1
             else:
-                failures.append(f"tentativo {index + 1}: {problem}")
+                failures.append(f"attempt {index + 1}: {problem}")
 
         rate = successes / ATTEMPTS
         RESULTS.append((label, successes, ATTEMPTS, failures))
@@ -132,8 +133,8 @@ class ModelGateTestCase(unittest.TestCase):
         rate, failures = self.measure(label, attempt)
         self.assertGreaterEqual(
             rate, THRESHOLD,
-            f"{label}: {rate:.0%} sotto la soglia del {THRESHOLD:.0%}. "
-            f"Fallimenti: {failures[:2]}")
+            f"{label}: {rate:.0%} below the {THRESHOLD:.0%} threshold. "
+            f"Failures: {failures[:2]}")
 
 
 class ToolCallingGateTest(ModelGateTestCase):
@@ -142,56 +143,59 @@ class ToolCallingGateTest(ModelGateTestCase):
         def attempt():
             response = self.llm.invoke("Rispondi solo con la parola: pronto.")
             if not str(response.content).strip():
-                return "risposta vuota"
+                return "empty answer"
             return None
 
-        self.assertRate("risponde", attempt)
+        self.assertRate("answers", attempt)
 
     def test_1b_reasoning_is_reported_not_judged(self):
-        """Il modello ragiona? E' un'informazione, non un difetto.
+        """Does the model reason? It is a piece of information, not a defect.
 
-        Le tool call arrivano da un campo strutturato separato dal testo, quindi
-        il ragionamento non corrompe l'estrazione. Quello che costa e' contesto e
-        latenza, piu' il fatto che se finisce in `content` entra nelle risposte
-        all'utente - e da li' in memoria, perche' la risposta viene consolidata.
+        The tool calls arrive from a structured field separate from the text, so
+        the reasoning does not corrupt the extraction. What it costs is context
+        and latency, plus the fact that if it ends up in `content` it enters the
+        answers to the user - and from there the memory, because the answer is
+        consolidated.
 
-        Le due righe stampate qui dicono cose diverse e vanno lette insieme:
+        The two lines printed here say different things and must be read
+        together:
 
-            configurato   cosa abbiamo chiesto noi, cioe' la voce
-                          enable_thinking di LLM_CONFIG nel .config
-            in content    cosa si vede davvero nel testo della risposta
+            configured    what we asked for, that is the enable_thinking
+                          entry of LLM_CONFIG in the .config
+            in content    what is really seen in the text of the answer
 
-        Se il server gira con --reasoning-parser il ragionamento c'e' ma finisce
-        in un campo suo: "configurato: acceso" con "in content: no" non e' una
-        contraddizione, e' la situazione migliore. "spento" con "in content: si"
-        invece vuol dire che l'opzione non ha avuto effetto, ed e' un problema.
+        If the server runs with --reasoning-parser the reasoning is there but
+        ends up in a field of its own: "configured: on" with "in content: no"
+        is not a contradiction, it is the best situation. "off" with
+        "in content: yes" instead means the option had no effect, and it is a
+        problem.
 
-        Serve anche a rendere leggibile un confronto A/B: due run del gate con
-        impostazioni diverse altrimenti si distinguono solo a memoria.
+        It also makes an A/B comparison readable: two gate runs with different
+        settings could otherwise be told apart only from memory.
         """
         setting = backends.get_config().llm_config.get("enable_thinking")
-        configured = {True: "acceso", False: "spento",
-                      None: "default del server"}[setting]
+        configured = {True: "on", False: "off",
+                      None: "server default"}[setting]
 
         response = self.llm.invoke("Rispondi solo con la parola: pronto.")
         content = str(response.content)
         thinking = "<think>" in content
 
         safe_print("")
-        safe_print(f"  thinking configurato: {configured}")
-        safe_print(f"  ragionamento visibile in content: {'si' if thinking else 'no'}")
+        safe_print(f"  thinking configured: {configured}")
+        safe_print(f"  reasoning visible in content: {'yes' if thinking else 'no'}")
         if thinking:
-            safe_print("    entrera' nelle risposte all'utente e da li' in memoria:")
-            safe_print("    valuta --reasoning-parser sul server, o spegnilo del tutto")
+            safe_print("    it will enter the answers to the user and from there the memory:")
+            safe_print("    consider --reasoning-parser on the server, or turn it off entirely")
         if setting is False and thinking:
-            safe_print("    ATTENZIONE: chiesto spento, ma il ragionamento si vede lo stesso")
-        # Deliberatamente fuori da RESULTS: finirebbe nel verdetto finale come
-        # "sotto soglia" e farebbe sembrare inadatto un modello che va benissimo.
-        NOTES.append(f"thinking configurato: {configured}, visibile in content: "
-                     f"{'si' if thinking else 'no'}")
+            safe_print("    WARNING: asked off, but the reasoning shows anyway")
+        # Deliberately outside RESULTS: it would end up in the final verdict as
+        # "BELOW THRESHOLD" and would make a model that works fine look unsuitable.
+        NOTES.append(f"thinking configured: {configured}, visible in content: "
+                     f"{'yes' if thinking else 'no'}")
 
     def _choice_chain(self):
-        """Il nodo di recupero: due strumenti legati insieme, uno obbligatorio."""
+        """The retrieval node: two tools bound together, one mandatory."""
         prompt = ChatPromptTemplate.from_messages([
             ("system", "Decidi se i fatti a portata bastano. Se bastano chiama "
                        "NoSearchNeeded, altrimenti cerca in archivio con "
@@ -202,11 +206,11 @@ class ToolCallingGateTest(ModelGateTestCase):
             [retrieve_memory, NoSearchNeeded], tool_choice="required")
 
     def _chose(self, variables, expected):
-        """Ha chiamato lo strumento giusto?
+        """Did it call the right tool?
 
-        Distingue il non scegliere dallo scegliere male: il primo e' structured
-        output rotto, il secondo e' un modello che non vede la differenza fra i
-        due strumenti. Sono due guasti diversi e si curano diverso.
+        It tells not choosing from choosing badly: the first is broken structured
+        output, the second is a model that does not see the difference between
+        the two tools. They are two different failures and are cured differently.
         """
         chain = self._choice_chain()
 
@@ -214,28 +218,28 @@ class ToolCallingGateTest(ModelGateTestCase):
             response = chain.invoke(variables)
             calls = getattr(response, "tool_calls", None) or []
             if not calls:
-                return "nessuna tool call"
+                return "no tool call"
             if calls[0].get("name") != expected:
-                return f"ha scelto {calls[0].get('name')} invece di {expected}"
+                return f"chose {calls[0].get('name')} instead of {expected}"
             return None
 
         return attempt
 
     def test_2a_it_can_decide_not_to_search(self):
-        """La risposta e' gia' fra i fatti noti: cercare sarebbe sprecato."""
-        self.assertRate("scelta: non cercare", self._chose(
+        """The answer is already among the known facts: searching would be wasted."""
+        self.assertRate("choice: do not search", self._chose(
             {"core_memory": "l'utente si chiama Bianca", "query": "come mi chiamo?"},
             "NoSearchNeeded"))
 
     def test_2b_it_can_decide_to_search(self):
-        """Il fatto non c'e'. E' la direzione che il vecchio cancello sbagliava:
-        rispondeva "sufficiente" e l'archivio non veniva aperto mai."""
-        self.assertRate("scelta: cercare", self._chose(
+        """The fact is not there. It is the direction the old gate got wrong:
+        it answered "sufficient" and the archive was never opened."""
+        self.assertRate("choice: search", self._chose(
             {"core_memory": "l'utente si chiama Bianca", "query": "dove abito?"},
             "retrieve_memory"))
 
     def test_3_insert_core_memories_shape(self):
-        """Lista di oggetti annidati con enum: la struttura piu' difficile."""
+        """List of nested objects with an enum: the hardest structure."""
         chain = self._consolidation_chain()
 
         def attempt():
@@ -243,26 +247,26 @@ class ToolCallingGateTest(ModelGateTestCase):
                 chain.invoke({"memories": _memories_for_prompt()}),
                 "InsertCoreMemories")
             if call is None:
-                return "nessuna tool call"
+                return "no tool call"
             memories = call["args"].get("memories")
             if not isinstance(memories, list) or not memories:
-                return f"memories non e' una lista piena: {call['args']}"
+                return f"memories is not a non-empty list: {call['args']}"
             for operation in memories:
                 if not isinstance(operation, dict):
-                    return f"operazione non e' un oggetto: {operation!r}"
+                    return f"operation is not an object: {operation!r}"
                 if not str(operation.get("fact", "")).strip():
-                    return f"operazione senza fact: {operation!r}"
+                    return f"operation without fact: {operation!r}"
                 if normalize_operation(operation.get("operation")) is None:
-                    return f"operazione sconosciuta: {operation.get('operation')!r}"
+                    return f"unknown operation: {operation.get('operation')!r}"
             return None
 
-        self.assertRate("InsertCoreMemories (struttura)", attempt)
+        self.assertRate("InsertCoreMemories (structure)", attempt)
 
     def test_4_ids_are_transcribed_exactly(self):
-        """Il fallimento piu' insidioso: JSON valido ma id inventati.
+        """The most insidious failure: valid JSON but invented ids.
 
-        Un id che non risolve fa degradare l'operazione a `new`, quindi la
-        memoria si duplica invece di aggiornarsi, senza nessun errore.
+        An id that does not resolve degrades the operation to `new`, so the
+        memory is duplicated instead of updated, without any error.
         """
         chain = self._consolidation_chain()
 
@@ -271,23 +275,23 @@ class ToolCallingGateTest(ModelGateTestCase):
                 chain.invoke({"memories": _memories_for_prompt()}),
                 "InsertCoreMemories")
             if call is None:
-                return "nessuna tool call"
+                return "no tool call"
 
             targeted = [operation for operation in call["args"].get("memories", [])
                         if isinstance(operation, dict)
                         and normalize_operation(operation.get("operation")) != "new"]
             if not targeted:
-                return "nessuna operazione con target: il modello ha visto tutto come nuovo"
+                return "no operation with a target: the model saw everything as new"
 
             for operation in targeted:
                 target = operation.get("target_item_id")
                 if not target:
-                    return f"target mancante su '{operation.get('operation')}'"
+                    return f"missing target on '{operation.get('operation')}'"
                 if target not in KNOWN_MEMORIES:
-                    return f"id inesistente: {target!r}"
+                    return f"nonexistent id: {target!r}"
             return None
 
-        self.assertRate("trascrizione degli id", attempt)
+        self.assertRate("id transcription", attempt)
 
     def test_5_split_decisions(self):
         prompt = ChatPromptTemplate.from_messages([
@@ -304,23 +308,23 @@ class ToolCallingGateTest(ModelGateTestCase):
             call = _tool_call(chain.invoke({"memories": _memories_for_prompt()}),
                               "SplitCoreAndArchivalMemory")
             if call is None:
-                return "nessuna tool call"
+                return "no tool call"
             decisions = call["args"].get("decisions")
             if not isinstance(decisions, list) or not decisions:
-                return f"decisions non e' una lista piena: {call['args']}"
+                return f"decisions is not a non-empty list: {call['args']}"
             for decision in decisions:
                 if not isinstance(decision, dict):
-                    return f"decisione non e' un oggetto: {decision!r}"
+                    return f"decision is not an object: {decision!r}"
                 if decision.get("item_id") not in KNOWN_MEMORIES:
-                    return f"id inesistente: {decision.get('item_id')!r}"
+                    return f"nonexistent id: {decision.get('item_id')!r}"
                 if decision.get("destination") not in ("core", "archive"):
-                    return f"destinazione sconosciuta: {decision.get('destination')!r}"
+                    return f"unknown destination: {decision.get('destination')!r}"
             return None
 
         self.assertRate("SplitCoreAndArchivalMemory", attempt)
 
     def _consolidation_chain(self):
-        """Prompt della stessa forma di summarize_memories_node."""
+        """Prompt of the same shape as summarize_memories_node."""
         prompt = ChatPromptTemplate.from_messages([
             ("system", "Estrai i fatti dai messaggi e classifica ognuno rispetto alle "
                        "memorie che ti vengono date come coppie id: contenuto. Se un "
@@ -336,26 +340,26 @@ class ToolCallingGateTest(ModelGateTestCase):
 
 
 class EmbeddingGateTest(unittest.TestCase):
-    """Il secondo modello: risponde, e con che dimensionalita'."""
+    """The second model: it answers, and with what dimensionality."""
 
     def test_6_embeddings_answer(self):
         try:
-            # Direttamente il modello: il gate verifica l'embedding, non Chroma.
+            # The model directly: the gate checks the embedding, not Chroma.
             embeddings = backends._build_embeddings(backends.get_config())
             vector = embeddings.embed_query("L'utente si chiama Bianca")
         except Exception as error:
             raise unittest.SkipTest(
-                f"embedding non raggiungibile o non configurato: "
+                f"embedding unreachable or not configured: "
                 f"{type(error).__name__}: {error}")
 
-        safe_print(f"\n  embedding: {len(vector)} dimensioni")
-        self.assertGreater(len(vector), 0, "il vettore non puo' essere vuoto")
+        safe_print(f"\n  embedding: {len(vector)} dimensions")
+        self.assertGreater(len(vector), 0, "the vector cannot be empty")
         self.assertTrue(all(isinstance(value, float) for value in vector[:10]),
-                        "il vettore deve contenere numeri")
+                        "the vector must contain numbers")
 
 
 def tearDownModule():
-    """Il verdetto, in fondo: e' quello che serve per decidere se proseguire."""
+    """The verdict, at the end: it is what is needed to decide whether to go on."""
     if not RESULTS:
         return
 
@@ -365,23 +369,23 @@ def tearDownModule():
 
     for label, successes, attempts, failures in RESULTS:
         rate = successes / attempts
-        verdict = "ok" if rate >= THRESHOLD else "SOTTO SOGLIA"
+        verdict = "ok" if rate >= THRESHOLD else "BELOW THRESHOLD"
         safe_print(f"  {label:<34} {successes}/{attempts}  {rate:>4.0%}  {verdict}")
 
     worst = min(successes / attempts for _, successes, attempts, _ in RESULTS)
     safe_print("")
     for note in NOTES:
-        safe_print(f"  nota: {note}")
+        safe_print(f"  note: {note}")
     if NOTES:
         safe_print("")
     if worst >= THRESHOLD:
-        safe_print("  Il modello regge lo structured output: si puo' proseguire.")
+        safe_print("  The model handles structured output: you can go on.")
     else:
-        safe_print("  Structured output non affidabile. Prima di andare avanti:")
-        safe_print("   - se fallisce la struttura, valuta with_structured_output o il")
-        safe_print("     decoding vincolato (format/guided_json/GBNF)")
-        safe_print("   - se falliscono solo gli id, valuta l'aliasing dei prompt")
-        safe_print("     ([1], [2], [3] rimappati lato codice)")
+        safe_print("  Structured output not reliable. Before going on:")
+        safe_print("   - if the structure fails, consider with_structured_output or")
+        safe_print("     constrained decoding (format/guided_json/GBNF)")
+        safe_print("   - if only the ids fail, consider prompt aliasing")
+        safe_print("     ([1], [2], [3] remapped on the code side)")
     safe_print("\n" + SEPARATOR + "\n")
 
 

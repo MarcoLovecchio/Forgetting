@@ -1,12 +1,12 @@
-"""I modelli veri sono utilizzabili adesso?
+"""Are the real models usable right now?
 
-I test che parlano con lo stack reale devono **saltare** quando il modello non
-c'e', non fallire: un server spento non e' un difetto del codice. Con i provider
-hosted bastava guardare se la chiave era impostata; con un modello servito in
-locale la chiave non esiste e l'unico modo per saperlo e' provare.
+The tests that talk to the real stack must **skip** when the model is not
+there, not fail: a server that is down is not a defect of the code. With the
+hosted providers it was enough to check whether the key was set; with a model
+served locally the key does not exist and the only way to know is to try.
 
-Il risultato viene memorizzato: i test lo chiedono piu' volte e non ha senso
-pagare una chiamata ogni volta.
+The result is cached: the tests ask for it several times and there is no point
+paying for a call each time.
 """
 
 import os
@@ -15,11 +15,11 @@ from typing import Optional
 from memory_service import backends
 from memory_service.config import load_environment
 
-# I file .env/.config vengono caricati appena questo modulo viene importato, e
-# l'import sta in cima ai test che ne hanno bisogno. Senza, os.getenv("LLM_CONFIG")
-# sarebbe None al momento in cui pytest valuta lo skipif: i test sullo stack reale
-# si salterebbero **sempre**, anche con .config a posto, dicendo che manca una
-# configurazione che invece c'e'.
+# The .env/.config files are loaded as soon as this module is imported, and the
+# import sits at the top of the tests that need it. Without it,
+# os.getenv("LLM_CONFIG") would be None when pytest evaluates the skipif: the
+# tests on the real stack would **always** be skipped, even with .config in
+# place, saying that a configuration is missing when it is actually there.
 load_environment()
 
 _chat_reason: Optional[str] = None
@@ -33,29 +33,29 @@ def _describe(error: Exception) -> str:
 
 
 def chat_model_unavailable() -> Optional[str]:
-    """Perche' il chat model non e' utilizzabile, o None se lo e'."""
+    """Why the chat model is not usable, or None if it is."""
     global _chat_reason, _chat_checked
     if _chat_checked:
         return _chat_reason
 
     _chat_checked = True
     if not os.getenv("LLM_CONFIG"):
-        _chat_reason = "LLM_CONFIG non e' impostata"
+        _chat_reason = "LLM_CONFIG is not set"
         return _chat_reason
 
     try:
-        backends.get_llm().invoke("Rispondi con la parola: pronto.")
+        backends.get_llm().invoke("Answer with the word: ready.")
         _chat_reason = None
     except Exception as error:
-        _chat_reason = f"chat model non raggiungibile ({_describe(error)})"
+        _chat_reason = f"chat model unreachable ({_describe(error)})"
     return _chat_reason
 
 
 def embeddings_unavailable() -> Optional[str]:
-    """Perche' il modello di embedding non e' utilizzabile, o None se lo e'.
+    """Why the embedding model is not usable, or None if it is.
 
-    Serve a tutto quello che tocca l'archivio: consolidare un delete, archiviare
-    per lo split, cercare fra le memorie archiviate.
+    It is needed by everything that touches the archive: consolidating a delete,
+    archiving for the split, searching among the archived memories.
     """
     global _embeddings_reason, _embeddings_checked
     if _embeddings_checked:
@@ -63,23 +63,23 @@ def embeddings_unavailable() -> Optional[str]:
 
     _embeddings_checked = True
     try:
-        # Direttamente il modello, senza passare dal vector store: verificare un
-        # embedding non deve richiedere anche chromadb, ne' dipendere da come
-        # Chroma espone la sua funzione di embedding.
-        backends._build_embeddings(backends.get_config()).embed_query("prova")
+        # The model directly, without going through the vector store: checking an
+        # embedding must not also require chromadb, nor depend on how Chroma
+        # exposes its embedding function.
+        backends._build_embeddings(backends.get_config()).embed_query("test")
         _embeddings_reason = None
     except Exception as error:
-        _embeddings_reason = f"embedding non raggiungibile ({_describe(error)})"
+        _embeddings_reason = f"embedding unreachable ({_describe(error)})"
     return _embeddings_reason
 
 
 def live_stack_unavailable() -> Optional[str]:
-    """Perche' non si puo' girare sullo stack completo, o None se si puo'."""
+    """Why it cannot run on the full stack, or None if it can."""
     return chat_model_unavailable() or embeddings_unavailable()
 
 
 def reset() -> None:
-    """Dimentica il risultato memorizzato (utile fra configurazioni diverse)."""
+    """Forget the cached result (useful between different configurations)."""
     global _chat_reason, _chat_checked, _embeddings_reason, _embeddings_checked
     _chat_reason = _embeddings_reason = None
     _chat_checked = _embeddings_checked = False

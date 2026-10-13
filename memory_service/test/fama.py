@@ -1,132 +1,131 @@
-"""FAMA: quanto la memoria ricorda, e quanto dimentica davvero.
+"""FAMA: how much the memory remembers, and how much it really forgets.
 
-La metrica viene da Memora (Uddin et al., *From Recall to Forgetting:
+The metric comes from Memora (Uddin et al., *From Recall to Forgetting:
 Benchmarking Long-Term Memory for Personalized Agents*, ACL 2026,
-arXiv:2604.20006). Per ogni domanda di valutazione si scrivono due famiglie di
-criteri binari:
+arXiv:2604.20006). For each evaluation question two families of binary
+criteria are written:
 
-    memory_presence     l'informazione valida che la risposta DEVE contenere
-    forgetting_absence  l'informazione superata che NON deve contenere
+    memory_presence     the valid information the answer MUST contain
+    forgetting_absence  the superseded information it must NOT contain
 
-e da quelle si ricava un punteggio unico:
+and from them a single score is derived:
 
-    MPA  = frazione di criteri di presenza soddisfatti
-    FAA  = frazione di criteri di assenza soddisfatti
+    MPA  = fraction of presence criteria satisfied
+    FAA  = fraction of absence criteria satisfied
     lam  = N_forget / (N_presence + N_forget)
     FAMA = max(0, MPA - lam * (1 - FAA))
 
-Il peso `lam` fa in modo che una domanda tutta di dimenticanza sia giudicata
-tutta sulla dimenticanza: con N_presence = 0 il conto degenera in FAMA = FAA, e
-con N_forget = 0 in FAMA = MPA. Il `max` tiene il punteggio in [0, 1].
+The weight `lam` makes a question that is all about forgetting be judged all on
+forgetting: with N_presence = 0 the formula degenerates into FAMA = FAA, and
+with N_forget = 0 into FAMA = MPA. The `max` keeps the score in [0, 1].
 
-Perche' serve, qui
-------------------
-FAMA nasce come metrica **sulla risposta**, e la risposta e' l'ultimo anello di
-una catena lunga: consolidation scrive lo store, retrieval decide se interrogare
-l'archivio, generate_answer compone. Un numero solo su quella catena non dice
-mai di chi e' la colpa - e questo test l'ha gia' visto succedere, con il delete
-dell'indirizzo consolidato correttamente e la risposta che diceva lo stesso dove
-abitava.
+Why it is needed here
+---------------------
+FAMA is born as a metric **on the answer**, and the answer is the last link of a
+long chain: consolidation writes the store, retrieval decides whether to query
+the archive, generate_answer composes. A single number on that chain never says
+whose fault it is - and this test has already seen it happen, with the delete of
+the address consolidated correctly and the answer still saying where the user
+lived.
 
-Per questo qui i criteri si applicano **due volte**, agli stessi criteri e con
-la stessa formula, ma a due oggetti diversi:
+That is why here the criteria are applied **twice**, the same criteria with the
+same formula, but to two different objects:
 
-    FAMA-risposta   sul testo composto da generate_answer
-    FAMA-memoria    sulle memorie attive, appena consolidato il messaggio che
-                    precede la domanda (memory_snapshot_turn)
+    FAMA-answer     on the text composed by generate_answer
+    FAMA-memory     on the active memories, right after consolidating the
+                    message that precedes the question (memory_snapshot_turn)
 
-Il secondo e' quello che parla della consolidation, ed e' deterministico: lo
-store e' strutturato, `status` distingue gia' l'attivo dal cancellato, non serve
-nessun giudice. Lo scarto fra i due isola il colpevole:
+The second is the one that speaks about consolidation, and it is deterministic:
+the store is structured, `status` already tells the active from the deleted, no
+judge is needed. The gap between the two isolates the culprit:
 
-    memoria alta + risposta alta   tutto a posto
-    memoria alta + risposta bassa  colpa di generate_answer o del retrieval
-    memoria bassa + risposta bassa colpa della consolidation
-    memoria bassa + risposta alta  se la memoria ha mancato un fatto, la
-                                   risposta veniva dal contesto e non dalla
-                                   memoria; se se l'e' tenuto dopo un delete,
-                                   e' di nuovo consolidation, con una risposta
-                                   fortunata che la prossima volta non lo sara'
+    memory high + answer high      all good
+    memory high + answer low       fault of generate_answer or of retrieval
+    memory low  + answer low       fault of consolidation
+    memory low  + answer high      if the memory missed a fact, the answer came
+                                   from the context and not from the memory; if
+                                   it kept it after a delete, it is
+                                   consolidation again, with a lucky answer that
+                                   next time will not be
 
-Come si giudica un criterio
----------------------------
-Memora usa tre giudici LLM a maggioranza. Qui no: i criteri sono scritti su
-valori discreti (2200, Torino, golden retriever) e il match testuale basta,
-costa zero chiamate e non aggiunge varianza a una misura che serve proprio a
-misurare la varianza.
+How a criterion is judged
+-------------------------
+Memora uses three LLM judges by majority. Not here: the criteria are written on
+discrete values (2200, Torino, golden retriever) and text matching is enough,
+costs zero calls and adds no variance to a measure whose purpose is precisely
+to measure variance.
 
-Il caso che il match testuale non prende da solo e' il valore vecchio nominato
-come vecchio: *"non bevi piu' caffe'"* e' la risposta giusta alla domanda sul
-caffe', ma la parola "caffe'" c'e'. Da qui la distinzione fra i due modi di
-scrivere un criterio di dimenticanza:
+The case text matching does not catch on its own is the old value named as old:
+*"non bevi piu' caffe'"* is the right answer to the question about coffee, but
+the word "caffe'" is there. Hence the distinction between the two ways of
+writing a forgetting criterion:
 
-    forgets()     dopo un delete: il valore non deve comparire, punto.
-                  La memoria non c'e' piu', nominarla e' gia' una perdita.
-    supersedes()  dopo un update o una contraddizione: il valore puo' comparire
-                  solo come superato - nella sua proposizione ("non piu' X",
-                  "prima X"), oppure in una frase che lo ritratta altrove o
-                  che nomina il valore che l'ha sostituito ("mangi pesce dopo
+    forgets()     after a delete: the value must not appear, period.
+                  The memory is gone, naming it is already a leak.
+    supersedes()  after an update or a contradiction: the value may appear
+                  only as superseded - in its own clause ("non piu' X",
+                  "prima X"), or in a sentence that retracts it elsewhere or
+                  that names the value that replaced it ("mangi pesce dopo
                   sei anni di vegetarianesimo").
 
-La differenza non e' arbitraria, e' la semantica delle due operazioni: una
-cancellazione non deve lasciare traccia, un aggiornamento puo' essere raccontato
-come cambiamento.
+The difference is not arbitrary, it is the semantics of the two operations: a
+deletion must leave no trace, an update can be told as a change.
 
-Due lingue, non una
--------------------
-Le due colonne leggono testi in lingue diverse, e non per scelta: la risposta
-segue la lingua dell'utente ed e' italiana, le memorie consolidate seguono la
-regola del campo `fact` e sono inglesi. Quindi ogni criterio porta le varianti
-di entrambe le lingue - "pesce" e "fish", "padre" e "father", "corr*" e "run*" -
-e cosi' fanno i marcatori di superamento, che senza l'inglese leggerebbero "The
-user stopped drinking coffee" come una fuga invece che come una negazione.
+Two languages, not one
+----------------------
+The two columns read texts in different languages, and not by choice: the
+answer follows the user's language and is Italian, the consolidated memories
+follow the rule of the `fact` field and are English. So every criterion carries
+the variants of both languages - "pesce" and "fish", "padre" and "father",
+"corr*" and "run*" - and so do the superseding markers, which without English
+would read "The user stopped drinking coffee" as a leak instead of a negation.
 
-Affiancare invece di duplicare e' obbligatorio: un criterio e' un fatto, non una
-stringa. Sdoppiarlo in due criteri raddoppierebbe il denominatore di MPA e
-darebbe 50% a una risposta perfetta ma monolingue. Nella forma giusta
-l'operazione va nella direzione giusta da entrambi i lati - sulla presenza
-allarga, perche' basta una variante qualsiasi; sull'assenza stringe, perche' un
-valore da dimenticare non si salva traducendosi.
+Putting them side by side instead of duplicating is mandatory: a criterion is a
+fact, not a string. Splitting it into two criteria would double the denominator
+of MPA and give 50% to a perfect but monolingual answer. In the right form the
+operation goes the right way on both sides - on presence it widens, because any
+variant is enough; on absence it tightens, because a value to forget is not
+saved by translating itself.
 
-Dove le due lingue condividono la radice basta una voce: "vegetarian*" prende
-"vegetariana" e "vegetarian", "clinic*" prende "clinica" e "clinic", "eliminat*"
-prende "eliminato" ed "eliminated".
+Where the two languages share the root one entry is enough: "vegetarian*"
+catches "vegetariana" and "vegetarian", "clinic*" catches "clinica" and
+"clinic", "eliminat*" catches "eliminato" and "eliminated".
 
-Resta una distorsione, ed e' bene saperla: il controllo di superamento guarda la
-frase del valore, quindi una frase che si contraddice da sola ("bevi caffe' la
-mattina, ma hai eliminato il caffe'") passa, e il valore vecchio nominato in una
-frase tutta sua, senza marcatori, viene contato come errore.
+One distortion remains, and it is worth knowing: the superseding check looks at
+the value's sentence, so a sentence that contradicts itself ("bevi caffe' la
+mattina, ma hai eliminato il caffe'") passes, and the old value named in a
+sentence of its own, without markers, is counted as an error.
 
-Fedelta' al riferimento
------------------------
-Il conto e' quello di `fama_score` e di `overall_metrics` in
-evals/model_eval/model_based_evaluator.py. Coincidono: la formula per domanda,
-lam, il taglio a zero, FAA = 1 quando non ci sono criteri di assenza, il
-punteggio complessivo come media per domanda moltiplicata per cento, e MPA e FAA
-complessivi come micro-medie sui criteri invece che medie per domanda.
+Faithfulness to the reference
+-----------------------------
+The computation is that of `fama_score` and `overall_metrics` in
+evals/model_eval/model_based_evaluator.py. They match: the per-question formula,
+lam, the clip at zero, FAA = 1 when there are no absence criteria, the overall
+score as the per-question mean multiplied by a hundred, and the overall MPA and
+FAA as micro-averages over the criteria instead of per-question means.
 
-Tre cose non coincidono, e sono tutte dichiarate:
+Three things do not match, and they are all declared:
 
-1. **Il giudice.** Memora usa GPT-4.1, Claude Haiku 4.5 e Gemini 2.5 Flash a
-   maggioranza su criteri in linguaggio naturale. Qui il match e' testuale su
-   varianti scritte a mano. Stessa formula, criteri giudicati diversamente.
+1. **The judge.** Memora uses GPT-4.1, Claude Haiku 4.5 and Gemini 2.5 Flash by
+   majority on criteria in natural language. Here the match is textual on
+   hand-written variants. Same formula, criteria judged differently.
 
-2. **MPA su un insieme vuoto.** Il loro codice lo mette a 0, e siccome li' lam
-   vale 1 quelle domande valgono 0 comunque vada. Nel loro dataset il ramo non
-   gira mai; qui girerebbe nove volte su 56, bloccando il totale sotto gli 84
-   punti a prescindere. Vale 1 per vacuita', come dice la prosa del paper.
-   Il conto e' in `score`, il perche' pure.
+2. **MPA on an empty set.** Their code sets it to 0, and since there lam is 1
+   those questions are worth 0 whatever happens. In their dataset the branch
+   never runs; here it would run nine times out of 56, capping the total below
+   84 points regardless. It is 1 by vacuity, as the paper's prose says.
+   The computation is in `score`, and so is the reason.
 
-3. **I tipi di task.** Memora divide in Remembering, Reasoning e Recommending e
-   riporta un punteggio per ciascuno. Qui quasi tutte le domande sono
-   Remembering, e dieci sono compiti di tipo Recommending ("mi consigli
-   cosa cucinare per cena?"), giudicati con gli stessi criteri: cosa la
-   risposta e la memoria devono contenere. Il numero resta uno solo.
+3. **The task types.** Memora splits into Remembering, Reasoning and
+   Recommending and reports a score for each. Here almost all the questions are
+   Remembering, and ten are Recommending-type tasks ("mi consigli cosa cucinare
+   per cena?"), judged with the same criteria: what the answer and the memory
+   must contain. The number stays a single one.
 
-Quindi il numero e' calcolato come nel paper, ma **non e' confrontabile con le
-sue tabelle**: dati diversi, una persona invece di dieci, 56 domande
-invece di centocinquanta, e un altro giudice. E' un numero per confrontare
-questa architettura con se stessa fra una run e l'altra.
+So the number is computed as in the paper, but **it is not comparable with its
+tables**: different data, one person instead of ten, 56 questions instead of a
+hundred and fifty, and another judge. It is a number to compare this
+architecture with itself from one run to the next.
 """
 
 import re
@@ -136,66 +135,65 @@ from typing import Dict, List, Sequence, Tuple
 
 
 # --------------------------------------------------------------------------- #
-# Normalizzazione e match
+# Normalization and match
 # --------------------------------------------------------------------------- #
 
-# La conversazione e' scritta in ASCII con l'apostrofo ("caffe'", "e'"), il
-# modello risponde con gli accenti veri ("caffe'" -> "caffeè"). Senza
-# normalizzare, meta' dei criteri non aggancerebbe niente per un motivo
-# tipografico.
+# The conversation is written in ASCII with the apostrophe ("caffe'", "e'"), the
+# model answers with real accents ("caffe'" -> "caffè"). Without normalizing,
+# half of the criteria would catch nothing for a typographical reason.
 _COMBINING = "Mn"
 _SEPARATORS = ("'", "’", "ʼ", "`", "-", "‐", "–", "—")
 
-# Quanto puo' essere largo il buco di una variante con il '*' in mezzo:
-# "non*piu" deve prendere "non fai piu'" senza arrivare alla frase dopo.
+# How wide the gap of a variant with the '*' in the middle can be:
+# "non*piu" must catch "non fai piu'" without reaching the next sentence.
 _GAP = 24
 
-# Su cosa si spezza una proposizione. La virgola c'e' apposta: i marcatori di
-# superamento si cercano nella proposizione del valore, e senza la virgola
-# "bevi caffe', non te'" passerebbe per una negazione del caffe'.
+# What a clause breaks on. The comma is there on purpose: the superseding markers
+# are searched in the value's clause, and without the comma
+# "bevi caffe', non te'" would pass for a negation of the coffee.
 _CLAUSE_BREAK = re.compile(r"[.!?;:,\n]")
 
-# Su cosa si spezza una frase: mai oltre un a capo, che nella memoria separa due
-# fatti diversi.
+# What a sentence breaks on: never past a line break, which in the memory
+# separates two different facts.
 _SENTENCE_BREAK = re.compile(r"[.!?\n]")
 
-# Il valore compare, ma negato: la memoria e' stata cancellata o smentita.
-# I marcatori portano il proprio '*': stelletta dove serve la famiglia di
-# parole ("eliminat*"), parola intera dove il prefisso pescherebbe troppo ("non"
-# senza stelletta, altrimenti prende "nonna"; "no" inglese, altrimenti prende
-# "not", "now", "north" e mezzo dizionario).
+# The value appears, but negated: the memory was deleted or contradicted.
+# The markers carry their own '*': an asterisk where the word family is needed
+# ("eliminat*"), a whole word where the prefix would catch too much ("non"
+# without asterisk, otherwise it catches "nonna"; English "no", otherwise it
+# catches "not", "now", "north" and half the dictionary).
 #
-# Sono in due lingue perche' le due colonne del resoconto leggono testi in
-# lingue diverse: la risposta segue la lingua dell'utente ed e' italiana, le
-# memorie consolidate seguono la regola del campo `fact` e sono inglesi. Con i
-# soli marcatori italiani, "The user stopped drinking coffee" verrebbe contata
-# come una fuga invece che come una negazione, e la colonna della memoria
-# crollerebbe per motivi lessicali proprio dove la consolidation funziona.
+# They are in two languages because the two columns of the report read texts in
+# different languages: the answer follows the user's language and is Italian,
+# the consolidated memories follow the rule of the `fact` field and are English.
+# With only the Italian markers, "The user stopped drinking coffee" would be
+# counted as a leak instead of a negation, and the memory column would collapse
+# for lexical reasons exactly where consolidation works.
 _NEGATION = (
-    # italiano
+    # Italian
     "non", "mai", "nessun*", "niente", "nulla", "senza", "smesso", "smettere",
     "eliminat*", "tolt*", "rimoss*", "dimenticat*", "abbandonat*",
     "rinunciat*", "esclus*",
-    # inglese ("cancel*" copre anche "cancellato", "eliminat*" anche
-    # "eliminated": dove le due lingue condividono la radice basta una voce)
+    # English ("cancel*" also covers "cancellato", "eliminat*" also
+    # "eliminated": where the two languages share the root one entry is enough)
     "no", "not", "never", "none", "nothing", "without", "anymore", "longer",
     "stop*", "quit*", "remov*", "delet*", "cancel*", "forgot*", "forget*",
     "drop*", "abandon*", "exclud*",
-    # contrazioni: l'apostrofo diventa spazio in `normalize`, quindi "doesn't"
-    # arriva qui come "doesn t" e la parola intera da agganciare e' "doesn"
+    # contractions: the apostrophe becomes a space in `normalize`, so "doesn't"
+    # arrives here as "doesn t" and the whole word to catch is "doesn"
     "doesn", "don", "didn", "isn", "wasn", "aren",
 )
 
-# Il valore compare, ma come valore vecchio: c'e' stato un cambiamento.
-# Fuori di proposito i marcatori del presente - "ora", "adesso", "now": stanno
-# nella proposizione del valore NUOVO, non di quello vecchio, e ammetterli
-# lascerebbe passare "ora vive a Mondello" come se fosse un superamento.
+# The value appears, but as an old value: there has been a change.
+# The present-tense markers - "ora", "adesso", "now" - are left out on purpose:
+# they sit in the clause of the NEW value, not of the old one, and admitting them
+# would let "ora vive a Mondello" pass as if it were a superseding.
 _TRANSITION = (
-    # italiano
+    # Italian
     "piu", "prima", "era", "erano", "ero", "eri", "invece", "sostituit*",
     "cambiat*", "aggiornat*", "modificat*", "passat*", "precedent*",
     "trasferit*", "vecchi*", "fino", "allora", "inizialmente", "originariamente",
-    # inglese
+    # English
     "previously", "was", "were", "instead", "replac*", "chang*", "updat*",
     "moved", "relocat*", "former", "formerly", "old", "until", "used",
     "initially", "originally",
@@ -205,16 +203,16 @@ _SUPERSEDED_MARKERS = _NEGATION + _TRANSITION
 
 
 def normalize(text) -> str:
-    """Minuscolo, senza accenti, senza apostrofi e trattini, spazi compattati.
+    """Lowercase, without accents, apostrophes and hyphens, spaces collapsed.
 
-    Serve a far coincidere le grafie che girano in questo test: "caffe'" della
-    conversazione, "caffè" della risposta, "Caffe" di una memoria consolidata,
-    "part-time" e "part time".
+    It makes the spellings going around in this test coincide: "caffe'" of the
+    conversation, "caffè" of the answer, "Caffe" of a consolidated memory,
+    "part-time" and "part time".
 
-    Gli a capo restano: nella memoria separano un fatto dall'altro, e
-    _CLAUSE_BREAK ci spezza sopra. Comprimerli come gli altri spazi fondeva lo
-    store in una proposizione sola, e un "no longer" in una memoria qualsiasi
-    faceva passare per superato ogni valore dell'archivio.
+    Line breaks stay: in the memory they separate one fact from the other, and
+    _CLAUSE_BREAK splits on them. Collapsing them like the other spaces merged
+    the store into a single clause, and a "no longer" in any memory made every
+    value of the archive pass as superseded.
     """
     lowered = unicodedata.normalize("NFD", str(text or "").lower())
     stripped = "".join(ch for ch in lowered if unicodedata.category(ch) != _COMBINING)
@@ -225,24 +223,24 @@ def normalize(text) -> str:
 
 
 def _pattern(variant: str) -> str:
-    """Regex di una variante. Il '*' significa due cose, a seconda di dove sta.
+    """Regex of a variant. The '*' means two things, depending on where it is.
 
-    In fondo e' un prefisso: "corr*" prende correre, corri, corro senza doverli
-    elencare. In mezzo e' un buco: "non*piu" prende "non fai piu'" e "non lo
-    suono piu'", che sono lo stesso modo di dire con parole in mezzo. Senza il
-    '*' la variante e' una parola intera.
+    At the end it is a prefix: "corr*" catches correre, corri, corro without
+    having to list them. In the middle it is a gap: "non*piu" catches "non fai
+    piu'" and "non lo suono piu'", which are the same phrase with words in
+    between. Without the '*' the variant is a whole word.
     """
     variant = normalize(variant)
     open_end = variant.endswith("*")
     parts = [piece.strip() for piece in variant.split("*") if piece.strip()]
     if not parts:
-        return r"(?!x)x"  # una variante fatta di soli '*' non aggancia niente
+        return r"(?!x)x"  # a variant made only of '*' catches nothing
     body = (r".{0," + str(_GAP) + r"}?").join(re.escape(piece) for piece in parts)
     return r"\b" + body + ("" if open_end else r"\b")
 
 
 def _occurrences(haystack: str, variants: Sequence[str]) -> List[int]:
-    """Le posizioni in cui una qualunque delle varianti compare nel testo."""
+    """The positions where any of the variants appears in the text."""
     found = []
     for variant in variants:
         found.extend(match.start() for match in re.finditer(_pattern(variant), haystack))
@@ -250,7 +248,7 @@ def _occurrences(haystack: str, variants: Sequence[str]) -> List[int]:
 
 
 def _clause_around(text: str, position: int) -> str:
-    """La proposizione che contiene quella posizione."""
+    """The clause that contains that position."""
     start = 0
     for match in _CLAUSE_BREAK.finditer(text, 0, position):
         start = match.end()
@@ -259,7 +257,7 @@ def _clause_around(text: str, position: int) -> str:
 
 
 def _sentence_around(text: str, position: int) -> Tuple[int, int]:
-    """Inizio e fine della frase che contiene quella posizione."""
+    """Start and end of the sentence that contains that position."""
     start = 0
     for match in _SENTENCE_BREAK.finditer(text, 0, position):
         start = match.end()
@@ -267,11 +265,11 @@ def _sentence_around(text: str, position: int) -> Tuple[int, int]:
     return start, end.start() if end else len(text)
 
 
-# Una proposizione che segue il valore e comincia cosi' lo sta correggendo...
+# A clause that follows the value and starts like this is correcting it...
 _ADVERSATIVE = ("ma", "pero", "tuttavia", "eppure", "but", "however", "though", "yet")
 
-# ...purche' dica che e' finito: una negazione semplice non basta, "bevi caffe',
-# ma non alcolici" nega un'altra cosa.
+# ...as long as it says it is over: a plain negation is not enough, "bevi caffe',
+# ma non alcolici" negates something else.
 _CESSATION = ("piu", "smesso", "smettere", "eliminat*", "tolt*", "abbandonat*",
               "rinunciat*", "anymore", "longer", "stop*", "quit*", "gave up")
 
@@ -281,9 +279,10 @@ def _has_marker(clause: str, markers: Sequence[str]) -> bool:
 
 
 def _following_clause(text: str, position: int) -> str:
-    """La proposizione dopo quella del valore, se sta nella stessa frase.
+    """The clause after the value's one, if it is in the same sentence.
 
-    Mai oltre un punto o un a capo: nella memoria ogni riga e' un fatto diverso.
+    Never past a full stop or a line break: in the memory every line is a
+    different fact.
     """
     end = _CLAUSE_BREAK.search(text, position)
     if end is None or end.group() not in ",;:":
@@ -293,11 +292,11 @@ def _following_clause(text: str, position: int) -> str:
 
 
 def _is_superseded(text: str, position: int) -> bool:
-    """Il valore in quella posizione e' nominato come superato o negato?
+    """Is the value in that position named as superseded or negated?
 
-    Nella sua proposizione, oppure nella successiva se questa lo corregge:
-    "bevi solo caffe' la mattina, ma ora non lo prendi piu'" dice che il caffe'
-    e' finito, con la negazione dopo la virgola e un pronome al posto del nome.
+    In its own clause, or in the next one if that one corrects it:
+    "bevi solo caffe' la mattina, ma ora non lo prendi piu'" says the coffee
+    is over, with the negation after the comma and a pronoun instead of the noun.
     """
     if _has_marker(_clause_around(text, position), _SUPERSEDED_MARKERS):
         return True
@@ -307,7 +306,7 @@ def _is_superseded(text: str, position: int) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# I criteri
+# The criteria
 # --------------------------------------------------------------------------- #
 
 PRESENCE = "memory_presence"
@@ -316,22 +315,22 @@ FORGETTING = "forgetting_absence"
 
 @dataclass(frozen=True)
 class Criterion:
-    """Un criterio binario, nella forma dei due `evaluation_type` di Memora."""
+    """A binary criterion, in the form of Memora's two `evaluation_type` values."""
 
     label: str
     variants: Tuple[str, ...]
     kind: str
     superseded_ok: bool = False
-    # Solo per recalls_some: i fatti fra cui scegliere, ognuno con le sue
-    # varianti, e quanti ne devono comparire.
+    # Only for recalls_some: the facts to choose from, each with its own
+    # variants, and how many of them must appear.
     groups: Tuple[Tuple[str, ...], ...] = ()
     minimum: int = 1
-    # Solo per supersedes, e solo dove il valore nuovo esclude il vecchio (2200 al
-    # posto di 2000): chitarra e pianoforte convivevano, non si sostituiscono.
+    # Only for supersedes, and only where the new value excludes the old one (2200
+    # instead of 2000): guitar and piano lived together, they do not replace each other.
     replaced_by: Tuple[str, ...] = ()
 
     def satisfied(self, text: str) -> bool:
-        """Il criterio e' rispettato da questo testo?"""
+        """Is the criterion met by this text?"""
         haystack = normalize(text)
         if self.kind == PRESENCE and self.groups:
             found = sum(1 for group in self.groups if _occurrences(haystack, group))
@@ -341,8 +340,8 @@ class Criterion:
             return bool(hits)
         if not self.superseded_ok:
             return not hits
-        # Una menzione non superata nella sua proposizione passa se la stessa frase
-        # ritratta il valore altrove, o nomina il valore che l'ha sostituito.
+        # A mention not superseded in its clause passes if the same sentence
+        # retracts the value elsewhere, or names the value that replaced it.
         retracted = [position for position in hits if _is_superseded(haystack, position)]
         narrated = retracted + _occurrences(haystack, self.replaced_by)
         for position in hits:
@@ -355,17 +354,18 @@ class Criterion:
 
 
 def recalls(label: str, *variants: str) -> Criterion:
-    """Criterio di presenza: questa informazione ci deve essere."""
+    """Presence criterion: this information must be there."""
     return Criterion(label, tuple(variants) or (label,), PRESENCE)
 
 
 def recalls_some(label: str, minimum: int, *facts) -> Criterion:
-    """Criterio di presenza per le domande aperte: almeno `minimum` di questi fatti.
+    """Presence criterion for open questions: at least `minimum` of these facts.
 
-    Ogni fatto e' una variante o una tupla di varianti, e conta una volta sola
-    anche se compare in due lingue. generate_answer risponde in una o due frasi:
-    a "cosa sai della mia alimentazione?" sceglie lui quali fatti dire, e un
-    criterio che pretende quelli precisi misura la scelta, non la memoria.
+    Each fact is a variant or a tuple of variants, and it counts only once even
+    if it appears in two languages. generate_answer answers in one or two
+    sentences: to "cosa sai della mia alimentazione?" it chooses which facts to
+    say, and a criterion that demands the exact ones measures the choice, not
+    the memory.
     """
     groups = tuple((fact,) if isinstance(fact, str) else tuple(fact) for fact in facts)
     variants = tuple(variant for group in groups for variant in group)
@@ -373,20 +373,19 @@ def recalls_some(label: str, minimum: int, *facts) -> Criterion:
 
 
 def forgets(label: str, *variants: str) -> Criterion:
-    """Criterio di assenza dopo un delete: il valore non deve comparire.
+    """Absence criterion after a delete: the value must not appear.
 
-    Nemmeno negato. La memoria e' stata cancellata su richiesta dell'utente:
-    rispondere "non abiti piu' a Mondello" rivela esattamente quello che
-    doveva sparire.
+    Not even negated. The memory was deleted at the user's request: answering
+    "non abiti piu' a Mondello" reveals exactly what had to disappear.
     """
     return Criterion(label, tuple(variants) or (label,), FORGETTING, superseded_ok=False)
 
 
 def supersedes(label: str, *variants: str, replaced_by: Sequence[str] = ()) -> Criterion:
-    """Criterio di assenza dopo un update o una contraddizione.
+    """Absence criterion after an update or a contradiction.
 
-    Il valore vecchio puo' comparire, ma solo come vecchio: raccontare il
-    cambiamento e' legittimo, riproporre il valore superato come attuale no.
+    The old value may appear, but only as old: telling the change is legitimate,
+    presenting the superseded value again as current is not.
     """
     return Criterion(label, tuple(variants) or (label,), FORGETTING, superseded_ok=True,
                      replaced_by=tuple(replaced_by))
@@ -394,7 +393,7 @@ def supersedes(label: str, *variants: str, replaced_by: Sequence[str] = ()) -> C
 
 @dataclass(frozen=True)
 class EvaluationQuestion:
-    """Una domanda della conversazione con i suoi criteri."""
+    """A question of the conversation with its criteria."""
 
     index: int
     note: str
@@ -402,22 +401,22 @@ class EvaluationQuestion:
 
     @property
     def presence(self) -> List[Criterion]:
-        """I criteri di presenza."""
+        """The presence criteria."""
         return [item for item in self.criteria if item.kind == PRESENCE]
 
     @property
     def forgetting(self) -> List[Criterion]:
-        """I criteri di assenza."""
+        """The absence criteria."""
         return [item for item in self.criteria if item.kind == FORGETTING]
 
 
 # --------------------------------------------------------------------------- #
-# Il punteggio
+# The score
 # --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
 class Score:
-    """L'esito di una domanda: le tre quantita', i conti e cosa ha ceduto."""
+    """The outcome of a question: the three quantities, the counts and what failed."""
 
     mpa: float
     faa: float
@@ -430,25 +429,25 @@ class Score:
 
     @property
     def clean(self) -> bool:
-        """Nessun criterio violato."""
+        """No criterion violated."""
         return not self.missed and not self.leaked
 
     @property
     def presence_satisfied(self) -> int:
-        """Quanti criteri di presenza sono stati soddisfatti."""
+        """How many presence criteria were satisfied."""
         return self.n_presence - len(self.missed)
 
     @property
     def forgetting_satisfied(self) -> int:
-        """Quanti criteri di assenza sono stati soddisfatti."""
+        """How many absence criteria were satisfied."""
         return self.n_forgetting - len(self.leaked)
 
 
 def score(question: EvaluationQuestion, text: str) -> Score:
-    """FAMA di una domanda contro un testo: la risposta, o le memorie attive.
+    """FAMA of a question against a text: the answer, or the active memories.
 
-    Ricalca `fama_score` di evals/model_eval/model_based_evaluator.py, con una
-    deviazione dichiarata sul caso senza criteri di presenza - vedi sotto.
+    It follows `fama_score` of evals/model_eval/model_based_evaluator.py, with a
+    declared deviation on the case without presence criteria - see below.
     """
     presence, forgetting = question.presence, question.forgetting
     n_p, n_f = len(presence), len(forgetting)
@@ -456,25 +455,20 @@ def score(question: EvaluationQuestion, text: str) -> Score:
     missed = tuple(item.label for item in presence if not item.satisfied(text))
     leaked = tuple(item.label for item in forgetting if not item.satisfied(text))
 
-    if not n_p and not n_f:
-        # Come il riferimento: una domanda senza criteri non vale niente,
-        # invece di valere tutto per vacuita'.
-        return Score(0.0, 0.0, 0.0, 0.0, 0, 0, missed, leaked)
-
-    # DEVIAZIONE DICHIARATA. Il codice di Memora mette MPA a 0 quando non ci
-    # sono criteri di presenza, e siccome li' lam vale 1, quelle domande
-    # valgono 0 comunque vada. Nel loro dataset non succede mai - le domande
-    # sono a lista ("quali task restano?") e qualcosa resta sempre - quindi e'
-    # un ramo difensivo che non gira. Qui invece succede nove volte su
-    # 56: dopo una cancellazione non c'e' nessun valore valido da
-    # ricordare, e "non lo so" e' la risposta giusta. Con MPA a 0 quelle nove
-    # domande sarebbero incorreggibili e il totale bloccato sotto gli 84 punti,
-    # qualunque cosa faccia l'architettura.
+    # DECLARED DEVIATION. Memora's code sets MPA to 0 when there are no presence
+    # criteria, and since there lam is 1, those questions are worth 0 whatever
+    # happens. In their dataset it never happens - the questions are lists
+    # ("quali task restano?") and something always remains - so it is a
+    # defensive branch that never runs. Here instead it happens nine times out
+    # of 56: after a deletion there is no valid value to remember, and "non lo
+    # so" is the right answer. With MPA at 0 those nine questions could never be
+    # right and the total would be capped below 84 points, whatever the
+    # architecture does.
     #
-    # Qui MPA vale 1 per vacuita', che e' la lettura della prosa del paper:
-    # "the fraction of memory presence criteria satisfied" su un insieme vuoto,
-    # con lam = 1 che consegna tutto il peso a FAA. FAMA degenera in FAA, ed e'
-    # esattamente cio' che quelle domande devono misurare.
+    # Here MPA is 1 by vacuity, which is the reading of the paper's prose:
+    # "the fraction of memory presence criteria satisfied" on an empty set,
+    # with lam = 1 handing all the weight to FAA. FAMA degenerates into FAA, and
+    # that is exactly what those questions must measure.
     mpa = 1.0 - len(missed) / n_p if n_p else 1.0
     faa = 1.0 - len(leaked) / n_f if n_f else 1.0
     lam = n_f / (n_p + n_f)
@@ -484,30 +478,26 @@ def score(question: EvaluationQuestion, text: str) -> Score:
 
 
 def aggregate(scores: Sequence[Score]) -> Dict[str, float]:
-    """Il punteggio dell'architettura, non della singola domanda.
+    """The score of the architecture, not of the single question.
 
-    Segue `overall_metrics` del riferimento, e le tre quantita' non si mediano
-    tutte allo stesso modo:
+    It follows the reference's `overall_metrics`, and the three quantities are
+    not all averaged the same way:
 
-        fama      media delle FAMA per domanda, per cento. Ogni domanda pesa
-                  uguale, che e' il senso di un punteggio gia' normalizzato.
-        mpa, faa  rapporto fra criteri soddisfatti e criteri totali su tutte le
-                  domande insieme (micro-media): li' a pesare e' il criterio,
-                  non la domanda, cosi' una domanda con sette criteri conta per
-                  sette e non per uno.
-        accuracy  gli stessi criteri, presenza e assenza in un mucchio solo.
-                  E' l'`overall_accuracy` del riferimento: la frazione grezza di
-                  criteri passati, senza il peso lam.
+        fama      mean of the per-question FAMA, times a hundred. Every question
+                  weighs the same, which is the meaning of an already normalized
+                  score.
+        mpa, faa  ratio between satisfied criteria and total criteria over all
+                  the questions together (micro-average): there what weighs is
+                  the criterion, not the question, so a question with seven
+                  criteria counts for seven and not for one.
+        accuracy  the same criteria, presence and absence in a single pile.
+                  It is the reference's `overall_accuracy`: the raw fraction of
+                  passed criteria, without the weight lam.
 
-    Mediare anche mpa e faa per domanda darebbe numeri diversi e piu' gentili:
-    una domanda con un solo criterio sbagliato peserebbe quanto una con sette
-    criteri giusti.
+    Averaging mpa and faa per question too would give different and kinder
+    numbers: a question with a single wrong criterion would weigh as much as one
+    with seven right criteria.
     """
-    empty = {"questions": 0, "criteria": 0, "fama": 0.0,
-             "mpa": None, "faa": None, "accuracy": 0.0}
-    if not scores:
-        return empty
-
     presence_total = sum(item.n_presence for item in scores)
     forgetting_total = sum(item.n_forgetting for item in scores)
     presence_ok = sum(item.presence_satisfied for item in scores)
@@ -525,59 +515,59 @@ def aggregate(scores: Sequence[Score]) -> Dict[str, float]:
 
 
 def verdict(memory: Score, answer: Score, tolerance: float = 0.01) -> str:
-    """Di chi e' la colpa, leggendo insieme il punteggio sui due oggetti.
+    """Whose fault it is, reading the score on the two objects together.
 
-    E' il quadrante della tabella nel docstring del modulo, tradotto in una
-    parola sola da mettere in fondo alla riga del resoconto.
+    It is the quadrant of the table in the module docstring, translated into a
+    single word to put at the end of the report line.
 
-    Il quadrante "memoria sbagliata, risposta giusta" pero' non e' uno solo, e
-    confonderlo costa una diagnosi: se la memoria ha **mancato** un fatto e la
-    risposta l'ha detto lo stesso, la risposta veniva dal contesto della
-    conversazione e non dalla memoria; se invece la memoria si e' **tenuta** un
-    fatto cancellato e la risposta non l'ha usato, lo store e' sbagliato e la
-    risposta e' stata fortunata - e quella e' consolidation, non fortuna da
-    festeggiare. La prossima domanda sullo stesso fatto la perde.
+    The "memory wrong, answer right" quadrant though is not just one, and
+    confusing it costs a diagnosis: if the memory **missed** a fact and the
+    answer said it anyway, the answer came from the conversation's context and
+    not from the memory; if instead the memory **kept** a deleted fact and the
+    answer did not use it, the store is wrong and the answer was lucky - and
+    that is consolidation, not luck to celebrate. The next question on the same
+    fact loses it.
     """
     memory_ok = memory.fama >= 1.0 - tolerance
     answer_ok = answer.fama >= 1.0 - tolerance
     if memory_ok and answer_ok:
         return "ok"
     if memory_ok:
-        return "risposta"
+        return "answer"
     if not answer_ok:
         return "consolidation"
-    return "consolidation" if memory.leaked else "fuori memoria"
+    return "consolidation" if memory.leaked else "outside memory"
 
 
 def memory_snapshot_turn(question: int, maximum_historical_messages: int) -> int:
-    """Dopo l'insert di quale turno si fotografa la memoria per questa domanda.
+    """After the insert of which turn the memory is snapshotted for this question.
 
-    Non al momento della domanda. Il consolidamento e' in ritardo per
-    costruzione: summarize_memories_node tiene gli ultimi
-    maximum_historical_messages messaggi e consolida quelli prima, e ogni turno
-    ne aggiunge due (la domanda e la risposta di generate_answer). Il messaggio
-    subito prima della domanda - quasi sempre l'update o il delete che la domanda
-    mette alla prova - al momento della domanda e' ancora solo nella
-    conversazione, e la memoria lo "manca" per definizione. Misurarla li'
-    misurava il ritardo, non la consolidation.
+    Not at the moment of the question. Consolidation lags by construction:
+    summarize_memories_node keeps the last maximum_historical_messages messages
+    and consolidates the ones before, and every turn adds two (the question and
+    the answer of generate_answer). The message right before the question -
+    almost always the update or the delete the question puts to the test - at
+    the moment of the question is still only in the conversation, and the memory
+    "misses" it by definition. Measuring it there measured the lag, not
+    consolidation.
 
-    Con la finestra del test lungo (2 messaggi) e' l'insert del turno stesso
-    della domanda, che consolida il messaggio prima e non ancora la domanda.
+    With the long test's window (2 messages) it is the insert of the question's
+    own turn, which consolidates the message before and not yet the question.
     """
     return question + max(1, maximum_historical_messages // 2) - 1
 
 
 # --------------------------------------------------------------------------- #
-# Le 56 domande
+# The 56 questions
 # --------------------------------------------------------------------------- #
 
 QUESTIONS: Dict[int, EvaluationQuestion] = {
 
     36: EvaluationQuestion(
-        36, "i fatti della presentazione, niente e' ancora superato",
+        36, "the facts of the presentation, nothing is superseded yet",
         (
             recalls_some(
-                "almeno due fatti sull'alimentazione", 2,
+                "at least two facts about the diet", 2,
                 "vegetarian*", ("arachid*", "peanut*"), "2000", "protein*",
                 ("alcol*", "alcohol*"), ("caffe", "coffee"), ("te verde", "green tea"),
                 ("parmigian*", "parmesan"), ("liquirizia", "licorice", "liquorice"),
@@ -587,7 +577,7 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     ),
 
     39: EvaluationQuestion(
-        39, "msg 38 ha aggiornato le calorie da 2000 a 2200",
+        39, "msg 38 updated the calories from 2000 to 2200",
         (
             recalls("2200", "2200"),
             supersedes("2000", "2000", replaced_by=("2200",)),
@@ -595,94 +585,94 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     ),
 
     42: EvaluationQuestion(
-        42, "msg 41 ha ripetuto l'asma del msg 9",
+        42, "msg 41 repeated the asthma of msg 9",
         (
-            recalls("asma", "asma", "asthma*"),
+            recalls("asthma", "asma", "asthma*"),
         ),
     ),
 
     46: EvaluationQuestion(
-        46, "msg 45 ha ripetuto il nome",
+        46, "msg 45 repeated the name",
         (
             recalls("bianca"),
         ),
     ),
 
     50: EvaluationQuestion(
-        50, "compito: un film, e gli horror del msg 49 le mettono ansia",
+        50, "task: a film, and the horror films of msg 49 make the user anxious",
         (
-            recalls("niente horror", "horror*", "orror*"),
+            recalls("no horror", "horror*", "orror*"),
         ),
     ),
 
     58: EvaluationQuestion(
-        58, "msg 57 ha smentito la dieta vegetariana: ora mangia pesce",
+        58, "msg 57 contradicted the vegetarian diet: the user now eats fish",
         (
-            recalls("mangia pesce", "pesce", "pescetarian*", "fish", "pescatarian*"),
+            recalls("eats fish", "pesce", "pescetarian*", "fish", "pescatarian*"),
             supersedes("vegetarian*",
                        replaced_by=("pesce", "fish", "pescatarian*", "pescetarian*")),
         ),
     ),
 
     60: EvaluationQuestion(
-        60, "compito: una cena, con il pesce del msg 57 e l'allergia alle arachidi",
+        60, "task: a dinner, with the fish of msg 57 and the peanut allergy",
         (
-            recalls("mangia pesce", "pesce", "fish", "pescatarian*", "pescetarian*"),
-            recalls("niente arachidi", "arachid*", "peanut*"),
+            recalls("eats fish", "pesce", "fish", "pescatarian*", "pescetarian*"),
+            recalls("no peanuts", "arachid*", "peanut*"),
             supersedes("vegetarian*",
                        replaced_by=("pesce", "fish", "pescatarian*", "pescetarian*")),
         ),
     ),
 
     65: EvaluationQuestion(
-        65, "msg 64 ha cancellato l'indirizzo: Palermo centro, poi Mondello",
+        65, "msg 64 deleted the address: Palermo centre, then Mondello",
         (
-            forgets("indirizzo cancellato", "mondello", "palermo",
+            forgets("deleted address", "mondello", "palermo",
                     "centro", "centre", "center", "downtown"),
         ),
     ),
 
     67: EvaluationQuestion(
-        67, "msg 66 ha portato la levotiroxina a 88 microgrammi",
+        67, "msg 66 raised the levothyroxine to 88 micrograms",
         (
-            recalls("88 microgrammi", "88"),
+            recalls("88 micrograms", "88"),
         ),
     ),
 
     71: EvaluationQuestion(
-        71, "msg 70 ha eliminato il caffe': nessuna bevanda nuova al suo posto",
+        71, "msg 70 dropped the coffee: no new drink in its place",
         (
-            supersedes("caffe' della mattina", "caffe", "coffee"),
+            supersedes("morning coffee", "caffe", "coffee"),
         ),
     ),
 
     73: EvaluationQuestion(
-        73, "msg 72: allergica anche alla penicillina",
+        73, "msg 72: also allergic to penicillin",
         (
-            recalls("penicillina", "penicillin*"),
+            recalls("penicillin", "penicillin*"),
         ),
     ),
 
     79: EvaluationQuestion(
-        79, "msg 78: ad agosto vorrebbe andare in Grecia, forse a Naxos",
+        79, "msg 78: in August the user would like to go to Greece, maybe Naxos",
         (
-            recalls("Naxos o la Grecia", "naxos", "grecia", "greece"),
+            recalls("Naxos or Greece", "naxos", "grecia", "greece"),
         ),
     ),
 
     81: EvaluationQuestion(
-        81, "compito: arrivare a Naxos con la paura di volare del msg 75",
+        81, "task: getting to Naxos with the fear of flying of msg 75",
         (
-            recalls("niente aereo", "volare", "fly*", "flight*", "aere*", "plane*",
+            recalls("no plane", "volare", "fly*", "flight*", "aere*", "plane*",
                     "nave", "traghett*", "ferry*", "boat*"),
         ),
     ),
 
     84: EvaluationQuestion(
-        84, "msg 83 ha cancellato l'eta': prima 29, poi 30",
+        84, "msg 83 deleted the age: first 29, then 30",
         (
-            # Mai il numero da solo: "6:30" diventa "6 30", e la sveglia passava per l'eta'.
-            forgets("eta' cancellata", "30 anni", "29 anni", "30 year*", "29 year*",
+            # Never the bare number: "6:30" becomes "6 30", and the alarm passed for the age.
+            forgets("deleted age", "30 anni", "29 anni", "30 year*", "29 year*",
                     "is 30", "is 29", "turned 30", "turned 29", "aged 30", "age of 30",
                     "trent anni", "trentanni", "ventinove anni",
                     "thirty year*", "twenty nine year*"),
@@ -690,346 +680,346 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     ),
 
     90: EvaluationQuestion(
-        90, "msg 89 ha spostato la sorella da Milano a Torino",
+        90, "msg 89 moved the sister from Milano to Torino",
         (
-            recalls("vive a Torino", "torino", "turin"),
-            supersedes("vecchia citta' Milano", "milano", "milan",
+            recalls("lives in Torino", "torino", "turin"),
+            supersedes("old city Milano", "milano", "milan",
                        replaced_by=("torino", "turin")),
         ),
     ),
 
     92: EvaluationQuestion(
-        92, "msg 85 e 91: il corso di fotografia del lunedi' sera",
+        92, "msg 85 and 91: the photography course on Monday evening",
         (
-            recalls("fotografia", "fotograf*", "photograph*"),
+            recalls("photography", "fotograf*", "photograph*"),
         ),
     ),
 
     101: EvaluationQuestion(
-        101, "msg 95: Giulia si sposa il 14 giugno",
+        101, "msg 95: Giulia gets married on 14 June",
         (
-            recalls("14 giugno", "14 giugno", "14 june", "june 14*", "14th of june",
+            recalls("14 June", "14 giugno", "14 june", "june 14*", "14th of june",
                     "14th june"),
         ),
     ),
 
     105: EvaluationQuestion(
-        105, "msg 104 ha cancellato il nome della sorella",
+        105, "msg 104 deleted the sister's name",
         (
-            forgets("nome cancellato", "chiara"),
+            forgets("deleted name", "chiara"),
         ),
     ),
 
     108: EvaluationQuestion(
-        108, "msg 102: volontariato in un canile il martedi' sera",
+        108, "msg 102: volunteering at a dog shelter on Tuesday evening",
         (
-            recalls("volontariato", "volontari*", "volunteer*", "canile", "shelter*"),
+            recalls("volunteering", "volontari*", "volunteer*", "canile", "shelter*"),
         ),
     ),
 
     111: EvaluationQuestion(
-        111, "msg 110 ha esteso l'allergia all'olio di arachidi, msg 72 ha aggiunto la "
+        111, "msg 110 extended the allergy to peanut oil, msg 72 added penicillin"
              "penicillina",
         (
-            recalls("arachidi", "arachid*", "peanut*"),
-            recalls("penicillina", "penicillin*"),
+            recalls("peanuts", "arachid*", "peanut*"),
+            recalls("penicillin", "penicillin*"),
         ),
     ),
 
     114: EvaluationQuestion(
-        114, "msg 99: si e' ricreduta sulla liquirizia, ora le piace",
+        114, "msg 99: a change of mind about liquorice, now the user likes it",
         (
-            recalls("liquirizia", "liquirizia", "licorice", "liquorice"),
-            recalls("le piace", "piace", "like*", "enjoy*", "ricredut*"),
+            recalls("liquorice", "liquirizia", "licorice", "liquorice"),
+            recalls("likes it", "piace", "like*", "enjoy*", "ricredut*"),
         ),
     ),
 
     118: EvaluationQuestion(
-        118, "msg 117 ha smentito la razza: non labrador ma golden retriever",
+        118, "msg 117 contradicted the breed: not a labrador but a golden retriever",
         (
             recalls("golden retriever", "golden"),
-            supersedes("vecchia razza labrador", "labrador", replaced_by=("golden",)),
+            supersedes("old breed labrador", "labrador", replaced_by=("golden",)),
         ),
     ),
 
     119: EvaluationQuestion(
-        119, "msg 18: Argo non puo' mangiare il pollo",
+        119, "msg 18: Argo cannot eat chicken",
         (
-            recalls("pollo", "pollo", "chicken"),
+            recalls("chicken", "pollo", "chicken"),
         ),
     ),
 
     123: EvaluationQuestion(
-        123, "compito: lo zaino per la montagna, con l'asma del msg 9",
+        123, "task: the backpack for the mountains, with the asthma of msg 9",
         (
-            recalls("inalatore", "inalator*", "inhaler*", "asma", "asthma*"),
+            recalls("inhaler", "inalator*", "inhaler*", "asma", "asthma*"),
         ),
     ),
 
     127: EvaluationQuestion(
-        127, "msg 126 ha smentito lo yoga: smesso a settembre",
+        127, "msg 126 contradicted the yoga: stopped in September",
         (
-            recalls("ha smesso", "smesso", "settembre", "non*piu", "interrott*",
+            recalls("stopped", "smesso", "settembre", "non*piu", "interrott*",
                     "abbandonat*", "stop*", "quit*", "september", "no longer",
                     "anymore", "gave up"),
-            supersedes("giorni dello yoga", "sabato", "mercoledi",
+            supersedes("yoga days", "sabato", "mercoledi",
                        "saturday", "wednesday"),
         ),
     ),
 
     131: EvaluationQuestion(
-        131, "compito: la spesa del giovedi', con il budget del msg 130",
+        131, "task: the Thursday shopping, with the budget of msg 130",
         (
-            recalls("budget di 50 euro", "50 eur*"),
+            recalls("50 euro budget", "50 eur*"),
         ),
     ),
 
     133: EvaluationQuestion(
-        133, "msg 120: il richiamo del vaccino di Argo il 20 ottobre",
+        133, "msg 120: Argo's vaccine booster on 20 October",
         (
-            recalls("20 ottobre", "20 ottobre", "20 october", "october 20*",
+            recalls("20 October", "20 ottobre", "20 october", "october 20*",
                     "20th of october", "20th october"),
         ),
     ),
 
     137: EvaluationQuestion(
-        137, "msg 128: dentista martedi' prossimo alle tre del pomeriggio",
+        137, "msg 128: dentist next Tuesday at three in the afternoon",
         (
-            recalls("martedi'", "martedi", "tuesday"),
-            recalls("alle tre", "alle tre", "tre del pomeriggio", "15", "3 pm", "3pm",
+            recalls("Tuesday", "martedi", "tuesday"),
+            recalls("at three", "alle tre", "tre del pomeriggio", "15", "3 pm", "3pm",
                     "three in the afternoon", "3 in the afternoon"),
         ),
     ),
 
     140: EvaluationQuestion(
-        140, "msg 139 ha cancellato il lavoro: clinica, poi part-time, poi in proprio",
+        140, "msg 139 deleted the job: clinic, then part-time, then self-employed",
         (
 
-            forgets("lavoro cancellato", "fisioterapist*", "physiotherap*",
+            forgets("deleted job", "fisioterapist*", "physiotherap*",
                     "physical therap*", "clinic*", "in proprio", "part time",
                     "self employed", "own practice", "freelance*"),
         ),
     ),
 
     148: EvaluationQuestion(
-        148, "msg 147 ha chiuso col pianoforte: restano chitarra e vinili jazz",
+        148, "msg 147 quit the piano: guitar and jazz vinyls remain",
         (
-            recalls("chitarra", "chitarra", "guitar*"),
-            recalls("jazz in vinile", "jazz", "vinil*", "vinyl*"),
-            supersedes("pianoforte abbandonato", "pianoforte", "piano"),
+            recalls("guitar", "chitarra", "guitar*"),
+            recalls("jazz on vinyl", "jazz", "vinil*", "vinyl*"),
+            supersedes("abandoned piano", "pianoforte", "piano"),
         ),
     ),
 
     151: EvaluationQuestion(
-        151, "compito: a chi lasciare Argo, dal msg 142",
+        151, "task: whom to leave Argo with, from msg 142",
         (
-            recalls("la vicina", "vicin*", "neighbo*"),
+            recalls("the neighbour", "vicin*", "neighbo*"),
         ),
     ),
 
     154: EvaluationQuestion(
-        154, "msg 153 ha portato le calorie a 1800, dopo 2000 e 2200",
+        154, "msg 153 set the calories to 1800, after 2000 and 2200",
         (
-            recalls("obiettivo 1800", "1800"),
-            supersedes("obiettivo 2200", "2200", replaced_by=("1800",)),
-            supersedes("obiettivo 2000", "2000", replaced_by=("1800",)),
+            recalls("goal 1800", "1800"),
+            supersedes("goal 2200", "2200", replaced_by=("1800",)),
+            supersedes("goal 2000", "2000", replaced_by=("1800",)),
         ),
     ),
 
     157: EvaluationQuestion(
-        157, "msg 156 ha portato la levotiroxina a 100 microgrammi, dopo gli 88 del msg 66",
+        157, "msg 156 raised the levothyroxine to 100 micrograms, after the 88 of msg 66",
         (
-            recalls("levotiroxina", "levotiroxin*", "levothyroxin*", "tiroide",
+            recalls("levothyroxine", "levotiroxin*", "levothyroxin*", "tiroide",
                     "thyroid*"),
-            recalls("100 microgrammi", "100"),
-            supersedes("88 microgrammi", "88", replaced_by=("100",)),
+            recalls("100 micrograms", "100"),
+            supersedes("88 micrograms", "88", replaced_by=("100",)),
         ),
     ),
 
     169: EvaluationQuestion(
-        169, "msg 168 ha cancellato la celiachia: prima la madre, poi il padre",
+        169, "msg 168 deleted the coeliac disease: first the mother, then the father",
         (
-            forgets("familiare celiaco cancellato", "padre", "madre", "papa",
+            forgets("deleted coeliac relative", "padre", "madre", "papa",
                     "mamma", "father", "mother", "dad", "mom", "mum", "parent*"),
         ),
     ),
 
     171: EvaluationQuestion(
-        171, "msg 25: la migliore amica e' Giulia",
+        171, "msg 25: the best friend is Giulia",
         (
             recalls("giulia"),
         ),
     ),
 
     172: EvaluationQuestion(
-        172, "msg 53 e 158: lo spagnolo, ora al livello B1",
+        172, "msg 53 and 158: Spanish, now at level B1",
         (
-            recalls("spagnolo", "spagnol*", "spanish"),
+            recalls("Spanish", "spagnol*", "spanish"),
         ),
     ),
 
     177: EvaluationQuestion(
-        177, "msg 176 ha ripreso la corsa; il nuoto e' a tre volte, lo yoga e' finito",
+        177, "msg 176 took up running again; swimming is three times, yoga is over",
         (
-            recalls("corsa ripresa", "corr*", "corsa", "run*", "jog*"),
-            recalls("nuoto", "nuot*", "swim*"),
-            supersedes("yoga interrotto", "yoga"),
+            recalls("running taken up again", "corr*", "corsa", "run*", "jog*"),
+            recalls("swimming", "nuot*", "swim*"),
+            supersedes("yoga stopped", "yoga"),
         ),
     ),
 
     179: EvaluationQuestion(
-        179, "compito: la settimana sportiva, con il pilates del msg 178 e la corsa ripresa al "
+        179, "task: the sports week, with the pilates of msg 178 and the running of msg 176"
              "msg 176",
         (
-            recalls_some("almeno due sport", 2, ("corr*", "corsa", "run*", "jog*"),
+            recalls_some("at least two sports", 2, ("corr*", "corsa", "run*", "jog*"),
                          ("nuot*", "swim*"), "pilates"),
-            supersedes("yoga interrotto", "yoga"),
+            supersedes("yoga stopped", "yoga"),
         ),
     ),
 
     181: EvaluationQuestion(
-        181, "msg 180: ai pomodori e al basilico del msg 31 si aggiungono i peperoncini",
+        181, "msg 180: chili peppers join the tomatoes and basil of msg 31",
         (
-            recalls_some("almeno due piante", 2, ("pomodor*", "tomato*"),
+            recalls_some("at least two plants", 2, ("pomodor*", "tomato*"),
                          ("basilic*", "basil"), ("peperoncin*", "chili*", "chilli*")),
         ),
     ),
 
     183: EvaluationQuestion(
-        183, "msg 182: ha smesso di meditare",
+        183, "msg 182: stopped meditating",
         (
-            recalls("meditazione", "medit*"),
-            recalls("ha smesso", "smesso", "stop*", "no longer", "non*piu", "anymore",
+            recalls("meditation", "medit*"),
+            recalls("stopped", "smesso", "stop*", "no longer", "non*piu", "anymore",
                     "quit*", "gave up"),
         ),
     ),
 
     188: EvaluationQuestion(
-        188, "msg 187 ha cancellato il volontariato al canile",
+        188, "msg 187 deleted the volunteering at the dog shelter",
         (
-            forgets("volontariato cancellato", "volontari*", "volunteer*", "canile",
+            forgets("deleted volunteering", "volontari*", "volunteer*", "canile",
                     "shelter*", "kennel*"),
         ),
     ),
 
     192: EvaluationQuestion(
-        192, "compito: il lago senza patente (msg 6 e 191)",
+        192, "task: the lake without a driving licence (msg 6 and 191)",
         (
-            recalls("niente patente", "patente", "licen*"),
+            recalls("no driving licence", "patente", "licen*"),
         ),
     ),
 
     194: EvaluationQuestion(
-        194, "msg 193: ha superato la paura di volare",
+        194, "msg 193: got over the fear of flying",
         (
-            recalls("volare", "volare", "fly*", "flight*", "aere*", "plane*"),
-            recalls("superata", "superat*", "overc*", "got over"),
+            recalls("flying", "volare", "fly*", "flight*", "aere*", "plane*"),
+            recalls("got over", "superat*", "overc*", "got over"),
         ),
     ),
 
     198: EvaluationQuestion(
-        198, "msg 197 ha cancellato i familiari, non gli animali",
+        198, "msg 197 deleted the relatives, not the animals",
         (
-            recalls("il cane Argo", "argo"),
-            recalls("il gatto Milo", "milo"),
+            recalls("the dog Argo", "argo"),
+            recalls("the cat Milo", "milo"),
         ),
     ),
 
     200: EvaluationQuestion(
-        200, "msg 199: operata agli occhi, niente piu' occhiali",
+        200, "msg 199: eye surgery, no more glasses",
         (
-            recalls("operata agli occhi", "operat*", "surgery", "intervent*", "laser"),
-            supersedes("occhiali", "occhiali", "glasses", "eyeglasses"),
+            recalls("eye surgery", "operat*", "surgery", "intervent*", "laser"),
+            supersedes("glasses", "occhiali", "glasses", "eyeglasses"),
         ),
     ),
 
     201: EvaluationQuestion(
-        201, "msg 3: il compleanno e' il 12 marzo",
+        201, "msg 3: the birthday is 12 March",
         (
-            recalls("12 marzo", "12 marzo", "12 march", "march 12*", "12th of march",
+            recalls("12 March", "12 marzo", "12 march", "march 12*", "12th of march",
                     "12th march"),
         ),
     ),
 
     203: EvaluationQuestion(
-        203, "msg 202 ha cancellato la data del compleanno",
+        203, "msg 202 deleted the birthday date",
         (
-            forgets("compleanno cancellato", "12 marzo", "12 march", "march 12*",
+            forgets("deleted birthday", "12 marzo", "12 march", "march 12*",
                     "marzo", "march"),
         ),
     ),
 
     206: EvaluationQuestion(
-        206, "msg 205: finito il corso di lingua dei segni",
+        206, "msg 205: finished the sign language course",
         (
-            recalls("lingua dei segni", "lingua dei segni", "segni", "sign language"),
-            recalls("finito", "finit*", "conclus*", "finished", "completed",
+            recalls("sign language", "lingua dei segni", "segni", "sign language"),
+            recalls("finished", "finit*", "conclus*", "finished", "completed",
                     "primo livello", "first level"),
         ),
     ),
 
     208: EvaluationQuestion(
-        208, "msg 51 ha portato le proteine da 60 a 75 grammi",
+        208, "msg 51 raised the proteins from 60 to 75 grams",
         (
-            recalls("75 grammi", "75"),
-            supersedes("60 grammi", "60", replaced_by=("75",)),
+            recalls("75 grams", "75"),
+            supersedes("60 grams", "60", replaced_by=("75",)),
         ),
     ),
 
     210: EvaluationQuestion(
-        210, "msg 209 ha confermato i due litri d'acqua del msg 68",
+        210, "msg 209 confirmed the two litres of water of msg 68",
         (
-            recalls("due litri", "due litri", "2 litri", "two lit*", "2 lit*", "2l"),
+            recalls("two litres", "due litri", "2 litri", "two lit*", "2 lit*", "2l"),
         ),
     ),
 
     213: EvaluationQuestion(
-        213, "msg 212 ha cancellato l'orto sul balcone",
+        213, "msg 212 deleted the vegetable garden on the balcony",
         (
-            forgets("orto cancellato", "orto", "pomodor*", "tomato*", "basilic*",
+            forgets("deleted vegetable garden", "orto", "pomodor*", "tomato*", "basilic*",
                     "basil", "peperoncin*", "chili*", "chilli*", "vegetable garden",
                     "vegetable patch"),
         ),
     ),
 
     217: EvaluationQuestion(
-        217, "msg 216: niente Naxos, ad agosto il Portogallo",
+        217, "msg 216: no Naxos, Portugal in August",
         (
-            recalls("portogallo", "portogallo", "portugal"),
-            supersedes("Naxos e la Grecia", "naxos", "grecia", "greece",
+            recalls("Portugal", "portogallo", "portugal"),
+            supersedes("Naxos and Greece", "naxos", "grecia", "greece",
                        replaced_by=("portogallo", "portugal")),
         ),
     ),
 
     219: EvaluationQuestion(
-        219, "compito: una cena, con la trattoria preferita del msg 218",
+        219, "task: a dinner, with the favourite trattoria of msg 218",
         (
-            recalls("la trattoria di Cefalu'", "cefalu", "trattoria"),
+            recalls("the trattoria in Cefalu'", "cefalu", "trattoria"),
         ),
     ),
 
     230: EvaluationQuestion(
-        230, "msg 229: niente sci in Trentino, a Natale resta a casa",
+        230, "msg 229: no skiing in Trentino, at Christmas the user stays home",
         (
-            recalls("resta a casa", "resto a casa", "resti a casa", "restare a casa",
+            recalls("stays home", "resto a casa", "resti a casa", "restare a casa",
                     "rimani a casa", "stay at home", "stays at home", "staying at home",
                     "stay home", "stays home", "staying home"),
-            supersedes("sci in Trentino", "sciare", "sci", "ski", "skiing", "trentino"),
+            supersedes("skiing in Trentino", "sciare", "sci", "ski", "skiing", "trentino"),
         ),
     ),
 
     231: EvaluationQuestion(
-        231, "msg 161: lo scrittore preferito e' Camilleri",
+        231, "msg 161: the favourite writer is Camilleri",
         (
             recalls("camilleri"),
         ),
     ),
 
     232: EvaluationQuestion(
-        232, "il quadro d'insieme: cosa e' sopravvissuto e cosa doveva sparire",
+        232, "the overall picture: what survived and what had to disappear",
         (
             recalls_some(
-                "almeno due fatti sopravvissuti", 2,
+                "at least two surviving facts", 2,
                 "bianca", ("arachid*", "peanut*"), "argo", "milo",
                 ("pesce", "fish", "pescatarian*", "pescetarian*"), "protein*",
                 ("te verde", "green tea"), ("nuot*", "swim*"), ("parmigian*", "parmesan"),
@@ -1038,10 +1028,10 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
                 ("acqua", "water"), ("lingua dei segni", "sign language"),
                 ("bici*", "bike*", "bicycle*"),
             ),
-            forgets("nome della sorella", "chiara"),
-            forgets("lavoro", "fisioterapist*", "physiotherap*",
+            forgets("the sister's name", "chiara"),
+            forgets("job", "fisioterapist*", "physiotherap*",
                     "physical therap*", "clinic*"),
-            forgets("indirizzo", "mondello", "palermo"),
+            forgets("address", "mondello", "palermo"),
         ),
     ),
 }

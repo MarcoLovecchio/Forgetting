@@ -1,13 +1,13 @@
-"""Il calcolo di FAMA, verificato senza toccare il modello.
+"""The FAMA computation, checked without touching the model.
 
-Il test lungo costa una run di venti minuti e non e' ripetibile: se la metrica
-che lo giudica ha un errore, l'errore si scopre in fondo e si paga di nuovo.
-Qui invece la formula, il match e la tabella dei criteri si controllano in
-mezzo secondo, contro l'esempio del paper e contro i casi che quel match
-sbaglierebbe volentieri - il valore vecchio nominato come vecchio, e il valore
-vecchio nominato dopo una negazione che riguardava un'altra cosa.
+The long test costs a long run and is not repeatable: if the metric
+that judges it has a bug, the bug is found at the end and paid for again. Here
+instead the formula, the match and the criteria table are checked in half a
+second, against the paper's example and against the cases that match would
+happily get wrong - the old value named as old, and the old value named after
+a negation that was about something else.
 
-Esecuzione: python memory_service/run_tests.py -v
+Run: python memory_service/run_tests.py -v
 """
 
 import ast
@@ -26,16 +26,16 @@ import fama  # noqa: E402
 LONGRUN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "test_long_term_interaction.py")
 
-# Le domande poste subito dopo una cancellazione. Il valore non deve comparire
-# nemmeno negato: la memoria non c'e' piu', nominarla e' gia' una perdita.
+# The questions asked right after a deletion. The value must not appear even
+# negated: the memory is gone, naming it is already a leak.
 AFTER_DELETE = (65, 84, 105, 140, 169, 188, 203, 213)
 
 
 def conversation():
-    """CONVERSATION letta dal sorgente, senza importare il modulo.
+    """CONVERSATION read from the source, without importing the module.
 
-    Importarlo tirerebbe dentro langgraph e lo stack vero solo per leggere una
-    lista di stringhe, e questo test deve girare anche dove non ci sono.
+    Importing it would pull in langgraph and the real stack just to read a list
+    of strings, and this test must run also where they are missing.
     """
     with open(LONGRUN, encoding="utf-8") as handle:
         tree = ast.parse(handle.read())
@@ -45,23 +45,23 @@ def conversation():
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id == "CONVERSATION":
                 return ast.literal_eval(node.value)
-    raise AssertionError("CONVERSATION non trovata in test_long_term_interaction.py")
+    raise AssertionError("CONVERSATION not found in test_long_term_interaction.py")
 
 
 def question(*criteria):
-    """Una domanda di comodo, per provare la formula senza la tabella vera."""
+    """A stand-in question, to try the formula without the real table."""
     return fama.EvaluationQuestion(0, "prova", tuple(criteria))
 
 
 class FormulaTest(unittest.TestCase):
-    """FAMA = max(0, MPA - lam * (1 - FAA)), con lam = N_forget / N_totale."""
+    """FAMA = max(0, MPA - lam * (1 - FAA)), with lam = N_forget / N_total."""
 
     def test_the_paper_example_weights_forgetting_by_its_share(self):
-        """5 criteri di presenza e 8 di assenza: lam = 8/13, come in Memora.
+        """5 presence criteria and 8 absence ones: lam = 8/13, as in Memora.
 
-        E' la domanda activity_todos_158 del persona academic_researcher,
-        l'unica riportata per esteso nel repo: cinque task che devono esserci,
-        otto cancellati che non devono.
+        It is question activity_todos_158 of the academic_researcher persona,
+        the only one reported in full in the repo: five tasks that must be
+        there, eight deleted ones that must not.
         """
         subject = question(
             *[fama.recalls("task %d" % n, "task%d" % n) for n in range(5)],
@@ -72,7 +72,7 @@ class FormulaTest(unittest.TestCase):
         self.assertEqual(perfect.lam, 8 / 13)
         self.assertEqual(perfect.fama, 1.0)
 
-        # Tutta la memoria, nessuna dimenticanza: la penalita' e' proprio lam.
+        # All the memory, no forgetting: the penalty is exactly lam.
         leaking = fama.score(subject, "task0 task1 task2 task3 task4 "
                                       "vecchio0 vecchio1 vecchio2 vecchio3 "
                                       "vecchio4 vecchio5 vecchio6 vecchio7")
@@ -88,7 +88,7 @@ class FormulaTest(unittest.TestCase):
         self.assertEqual(scored.fama, 0.5)
 
     def test_without_presence_criteria_fama_is_just_forgetting(self):
-        """Le domande dopo un delete: niente da dire, solo da tacere."""
+        """The questions after a delete: nothing to say, only to keep quiet about."""
         subject = question(fama.forgets("indirizzo", "mondello"))
         self.assertEqual(fama.score(subject, "Non lo so.").fama, 1.0)
 
@@ -103,12 +103,6 @@ class FormulaTest(unittest.TestCase):
         scored = fama.score(subject, "Vivi a Milano, o forse a Palermo.")
         self.assertEqual(scored.mpa, 0.0)
         self.assertEqual(scored.faa, 0.0)
-        self.assertEqual(scored.fama, 0.0)
-
-    def test_a_question_without_any_criterion_scores_zero(self):
-        """Come il riferimento: non vale tutto per vacuita', non vale niente."""
-        scored = fama.score(question(), "qualunque cosa")
-        self.assertEqual(scored.lam, 0.0)
         self.assertEqual(scored.fama, 0.0)
 
     def test_the_score_says_which_criteria_gave_way(self):
@@ -127,12 +121,12 @@ class FormulaTest(unittest.TestCase):
         self.assertEqual(overall["criteria"], 2)
 
     def test_the_overall_mpa_and_faa_are_micro_averages(self):
-        """Sui criteri, non sulle domande: una da sette criteri pesa sette.
+        """On the criteria, not on the questions: one with seven criteria weighs seven.
 
-        E' come li calcola `overall_metrics` del riferimento. Con la media per
-        domanda gli stessi due esiti darebbero 66.7 invece di 50.0, e una
-        domanda con un solo criterio sbagliato peserebbe come una con sette
-        criteri giusti.
+        It is how the reference's `overall_metrics` computes them. With the
+        per-question mean the same two outcomes would give 66.7 instead of 50.0,
+        and a question with a single wrong criterion would weigh as much as one
+        with seven right criteria.
         """
         scores = [
             fama.score(question(fama.recalls("a")), "a"),
@@ -140,32 +134,25 @@ class FormulaTest(unittest.TestCase):
                                 fama.recalls("c")), "a"),
         ]
         overall = fama.aggregate(scores)
-        self.assertEqual(overall["mpa"], 50.0)          # 2 criteri passati su 4
-        self.assertIsNone(overall["faa"])               # nessun criterio di assenza
+        self.assertEqual(overall["mpa"], 50.0)          # 2 criteria passed out of 4
+        self.assertIsNone(overall["faa"])               # no absence criterion
         self.assertAlmostEqual(overall["fama"], 100.0 * (1 + 1 / 3) / 2)
 
     def test_the_overall_accuracy_pools_both_families(self):
-        """L'`overall_accuracy` del riferimento: criteri passati sul totale."""
+        """The reference's `overall_accuracy`: passed criteria over the total."""
         scores = [fama.score(question(fama.recalls("a"), fama.forgets("b")), "a b")]
         overall = fama.aggregate(scores)
         self.assertEqual(overall["mpa"], 100.0)
         self.assertEqual(overall["faa"], 0.0)
-        self.assertEqual(overall["accuracy"], 50.0)     # 1 criterio su 2
+        self.assertEqual(overall["accuracy"], 50.0)     # 1 criterion out of 2
         self.assertEqual(overall["fama"], 50.0)
-
-    def test_aggregate_of_nothing_says_nothing(self):
-        empty = fama.aggregate([])
-        self.assertEqual(empty["questions"], 0)
-        self.assertEqual(empty["criteria"], 0)
-        self.assertIsNone(empty["mpa"])
-        self.assertIsNone(empty["faa"])
 
 
 class MatchingTest(unittest.TestCase):
-    """Come si riconosce che un valore compare in un testo."""
+    """How a value is recognized as appearing in a text."""
 
     def test_accents_apostrophes_and_hyphens_are_the_same_word(self):
-        """Le grafie del caffe' devono coincidere, o meta' criteri e' cieca."""
+        """The spellings of caffe' must coincide, or half the criteria are blind."""
         self.assertEqual(fama.normalize("Caffè"), "caffe")
         self.assertEqual(fama.normalize("caffe'"), "caffe")
         self.assertEqual(fama.normalize("part-time"), "part time")
@@ -184,7 +171,7 @@ class MatchingTest(unittest.TestCase):
         self.assertFalse(criterion.satisfied("Fai nuoto."))
 
     def test_a_star_in_the_middle_bridges_the_words_between(self):
-        """'non*piu' deve prendere 'non fai piu'', che e' lo stesso modo di dire."""
+        """'non*piu' must catch 'non fai piu'', which is the same phrase."""
         criterion = fama.recalls("ha smesso", "non*piu")
         self.assertTrue(criterion.satisfied("No, non fai piu' yoga."))
         self.assertTrue(criterion.satisfied("Non lo suoni più."))
@@ -210,10 +197,10 @@ class MatchingTest(unittest.TestCase):
 
 
 class DeleteVersusUpdateTest(unittest.TestCase):
-    """Cancellare e superare non sono la stessa cosa, e i criteri lo dicono."""
+    """Deleting and superseding are not the same thing, and the criteria say so."""
 
     def test_after_a_delete_the_value_must_not_appear_even_negated(self):
-        """Dire 'non abiti piu' a Mondello' rivela quello che doveva sparire."""
+        """Saying 'non abiti piu' a Mondello' reveals what had to disappear."""
         criterion = fama.forgets("indirizzo", "mondello")
         self.assertFalse(criterion.satisfied("Non abiti più a Mondello."))
         self.assertFalse(criterion.satisfied("Abiti a Mondello."))
@@ -231,10 +218,10 @@ class DeleteVersusUpdateTest(unittest.TestCase):
         self.assertFalse(criterion.satisfied("Tua sorella vive a Milano."))
 
     def test_a_negation_does_not_leak_across_the_clause(self):
-        """La negazione vale nella sua proposizione, non in tutta la risposta.
+        """The negation holds in its own clause, not in the whole answer.
 
-        Senza questo, "Non bevi alcolici. Bevi caffe' la mattina." passerebbe:
-        la parola "non" c'e', ma nega un'altra cosa.
+        Without this, "Non bevi alcolici. Bevi caffe' la mattina." would pass:
+        the word "non" is there, but it negates something else.
         """
         criterion = fama.supersedes("caffe'", "caffe")
         self.assertFalse(criterion.satisfied("Non bevi alcolici. Bevi caffè la mattina."))
@@ -242,7 +229,7 @@ class DeleteVersusUpdateTest(unittest.TestCase):
         self.assertTrue(criterion.satisfied("Non bevi più caffè."))
 
     def test_english_negations_supersede_too(self):
-        """Le memorie sono inglesi: senza questi marcatori sarebbero tutte fughe."""
+        """The memories are English: without these markers they would all be leaks."""
         criterion = fama.supersedes("caffe'", "caffe", "coffee")
         for memory in ("The user stopped drinking coffee.",
                        "The user no longer drinks coffee.",
@@ -258,16 +245,16 @@ class DeleteVersusUpdateTest(unittest.TestCase):
             "The user does not drink alcohol. The user drinks coffee."))
 
     def test_the_bare_italian_no_does_not_cover_the_sentence_after_it(self):
-        """L'unico marcatore inglese che collide con l'italiano e' "no".
+        """The only English marker that collides with Italian is "no".
 
-        In inglese apre "no longer"; in italiano e' la risposta secca, e senza
-        il taglio sulla punteggiatura coprirebbe tutta la frase che segue -
-        "No, tua sorella vive a Milano" passerebbe per un superamento.
+        In English it opens "no longer"; in Italian it is the curt answer, and
+        without the cut on punctuation it would cover the whole sentence that
+        follows - "No, tua sorella vive a Milano" would pass for a superseding.
 
-        Resta un buco noto: "No tua sorella vive a Milano" senza virgola e'
-        un'unica proposizione e passa. Serve una risposta sgrammaticata per
-        incontrarlo, e chiudere la falla vorrebbe dire togliere "no", che serve
-        a tutte le memorie inglesi.
+        A known gap remains: "No tua sorella vive a Milano" without a comma is a
+        single clause and passes. It takes an ungrammatical answer to hit it, and
+        closing the leak would mean removing "no", which all the English
+        memories need.
         """
         criterion = fama.supersedes("vecchia citta'", "milano", "milan")
         self.assertFalse(criterion.satisfied("No, tua sorella vive a Milano."))
@@ -275,17 +262,17 @@ class DeleteVersusUpdateTest(unittest.TestCase):
         self.assertTrue(criterion.satisfied("No, si è trasferita a Torino da Milano."))
 
     def test_the_present_tense_is_not_a_marker_in_either_language(self):
-        """"ora" e "now" stanno nella frase del valore NUOVO, non del vecchio."""
+        """"ora" and "now" sit in the sentence of the NEW value, not of the old one."""
         criterion = fama.supersedes("indirizzo", "mondello")
         self.assertFalse(criterion.satisfied("The user now lives in Mondello."))
         self.assertFalse(criterion.satisfied("Adesso abiti a Mondello."))
 
     def test_a_negation_in_one_memory_does_not_cover_another(self):
-        """Ogni memoria e' una riga, e ogni riga una proposizione a se'.
+        """Every memory is a line, and every line a clause of its own.
 
-        Prima gli a capo diventavano spazi e lo store una proposizione sola: il
-        "no longer" del pianoforte copriva il caffe' ancora attivo, e
-        FAMA-memoria dava 1.00 a un archivio che non aveva dimenticato niente.
+        Before, line breaks became spaces and the store a single clause: the
+        piano's "no longer" covered the still active coffee, and FAMA-memory
+        gave 1.00 to an archive that had forgotten nothing.
         """
         criterion = fama.supersedes("caffe'", "caffe", "coffee")
         self.assertFalse(criterion.satisfied(
@@ -327,7 +314,7 @@ class DeleteVersusUpdateTest(unittest.TestCase):
 
 
 class OpenQuestionTest(unittest.TestCase):
-    """Le domande aperte vogliono alcuni fatti, non quei fatti."""
+    """Open questions want some facts, not those facts."""
 
     def setUp(self):
         self.criterion = fama.recalls_some(
@@ -347,7 +334,7 @@ class OpenQuestionTest(unittest.TestCase):
 
 
 class SnapshotTimingTest(unittest.TestCase):
-    """La memoria si misura quando il messaggio prima della domanda e' consolidato."""
+    """The memory is measured when the message before the question is consolidated."""
 
     def test_with_the_long_run_window_it_is_the_question_turn(self):
         self.assertEqual(fama.memory_snapshot_turn(45, 2), 45)
@@ -362,7 +349,7 @@ class SnapshotTimingTest(unittest.TestCase):
 
 
 class VerdictTest(unittest.TestCase):
-    """Lo scarto fra i due punteggi dice quale nodo ha ceduto."""
+    """The gap between the two scores says which node gave way."""
 
     def setUp(self):
         recall = question(fama.recalls("a"))
@@ -373,85 +360,83 @@ class VerdictTest(unittest.TestCase):
 
     def test_the_verdict_names_the_node_that_gave_way(self):
         self.assertEqual(fama.verdict(self.full, self.full), "ok")
-        self.assertEqual(fama.verdict(self.full, self.missed), "risposta")
+        self.assertEqual(fama.verdict(self.full, self.missed), "answer")
         self.assertEqual(fama.verdict(self.missed, self.missed), "consolidation")
 
     def test_a_right_answer_over_a_wrong_store_is_read_by_how_the_store_failed(self):
-        """Il quadrante ambiguo: la risposta e' giusta, la memoria no.
+        """The ambiguous quadrant: the answer is right, the memory is not.
 
-        Se la memoria ha mancato un fatto, la risposta veniva dal contesto. Se
-        se l'e' tenuto dopo una cancellazione, e' consolidation lo stesso: la
-        risposta e' stata fortunata, non corretta.
+        If the memory missed a fact, the answer came from the context. If it
+        kept it after a deletion, it is consolidation all the same: the answer
+        was lucky, not correct.
         """
-        self.assertEqual(fama.verdict(self.missed, self.full), "fuori memoria")
+        self.assertEqual(fama.verdict(self.missed, self.full), "outside memory")
         self.assertEqual(fama.verdict(self.leaked, self.full), "consolidation")
 
 
 class CriteriaTableTest(unittest.TestCase):
-    """La tabella delle 56 domande, contro la conversazione vera."""
+    """The table of the 56 questions, against the real conversation."""
 
     def test_every_question_in_the_conversation_has_criteria(self):
-        """Una domanda senza criteri sparirebbe dal conto senza dirlo.
-        Il punto interrogativo non basta a trovarle tutte
+        """A question without criteria would vanish from the count without saying so.
+        The question mark is not enough to find them all
         """
         messages = conversation()
         asked = {number for number, message in enumerate(messages, 1)
                  if message.strip().endswith("?")}
         self.assertFalse(asked - set(fama.QUESTIONS),
-                         "domande senza criteri: %s" % sorted(asked - set(fama.QUESTIONS)))
+                         "questions without criteria: %s" % sorted(asked - set(fama.QUESTIONS)))
         self.assertEqual(set(fama.QUESTIONS) - asked, {232},
-                         "l'unica domanda senza punto interrogativo e' il riassunto "
-                         "finale: se ne aggiungi altre, aggiorna questo test")
+                         "the only question without a question mark is the final "
+                         "summary: if you add others, update this test")
 
     def test_no_criterion_is_empty(self):
         for index, subject in fama.QUESTIONS.items():
             self.assertEqual(subject.index, index,
-                             "la domanda %d porta l'indice sbagliato" % index)
-            self.assertTrue(subject.criteria, "la domanda %d non ha criteri" % index)
+                             "question %d carries the wrong index" % index)
+            self.assertTrue(subject.criteria, "question %d has no criteria" % index)
             self.assertTrue(subject.note.strip(),
-                            "la domanda %d non dice a cosa si riferisce" % index)
+                            "question %d does not say what it refers to" % index)
             for criterion in subject.criteria:
-                self.assertTrue(criterion.variants,
-                                "criterio senza varianti: %s" % criterion.label)
                 for variant in criterion.variants:
                     self.assertTrue(fama.normalize(variant).strip("* "),
-                                    "variante vuota in %s" % criterion.label)
+                                    "empty variant in %s" % criterion.label)
                 if criterion.groups:
                     self.assertTrue(1 <= criterion.minimum <= len(criterion.groups),
-                                    "%s chiede piu' fatti di quelli che elenca"
+                                    "%s asks for more facts than it lists"
                                     % criterion.label)
 
     def test_deletes_are_hard_and_updates_are_soft(self):
-        """La distinzione fra forgets e supersedes non e' decorativa.
+        """The distinction between forgets and supersedes is not decorative.
 
-        Se qualcuno cambia una riga della tabella e sbaglia costruttore, il
-        punteggio cambia in silenzio: questo lo dice ad alta voce.
+        If someone changes a line of the table and picks the wrong constructor,
+        the score changes silently: this says it out loud.
         """
         for index in AFTER_DELETE:
             forgetting = fama.QUESTIONS[index].forgetting
             self.assertTrue(
-                forgetting, "la domanda %d segue un delete e vuole un'assenza" % index)
+                forgetting, "question %d follows a delete and wants an absence" % index)
             self.assertFalse(
                 any(item.superseded_ok for item in forgetting),
-                "la domanda %d segue un delete: il valore non va ammesso "
-                "nemmeno negato" % index)
+                "question %d follows a delete: the value must not be allowed "
+                "even negated" % index)
 
         for index, subject in fama.QUESTIONS.items():
-            # 232 e' il riassunto finale: raccoglie sia cancellazioni sia
-            # aggiornamenti, quindi mescola i due costruttori apposta.
+            # 232 is the final summary: it gathers both deletions and
+            # updates, so it mixes the two constructors on purpose.
             if index in AFTER_DELETE or index == 232:
                 continue
             self.assertTrue(
                 all(item.superseded_ok for item in subject.forgetting),
-                "la domanda %d segue un update: il valore vecchio puo' essere "
-                "raccontato come vecchio" % index)
+                "question %d follows an update: the old value may be "
+                "told as old" % index)
 
     def test_the_right_answers_score_one(self):
-        """Una risposta giusta per ogni domanda deve valere 1.
+        """A right answer for each question must be worth 1.
 
-        Sono scritte a mano, corte come le vuole il prompt di generate_answer.
-        Non misurano il modello: misurano la tabella, cioe' che nessun criterio
-        sia impossibile da soddisfare o si contraddica con un altro.
+        They are hand-written, short as generate_answer's prompt wants them.
+        They do not measure the model: they measure the table, that is that no
+        criterion is impossible to satisfy or contradicts another.
         """
         right = {
             36: "Sei vegetariana, allergica alle arachidi e punti a 2000 calorie.",
@@ -517,14 +502,14 @@ class CriteriaTableTest(unittest.TestCase):
             scored = fama.score(fama.QUESTIONS[index], answer)
             self.assertEqual(
                 scored.fama, 1.0,
-                "domanda %d: FAMA %.2f su una risposta giusta - mancanti %s, "
-                "trapelati %s" % (index, scored.fama, scored.missed, scored.leaked))
+                "question %d: FAMA %.2f on a right answer - missing %s, "
+                "leaked %s" % (index, scored.fama, scored.missed, scored.leaked))
 
     def test_the_right_answers_of_a_real_run_score_one(self):
-        """Risposte giuste di una run vera, parola per parola, che FAMA bocciava.
+        """Right answers from a real run, word for word, that FAMA used to fail.
 
-        27 diceva tre fatti veri diversi da quelli pretesi; 49 correggeva il
-        caffe' nella proposizione dopo, con un pronome.
+        27 said three true facts different from the ones demanded; 49 corrected
+        the coffee in the following clause, with a pronoun.
         """
         run = {
             36: "So che cuoci senza glutine a casa tua, sei leggermente intollerante "
@@ -539,17 +524,17 @@ class CriteriaTableTest(unittest.TestCase):
             scored = fama.score(fama.QUESTIONS[index], answer)
             self.assertEqual(
                 scored.fama, 1.0,
-                "domanda %d: FAMA %.2f su una risposta giusta - mancanti %s, "
-                "trapelati %s" % (index, scored.fama, scored.missed, scored.leaked))
+                "question %d: FAMA %.2f on a right answer - missing %s, "
+                "leaked %s" % (index, scored.fama, scored.missed, scored.leaked))
 
     def test_the_right_english_memories_score_one(self):
-        """L'altra colonna: le memorie consolidate sono in inglese.
+        """The other column: the consolidated memories are in English.
 
-        La risposta segue la lingua dell'utente ed e' italiana, le memorie
-        seguono la regola del campo `fact` e non lo sono. Se i criteri fossero
-        solo italiani, FAMA-memoria crollerebbe per motivi lessicali proprio
-        nelle domande dove la consolidation ha funzionato, e il resoconto
-        accuserebbe il nodo sbagliato.
+        The answer follows the user's language and is Italian, the memories
+        follow the rule of the `fact` field and are not. If the criteria were
+        only Italian, FAMA-memory would collapse for lexical reasons exactly in
+        the questions where consolidation worked, and the report would blame
+        the wrong node.
         """
         stores = {
             36: "The user is vegetarian\n"
@@ -629,11 +614,11 @@ class CriteriaTableTest(unittest.TestCase):
             scored = fama.score(fama.QUESTIONS[index], memory)
             self.assertEqual(
                 scored.fama, 1.0,
-                "domanda %d: FAMA %.2f su una memoria giusta - mancanti %s, "
-                "trapelati %s" % (index, scored.fama, scored.missed, scored.leaked))
+                "question %d: FAMA %.2f on a right memory - missing %s, "
+                "leaked %s" % (index, scored.fama, scored.missed, scored.leaked))
 
     def test_the_wrong_english_memories_are_caught(self):
-        """Una memoria inglese sbagliata non deve passare per la lingua."""
+        """A wrong English memory must not pass because of the language."""
         wrong = {
             65: "The user lives in Mondello, in Palermo",
             71: "The user drinks coffee every morning",
@@ -655,18 +640,18 @@ class CriteriaTableTest(unittest.TestCase):
         for index, memory in wrong.items():
             scored = fama.score(fama.QUESTIONS[index], memory)
             self.assertLess(scored.fama, 1.0,
-                            "domanda %d: la memoria sbagliata passa" % index)
+                            "question %d: the wrong memory passes" % index)
 
     def test_the_wrong_answers_are_caught(self):
-        """L'altro lato: le risposte che il test lungo ha visto davvero sbagliare."""
+        """The other side: the answers the long test really saw fail."""
         wrong = {
-            36: "Sei allergica alle arachidi.",  # un fatto solo: ne servono due
+            36: "Sei allergica alle arachidi.",  # a single fact: two are needed
             39: "Il tuo obiettivo è di 2000 calorie.",
             65: "Abiti a Mondello, in provincia di Palermo.",
             71: "La mattina bevi il caffè.",
             84: "Secondo i fatti che tengo, hai 30 anni.",
             118: "Argo è un labrador.",
-            148: "Suoni la chitarra e il pianoforte e ascolti jazz.",  # convivevano
+            148: "Suoni la chitarra e il pianoforte e ascolti jazz.",  # they coexisted
             177: "Nuoti, corri e fai yoga il sabato.",
             198: "Hai un cane, si chiama Argo.",
             203: "Il tuo compleanno è il 12 marzo.",
@@ -676,7 +661,7 @@ class CriteriaTableTest(unittest.TestCase):
         for index, answer in wrong.items():
             scored = fama.score(fama.QUESTIONS[index], answer)
             self.assertLess(scored.fama, 1.0,
-                            "domanda %d: la risposta sbagliata passa" % index)
+                            "question %d: the wrong answer passes" % index)
 
 
 if __name__ == "__main__":

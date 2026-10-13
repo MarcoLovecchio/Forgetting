@@ -1,100 +1,104 @@
 # memory_service
 
-Servizio di memoria (core + archival) dell'assistente. Il pacchetto gira in ROS 2
-ma è **indipendente dagli altri pacchetti dell'architettura**: non importa
-`shared_utils` né `db_adapters`, e non contatta LLM o ChromaDB finché non serve
-davvero. Questo permette di testarlo seriamente, senza chiavi API e senza rete.
+The assistant's memory service (core + archival). The package runs in ROS 2 but
+is **independent of the other packages of the architecture**: it does not import
+`shared_utils` or `db_adapters`, and it does not contact an LLM or ChromaDB until
+it really needs to. This makes it possible to test it seriously, without API keys
+and without a network.
 
-## Struttura
+## Structure
 
-| Modulo | Ruolo | Dipendenze esterne |
+| Module | Role | External dependencies |
 | --- | --- | --- |
-| `config.py` | configurazione (limiti, path Chroma, `LLM_CONFIG`) | solo `python-dotenv` |
-| `backends.py` | costruzione **pigra** di chat model e vector store, sostituibili | importa il provider (OpenAI, Mistral) e Chroma solo se usati |
-| `consolidation.py` | modello dati della memoria e operazioni di consolidamento | `pydantic`, `langchain-core` |
-| `eviction.py` | rimozione dall'archivio: tombstone e, oltre il limite, memorie attive per score | nessuna oltre al vector store |
-| `memory_manager_llm.py` | grafo LangGraph e `MemoryAgent` | `langgraph`, `langchain-core` |
-| `memory_server.py` | nodo ROS con i due servizi | `rclpy`, `memory_service_interfaces` |
-| `memory_client.py` | client ROS di esempio | `rclpy`, `memory_service_interfaces` |
+| `config.py` | configuration (limits, Chroma path, `LLM_CONFIG`) | only `python-dotenv` |
+| `backends.py` | **lazy** construction of chat model and vector store, replaceable | imports the provider (OpenAI, Mistral) and Chroma only if used |
+| `consolidation.py` | memory data model and consolidation operations | `pydantic`, `langchain-core` |
+| `eviction.py` | removal from the archive: tombstones and, over the limit, active memories by score | none besides the vector store |
+| `memory_manager_llm.py` | LangGraph graph and `MemoryAgent` | `langgraph`, `langchain-core` |
+| `memory_server.py` | ROS node with the two services | `rclpy`, `memory_service_interfaces` |
+| `memory_client.py` | example ROS client | `rclpy`, `memory_service_interfaces` |
 
-## Interfaccia ROS
+## ROS interface
 
-I due servizi (`memory_service_interfaces`) espongono la memoria consolidata:
+The two services (`memory_service_interfaces`) expose the consolidated memory:
 
-**`GetMemory`** — request: `user_input`, il messaggio a cui la memoria deve
-rispondere. Passarlo e' quello che permette al ramo di recupero di cercare in
-archivio in base a cosa l'utente sta chiedendo **adesso**; lasciandolo vuoto il
-servizio ripiega sull'ultimo messaggio gia' in memoria, che e' la risposta del
-giro precedente.
+**`GetMemory`** — request: `user_input`, the message the memory has to answer.
+Passing it is what lets the retrieval branch search the archive based on what the
+user is asking **right now**; left empty, the service falls back on the last user
+message already in memory, which is the question of the previous round.
 
-| campo (response) | contenuto |
+| field (response) | content |
 | --- | --- |
-| `memory_list` | contenuto delle core memory **attive** (superseded e deleted restano fuori) |
-| `memory_ids` | id di ciascuna, stesso ordine di `memory_list`: le due liste si zippano |
-| `last_messages` | messaggi ancora nella finestra di conversazione |
-| `retrieved_memories` | memorie d'archivio recuperate per **questa** richiesta, una per riga nella forma `ID: <id>, Content: <testo>`. Vuoto quando la core memory è bastata o quando non è stato trovato nulla |
-| `operation_log` | operazioni di consolidamento di **questa** chiamata, un JSON per riga |
+| `memory_list` | content of the **active** core memories (superseded and deleted stay out) |
+| `memory_ids` | id of each one, same order as `memory_list`: the two lists zip together |
+| `last_messages` | messages still in the conversation window |
+| `retrieved_memories` | archive memories retrieved for **this** request, one per line in the form `ID: <id>, Content: <text>`. Empty when the core memory was enough or when nothing was found |
+| `operation_log` | consolidation operations of **this** call, one JSON per line |
 
-**`UpdateMemory`** — request `user_input`, `queries`, `results`, `explanation`; la
-response ha `memory_list`, `memory_ids` e `operation_log` con la stessa semantica.
+**`UpdateMemory`** — request `user_input`, `queries`, `results`, `explanation`; the
+response has `memory_list`, `memory_ids` and `operation_log` with the same semantics.
 
-Ogni entry di `operation_log` è il JSON di un `OperationLogEntry`:
+Each `operation_log` entry is the JSON of an `OperationLogEntry`:
 
 ```json
 {"op_type": "update", "item_id": "c8f90d30-...", "related_item_id": "7ca3ad4f-...",
- "content": "L'utente mangia pesce", "score": null, "score_terms": null,
+ "content": "The user eats fish", "score": null, "score_terms": null,
  "ratings": {"utility": 4}, "timestamp": "2026-08-24T18:23:39.059368"}
 ```
 
-`op_type` è uno fra `create`, `redundant`, `update`, `delete`, `archive`, `evict`,
-`prune`. `score` e `score_terms` sono valorizzati solo nelle voci `prune`: lo score
-con cui la memoria è uscita dall'archivio e i termini che lo compongono, per nome
-(per esempio `{"utility": 0.8, "time_decay": 0.126}`). `ratings` è valorizzato solo
-nelle voci `create` e `update` con `consolidation_utility` acceso: il giudizio del
-classificatore sulla memoria, cioè `utility` oppure `need` e `gain`, e `safety` solo
-quando è vero (allora i voti non ci sono).
+`op_type` is one of `create`, `redundant`, `update`, `delete`, `archive`, `evict`,
+`prune`. `score` and `score_terms` are set only in `prune` entries: the score with
+which the memory left the archive and the terms that make it up, by name (for
+example `{"utility": 0.8, "time_decay": 0.126}`). `ratings` is set only in `create`
+and `update` entries with `consolidation_utility` on: the classifier's judgment of
+the memory, that is `utility` or `need` and `gain`, and `safety` only when it is
+true (then the ratings are not there).
 
-Il log riporta **solo le operazioni della chiamata corrente**, non tutto lo
-storico: `state["operation_log"]` cresce per tutta la vita del nodo e `get_memory`
-viene invocato di frequente, quindi spedire l'intera storia a ogni chiamata
-costerebbe sempre di più. Lo storico completo resta disponibile in-process via
+The log reports **only the operations of the current call**, not the whole
+history: `state["operation_log"]` grows for the whole life of the node and
+`get_memory` is invoked often, so sending the whole history at every call would
+cost more and more. The full history stays available in-process via
 `MemoryAgent.state["operation_log"]`.
 
-`memory_list` e `last_messages` mantengono nome e semantica di prima, quindi i
-pacchetti che li leggono continuano a funzionare: serve solo un `colcon build`
-per rigenerare le interfacce.
+`memory_list` and `last_messages` keep their previous name and semantics, so the
+packages that read them keep working: only a `colcon build` is needed to
+regenerate the interfaces.
 
-Per sfruttare `user_input` serve una riga in `intent_recognition.listener_callback`:
+`intent_recognition.listener_callback` passes `user_input`, so the archive
+retrieval starts from the current question:
 
 ```python
-self.get_response = self.memory_client.send_get_request(msg.data.strip())
+self.get_response = self.memory_client.send_get_request(user_input)
 ```
 
-Senza, tutto continua a funzionare come prima (il campo resta vuoto e vale il
-fallback), ma il recupero dall'archivio non parte dalla domanda corrente.
+The other calls - explainability, inner_speech, intent_recognition at startup -
+leave it empty, and the fallback applies.
 
-## Test
+## Tests
 
 ```bash
 python memory_service/run_tests.py -v
 ```
 
-112 test, tutti sul **grafo LangGraph reale** con backend simulati
-(`test/fakes.py`): nessuna chiamata di rete, nessun modello, nessun ChromaDB.
+The offline tests all run on the **real LangGraph graph** with simulated backends
+(`test/fakes.py`): no network calls, no model, no ChromaDB.
 
-`test/test_consolidation.py` e' lo scenario a turni: ogni turno esercita una
-classificazione diversa (`new`, `redundant`, `update`, `delete`,
-archiviazione, recupero) e stampa lo stato completo della memoria - core,
-messaggi, archivio con i metadata, recupero, operation log. `test_memory_agent.py`
-tiene invece i controlli unitari (limiti, tool call malformate, cache della
-retrieve, tombstone mai recuperati) e `test_config.py` la configurazione.
+`test/test_consolidation.py` is the turn-based scenario: each turn exercises a
+different classification (`new`, `redundant`, `update`, `delete`, archiving,
+retrieval) and prints the full state of the memory - core, messages, archive with
+the metadata, retrieval, operation log. `test_memory_agent.py` holds instead the
+unit checks (limits, malformed tool calls, retrieve cache, tombstones never
+retrieved), `test_eviction.py` the removal from the archive and `test_config.py`
+the configuration. `test_fama.py`, `test_operation_matrix.py` and
+`test_calibrate_utility.py` check the long test's metrics and the calibration
+script, without any model.
 
-I test del nodo (`test/test_memory_server.py`) costruiscono `MemoryServer` con un
-agente stub e invocano le callback con request/response vere: richiedono rclpy e
-le interfacce generate, quindi vanno eseguiti dentro il workspace ROS (fuori si
-saltano da soli).
+The node tests (`test/test_memory_server.py`) build `MemoryServer` with a stub
+agent and invoke the callbacks with real requests/responses: they need rclpy and
+the generated interfaces, so they must run inside the ROS workspace (outside it
+they skip themselves).
 
-Con pytest installato l'intero pacchetto è raccoglibile (`conftest.py` sistema il
+With pytest installed the whole package can be collected (`conftest.py` fixes the
 `sys.path`):
 
 ```bash
@@ -102,210 +106,231 @@ pytest memory_service
 colcon test --packages-select memory_service
 ```
 
-`test/test_tool_calling_gate.py` è il **gate da superare prima di tutto il
-resto**: verifica che il modello configurato produca tool call valide per gli
-schemi veri (`InsertCoreMemories`, `SplitCoreAndArchivalMemory`,
-`retrieve_memory` / `NoSearchNeeded`) e che ricopi gli id esattamente. Sono due fallimenti
-diversi e li misura separatamente, perché portano a rimedi diversi: la struttura
-sbagliata si cura con lo structured output vincolato, gli id sbagliati con
-l'aliasing dei prompt. Ogni controllo è ripetuto più volte, perché con un LLM una
-singola risposta giusta non dice niente.
+`test/test_tool_calling_gate.py` is the **gate to pass before everything
+else**: it checks that the configured model produces valid tool calls for the
+real schemas (`InsertCoreMemories`, `SplitCoreAndArchivalMemory`,
+`retrieve_memory` / `NoSearchNeeded`) and that it copies the ids exactly. They are
+two different failures and it measures them separately, because they lead to
+different remedies: the wrong structure is cured with constrained structured
+output, the wrong ids with prompt aliasing. Every check is repeated several times,
+because with an LLM a single right answer says nothing.
 
 ```bash
 pytest memory_service/test/test_tool_calling_gate.py -v -s
 
-# lettura più affidabile prima di decidere
+# more reliable reading before deciding
 MEMORY_GATE_ATTEMPTS=10 pytest memory_service/test/test_tool_calling_gate.py -v -s
 ```
 
-`test/test_memory_llm.py` è invece il test di **integrazione** con lo stack
-reale (chat model, embedding, ChromaDB): stessa turnistica, ma la
-classificazione la decide il modello vero, quindi le assert sono larghe
-(invarianti strutturali) e il valore sta nella traccia stampata. Viene saltato se
-`LLM_CONFIG` non è impostata, e anche se i modelli non rispondono — con un
-messaggio che dice quale dei due. `LANGSMITH_API_KEY` resta opzionale, come nel
-resto dell'architettura: se presente abilita solo il tracing.
+`test/test_memory_llm.py` is instead the **integration** test with the real
+stack (chat model, embedding, ChromaDB): it checks that a deleted fact never
+comes out of a real Chroma archive again, which only holds if the `status` filter
+works inside the real store — the offline tests run on a double. It is skipped
+if `LLM_CONFIG` is not set, and also if the models do not answer — with a message
+saying which of the two.
+`LANGSMITH_API_KEY` stays optional, as in the rest of the architecture: if present
+it only enables tracing.
 
 ```bash
 pytest memory_service/test/test_memory_llm.py -v -s
 ```
 
-`test/test_long_term_interaction.py` e' invece la simulazione di una **sessione
-lunga**: 232 messaggi dell'utente iniettati uno alla volta — 176 fatti e 56
-domande — mescolati come capiterebbero davvero. I primi 34 sono la presentazione;
-da li' in poi fatti nuovi, ripetizioni, raffinamenti, contraddizioni, richieste
-di cancellazione e chiacchiere si alternano senza blocchi, rispettando solo la
-causalita' (un fatto viene introdotto prima di essere modificato).
+`test/test_long_term_interaction.py` is instead the simulation of a **long
+session**: 232 user messages injected one at a time — 176 facts and 56
+questions — mixed as they would really happen. The first 34 are the
+presentation; from there on new facts, repetitions, refinements, contradictions,
+deletion requests and chatter alternate without blocks, respecting only
+causality (a fact is introduced before it is modified).
 
-I messaggi che finiscono con `?` sono **domande**: non consolidano, fanno girare
-il ramo `retrieve` e verificano cosa l'assistente sa in quel momento. Molte sono
-piazzate subito dopo un update, una contraddizione o una cancellazione — "sai
-dirmi dove abito?" arriva dopo "dimentica il mio indirizzo" —, altre richiamano
-fatti scritti molto prima, e dieci sono compiti da assistente che usano i
-fatti senza nominarli ("mi consigli cosa cucinare per cena?"). Quelle su fatti
-finiti in archivio costringono la retrieve a interrogarlo davvero.
+Every message goes through the real pipeline, whatever it says: a `get_memory`
+(the `retrieve` branch) and then an `update_memory` with the answer (the `insert`
+branch). The service has no notion of a question. **Questions** exist only in the
+evaluation: they are the 56 messages listed in `test/fama.py` (`fama.QUESTIONS`),
+not the ones ending with `?` — the last one, the final summary, has no question
+mark. Many are placed right after an update, a contradiction or a deletion — "sai
+dirmi dove abito?" comes after "dimentica il mio indirizzo" —, others recall facts
+written much earlier, and ten are assistant tasks that use the facts without
+naming them ("mi consigli cosa cucinare per cena?"). The ones about facts that
+ended up in the archive force the retrieve to really query it.
 
-Durante l'esecuzione stampa solo una riga di avanzamento ogni 10 messaggi; alla
-fine stampa il resoconto: operation log completo, core memory, archivio, e ogni
-domanda con la risposta ricevuta e cosa e' arrivato dall'archivio. Le assert sono
-strutturali (ogni item uscito dalla core memory deve trovarsi in archivio, core
-memory con soli item attivi, id unici, nessuna domanda senza risposta).
+For every question the report shows the answer, what came from the archive and
+the **FAMA** score (Memora, arXiv:2604.20006), computed twice with the same
+criteria: on the answer, and on the active memories right after the message
+before the question is consolidated. The gap between the two says whether
+consolidation or the answer gave way. Every message is also a row of the
+confusion matrix of the operations (`test/operation_matrix.py`), which sums the
+saved runs of the same commit.
 
-Sono parecchie chiamate reali al modello — le domande ne fanno due o tre a testa
-— quindi diversi minuti. L'archivio finisce in una cartella temporanea nuova,
-cosi' il `chroma_db` di produzione non viene toccato.
+During the run it prints only one progress line every 10 messages; at the end it
+prints the report: full operation log, core memory, archive, questions and
+answers, the FAMA table, the confusion matrix and the cost per node. The asserts
+are structural (every item that left the core memory is in the archive or has an
+`evict` or `prune` entry in the log, core memory with only active items, unique
+ids, no question without an answer); FAMA is measured and printed, never asserted.
+
+Every message costs 3-4 real calls to the model, so the full run takes a while:
+start with a low `MEMORY_LONGRUN_MESSAGES`. The archive is in the service's folder
+(`MEMORY_CHROMA_PATH`) but in a collection of its own
+(`MEMORY_LONGRUN_COLLECTION`), so the production collection is not touched. The runs
+add up, though: clean it between runs with `reset_archive.py` — which deletes the
+whole folder, production collection included — or point
+`MEMORY_LONGRUN_CHROMA_PATH` to another folder.
 
 ```bash
 pytest memory_service/test/test_long_term_interaction.py -v -s
 
-# versione ridotta, per una prova veloce
+# reduced version, for a quick try
 MEMORY_LONGRUN_MESSAGES=20 pytest memory_service/test/test_long_term_interaction.py -v -s
 
-# con una pausa fra i messaggi, se l'endpoint e' condiviso con altri carichi
+# with a pause between messages, if the endpoint is shared with other loads
 MEMORY_LONGRUN_DELAY=1 pytest memory_service/test/test_long_term_interaction.py -v -s
 ```
 
-**Calibrazione delle tabelle di utility.** Con `MEMORY_LONGRUN_CALIBRATION` il test
-lungo aggiunge a quel file una traccia della run: per ogni domanda FAMA le memorie
-attive alla sua fotografia, con i voti. In quella run l'eviction è spenta, perché una
-memoria tolta prima di una domanda non potrebbe mai risultare servita.
-`consolidation_utility` va messo a `single` o `need_gain` in `config.py` prima di
-lanciarla.
+**Calibration of the utility tables.** With `MEMORY_LONGRUN_CALIBRATION` the long
+test appends a trace of the run to that file: for every FAMA question the memories
+active at its snapshot, with the ratings. In that run eviction is off, because a
+memory removed before a question could never turn out served.
+`consolidation_utility` in `config.py` decides which table the run calibrates:
+`need_gain` or `single`.
 
-`test/calibrate_utility.py` legge le tracce dell'ultimo commit e, per ogni coppia
-(memoria, domanda), toglie la memoria e ricalcola FAMA-memoria: la memoria è servita
-se il punteggio scende, e quanto scende è il suo gain. Da lì need e gain per livello,
-avvicinati alla media di tutti i livelli quando i dati sono pochi e resi monotoni, e
-le due tabelle già normalizzate, da incollare in `eviction.py`. Per `need_gain`
-stampa anche la tabella libera, cella per cella, e con almeno due run confronta le
-due su ogni run lasciata fuori. Nessuna chiamata al modello: FAMA-memoria è
-deterministica.
+`test/calibrate_utility.py` reads the traces of the last commit and, for every
+(memory, question) pair, removes the memory and recomputes FAMA-memory: the memory
+served if the score drops, and how much it drops is its gain. From there need and
+gain per level, pulled toward the mean of all the levels when the data are few and
+made monotone, and the two tables already normalized, to paste into `eviction.py`.
+For `need_gain` it also prints the free table, cell by cell, and with at least two
+runs it compares the two on each run left out. No model call: FAMA-memory is
+deterministic.
 
 ```bash
 MEMORY_LONGRUN_CALIBRATION=memory_service/test/longrun_calibration.jsonl pytest memory_service/test/test_long_term_interaction.py -v -s
 python memory_service/test/calibrate_utility.py
 ```
 
-## I modelli sul cluster
+## The models on the cluster
 
-I modelli girano su un cluster Kubernetes dietro un endpoint **OpenAI
-compatible**, quindi `model_provider` vale `openai` e `MEMORY_LLM_BASE_URL` porta
-all'indirizzo del servizio. Non serve nessuna dipendenza nuova: `langchain_openai`
-e `openai` erano già in `requirements.txt`.
+The models run on a Kubernetes cluster behind an **OpenAI compatible** endpoint,
+so `model_provider` is `openai` and `MEMORY_LLM_BASE_URL` points to the service's
+address. No new dependency is needed: `langchain_openai` and `openai` were already
+in `requirements.txt`.
 
-Due cose da sapere, verificate sui sorgenti:
+A few things worth knowing, checked against the sources:
 
-- **Senza chiave il client non si costruisce nemmeno.** `openai-python` solleva
-  `OpenAIError` nel costruttore, non alla prima chiamata, se non trova nessuna
-  chiave — anche verso un server che non la controlla. Per questo `backends.py`
-  passa il segnaposto `PLACEHOLDER_API_KEY = "EMPTY"` quando `MEMORY_API_KEY_ENV`
-  non è configurata. Se un domani l'endpoint chiedesse un token vero basta
-  puntare `MEMORY_API_KEY_ENV` alla variabile che lo contiene.
-- **Gli embedding devono mandare il testo, non i token.** `OpenAIEmbeddings`
-  per default tokenizza prima di spedire, e per un modello che `tiktoken` non
-  conosce ripiega su `cl100k_base` — il vocabolario di OpenAI. Gli id di un
-  vocabolario sono parole diverse in un altro: il server incorporerebbe rumore e
-  lo restituirebbe **senza nessun errore**. Per questo `backends.py` passa
+- **Without a key the client is not even built.** `openai-python` raises
+  `OpenAIError` in the constructor, not at the first call, if it finds no key —
+  even towards a server that does not check it. That is why `backends.py` passes
+  the placeholder `PLACEHOLDER_API_KEY = "EMPTY"` when `MEMORY_API_KEY_ENV` is not
+  configured. If one day the endpoint asked for a real token, it is enough to
+  point `MEMORY_API_KEY_ENV` to the variable that holds it.
+- **The embeddings must send the text, not the tokens.** `OpenAIEmbeddings` by
+  default tokenizes before sending, and for a model `tiktoken` does not know it
+  falls back on `cl100k_base` — OpenAI's vocabulary. The ids of one vocabulary are
+  different words in another: the server would embed noise and return it
+  **without any error**. That is why `backends.py` passes
   `check_embedding_ctx_length=False`.
-- **Niente greedy decoding.** Qwen sconsiglia `temperature=0`: *"can lead to
-  performance degradation and endless repetitions"*. `.config` porta il preset
-  consigliato per il thinking (`1.0 / 0.95 / 20`); `top_k` non e' un parametro
-  dell'API OpenAI e viaggia in `extra_body`, che vLLM onora. Tutti i valori si
-  tarano da `.config`, senza toccare il codice, e quello che ometti resta al
-  default del server.
-- **Il thinking si commuta in un punto solo:** la voce `enable_thinking` della
-  entry `memory_agent` in `.config`, subito sopra i parametri di campionamento —
-  che vanno cambiati **insieme** a quella, perché i due preset sono diversi
-  (acceso `1.0 / 0.95 / 20`, spento `0.7 / 0.8 / 20`). Qwen commuta il
-  ragionamento attraverso il chat template, non con un parametro di
-  campionamento, quindi `backends.py` lo manda come `chat_template_kwargs`
-  dentro `extra_body`. Il gate stampa in quale modalità ha girato, così due run
-  si confrontano senza andare a memoria.
-- **Le tool call sempre attese sono forzate.** Con una temperatura
-  deliberatamente diversa da zero il modello ogni tanto risponde in prosa invece
-  di emettere la chiamata — misurato dal gate: 9 volte su 10, non 10. Dove una
-  tool call è l'unico esito sensato quella decima volta è **perdita silenziosa di
-  dati**: il nodo non salva niente e i messaggi vengono tagliati lo stesso. Per
-  questo `InsertCoreMemories` e `SplitCoreAndArchivalMemory` sono legate con
-  `tool_choice="required"`. Non si perde flessibilità: il modello può sempre
-  restituire una lista vuota. Sul ramo di recupero `retrieve_memory` e
-  `NoSearchNeeded` sono legate insieme, anch'esse con `required`: non cercare resta
-  possibile, ma è una risposta che si vede e non un silenzio.
-- **`api_key_env` parte vuota apposta.** Se restasse `GROQ_API_KEY` come prima,
-  quella chiave — che nel `.env` c'è, perché serve agli altri cinque nodi
-  dell'architettura — finirebbe nell'header `Authorization` verso il cluster. Con
-  un provider hosted come Groq la variabile non serve comunque: il provider fa il
-  lookup da sé, ed è il motivo per cui `backends.py` non passa mai `api_key=None`
-  esplicitamente (lo sopprimerebbe).
+- **No greedy decoding.** Qwen advises against `temperature=0`: *"can lead to
+  performance degradation and endless repetitions"*. `.config` carries the preset
+  recommended for thinking (`1.0 / 0.95 / 20`); `top_k` is not a parameter of the
+  OpenAI API and travels in `extra_body`, which vLLM honours. All the values are
+  tuned from `.config`, without touching the code, and whatever you omit stays at
+  the server's default.
+- **Thinking is switched per node.** The `enable_thinking` entry of the
+  `memory_agent` entry in `.config` is the base for every node, together with the
+  sampling parameters right below it — which must be changed **together** with
+  it, because the two presets are different (on `1.0 / 0.95 / 20`, off
+  `0.7 / 0.8 / 20`). `NODE_SAMPLING` in `config.py` overrides it node by node
+  (`retrieval`, `generate_answer`, `consolidation`, `core_split`): whatever an
+  override does not mention is inherited, and `None` leaves a parameter to the
+  server. Qwen switches reasoning through the chat template, not with a sampling
+  parameter, so `backends.py` sends it as `chat_template_kwargs` inside
+  `extra_body`. The gate prints which mode it ran
+  in, so two runs can be compared without relying on memory.
+- **The tool calls that are always expected are forced.** With a temperature
+  deliberately different from zero the model now and then answers in prose
+  instead of emitting the call — measured by the gate: 9 times out of 10, not 10.
+  Where a tool call is the only sensible outcome that tenth time is **silent data
+  loss**: the node saves nothing and the messages are cut anyway. That is why
+  `InsertCoreMemories` and `SplitCoreAndArchivalMemory` are bound with
+  `tool_choice="required"`. No flexibility is lost: the model can always return an
+  empty list. On the retrieval branch `retrieve_memory` and `NoSearchNeeded` are
+  bound together, also with `required`: not searching stays possible, but it is
+  an answer that can be seen and not a silence.
+- **`api_key_env` must not be `GROQ_API_KEY`.** That key — which is in the
+  `.env`, because the other five nodes of the architecture need it — would end up
+  in the `Authorization` header towards the cluster: leave it empty, or point it
+  to a variable meant for the cluster. With a hosted provider like Groq the
+  variable is not needed anyway: the
+  provider does the lookup itself, which is why `backends.py` never passes
+  `api_key=None` explicitly (it would suppress it).
 
-## Il limite della core memory
+## The core memory limit
 
-Il limite in caratteri e' **chiesto al modello, non imposto dal codice**: non c'e'
-nessuna eviction deterministica dietro. Quando la core memory sfora, il nodo
-`summarize_core_memories` passa allo split tutto quello che serve per rispettarlo:
+The limit in characters is **asked of the model, not imposed by the code**: there
+is no deterministic eviction behind it. When the core memory overflows, the
+`summarize_core_memories` node passes the split everything needed to respect it:
 
-- ogni memoria con la propria lunghezza (`id: content (N characters)`)
-- il totale attuale, il limite, e **quanti caratteri vanno liberati**
-- l'indicazione esplicita che il vincolo e' hard e che tenere tutto in core non e'
-  una risposta valida
-- il fatto che archiviare non e' cancellare: l'archivio resta consultabile, quindi
-  nel dubbio conviene archiviare
+- every memory with its own length (`id: content (N characters)`)
+- the current total, the limit, and **how many characters must be freed**
+- the explicit statement that the constraint is hard and that keeping everything
+  in core is not a valid answer
+- the fact that archiving is not deleting: the archive stays searchable, so when
+  in doubt it is better to archive
 
-Se il modello decide comunque di non archiviare abbastanza, **la sua decisione
-viene rispettata** e la core memory resta sopra il limite. Non passa pero' in
-silenzio: compare un warning nei log.
+If the model still decides not to archive enough, **its decision is respected**
+and the core memory stays over the limit. It does not go unnoticed though: a
+warning appears in the logs.
 
 ```
 WARNING: core memory still over the limit after the split (500/100 characters)
 ```
 
-## Chi e' fonte di fatti
+## Who is a source of facts
 
-Il prompt di consolidamento riceve le due voci in **campi separati**: quello che
-ha detto l'utente, da cui si estrae, e quello che ha risposto l'assistente, solo
-come contesto — serve a dare senso a un "sì, quello" che da solo non significa
-niente.
+The consolidation prompt receives the two voices in **separate fields**: what the
+user said, from which facts are extracted, and what the assistant answered, only
+as context — it serves to give meaning to a "yes, that one" that means nothing on
+its own.
 
-Non e' una sottigliezza. L'assistente costruisce le sue risposte a partire dalla
-memoria, quindi ripete fatti gia' noti: mettendo le due voci in un blocco unico,
-il consolidamento li riestrae e li classifica `redundant`. In una run lunga un
-quarto delle operazioni finiva per essere rielaborazione dell'uscita del sistema
-stesso, e ogni tanto una parafrasi derivava abbastanza da diventare una memoria
-quasi-duplicata.
+It is not a subtlety. The assistant builds its answers from the memory, so it
+repeats facts already known: putting the two voices in a single block,
+consolidation extracts them again and classifies them `redundant`. In a long run a
+quarter of the operations ended up being reprocessing of the system's own output,
+and now and then a paraphrase drifted enough to become a near-duplicate memory.
 
-Per la stessa ragione **la ricerca in archivio usa solo le parole dell'utente**:
-cercare con la risposta dell'assistente riporterebbe a galla proprio le memorie
-che stava citando, offrendole come candidate.
+For the same reason **the archive search uses only the user's words**: searching
+with the assistant's answer would bring up exactly the memories it was quoting,
+offering them as candidates.
 
-## I candidati dell'archivio
+## The archive candidates
 
-Quando un fatto viene classificato, il modello lo confronta con le memorie core
-attive **piu' le prime K dell'archivio** (`ARCHIVE_CANDIDATES_K = 5`), unite in un
-solo elenco `id: contenuto` da `build_candidate_memories`. Da entrambe le fonti
-passano **solo le attive**: superseded e deleted restano fuori.
+When a fact is classified, the model compares it with the active core memories
+**plus the first K of the archive** (`ARCHIVE_CANDIDATES_K = 10`), merged into a
+single `id: content` list by `build_candidate_memories`. From both sources **only
+the active ones** go through: superseded and deleted stay out.
 
-Il filtro **non avviene dopo la ricerca, ma dentro l'indice**: `search_archive`
-passa `filter={"status": "active"}` a Chroma, che cerca solo fra le attive.
+The filter **does not happen after the search, but inside the index**:
+`search_archive` passes `filter={"status": "active"}` to Chroma, which searches
+only among the active ones.
 
-Non e' un dettaglio. Filtrando dopo una ricerca top-K si otterrebbero meno di K
-candidati, perche' le lapidi occupano i primi posti — e il divario **peggiora con
-l'uso**, dato che con l'eviction spenta i tombstone non vengono mai rimossi: proprio su un archivio
-molto usato il classificatore si ritroverebbe senza bersagli, senza che niente lo
-segnali. Chiedendo K attive se ne ricevono K, sempre, finche' K attive esistono.
+It is not a detail. Filtering after a top-K search would yield fewer than K
+candidates, because the tombstones take the first places — and the gap **gets
+worse with use**, since with eviction off the tombstones are never removed:
+exactly on a heavily used archive the classifier would find itself without
+targets, with nothing signalling it. Asking for K active ones, K are received,
+always, as long as K active ones exist.
 
-Ogni documento in archivio ha uno `status`, scritto da `archive_metadata`: non
-esiste il caso "documento senza status", e il codice non lo contempla.
+Every document in the archive has a `status`, written by `archive_metadata`: the
+case "document without status" does not exist, and the code does not consider it.
 
-Una cosa che resta com'e': la query usata per cercare nell'archivio e' **il blocco
-di messaggi in consolidamento**, non il singolo fatto estratto. I K candidati sono
-quindi scelti una volta per batch. E' il motivo per cui un `update` verso una
-memoria archiviata puo' non trovare il suo bersaglio quando nel batch si parla
-anche d'altro.
+One thing that stays as it is: the query used to search the archive is **the block
+of messages being consolidated**, not the single extracted fact. The K candidates
+are therefore chosen once per batch. That is why an `update` towards an archived
+memory may not find its target when the batch also talks about something else.
 
-## Backend sostituibili
+## Replaceable backends
 
-Chat model e vector store vengono creati alla prima richiesta e possono essere
-iniettati dall'esterno:
+Chat model and vector store are created at the first request and can be injected
+from outside:
 
 ```python
 from memory_service import backends
@@ -315,89 +340,90 @@ backends.configure(llm=my_chat_model, vector_store=my_store)
 agent = MemoryAgent()
 ```
 
-Lo stesso meccanismo è usato dai test e permette di provare un provider diverso
-senza toccare il codice del grafo. Anche il nodo accetta un agente esplicito
-(`MemoryServer(agent=...)`), altrimenti usa il singleton `MemoryAgent`.
+The same mechanism is used by the tests and makes it possible to try a different
+provider without touching the graph's code. The node also accepts an explicit
+agent (`MemoryServer(agent=...)`), otherwise it uses the `MemoryAgent` singleton.
 
-## Configurazione
+## Configuration
 
-Tutti i valori hanno un default e possono essere sovrascritti da variabili
-d'ambiente (lette da `.env` / `.config`):
+The values are read from environment variables (from `.env` / `.config`):
 
-| Variabile | Default | Significato |
-| --- | --- | --- |
-| `LLM_CONFIG` | — | dizionario dei modelli; viene usata la voce `memory_agent` |
-| `EMBEDDING_CONFIG` | — | dizionario dei modelli di embedding; viene usata la voce `memory_agent` |
-| `MEMORY_LLM_BASE_URL` | — | endpoint del chat model (per un server OpenAI compatible di norma finisce in `/v1`) |
-| `MEMORY_EMBEDDING_BASE_URL` | — | endpoint del modello di embedding |
-| `MEMORY_API_KEY_ENV` | *(vuota)* | nome della variabile che contiene la chiave. Vuota significa "nessuna chiave": verso un endpoint `openai` viene mandato il segnaposto `EMPTY`. **Non** vale `GROQ_API_KEY`: quella serve agli altri nodi e non deve raggiungere il cluster |
-| `MEMORY_LLM_NODE` | `memory_agent` | voce di `LLM_CONFIG` da usare |
-| `MEMORY_MAX_HISTORICAL_MESSAGES` | `2` | messaggi mantenuti prima del riassunto. **Tenerlo pari**: con un numero dispari la coda della finestra è una risposta dell'assistente, e ogni consolidamento riceve la fine di uno scambio più l'inizio del successivo invece di una coppia (utente, assistente) intera |
-| `MEMORY_CORE_MEMORY_LIMIT` | `400` | caratteri massimi della core memory |
-| `MEMORY_ARCHIVE_LIMIT` | `50` | memorie **attive** in archivio oltre le quali interviene eviction. Non blocca l'inserimento: lo controlla il router `exceed_archive_limit` del grafo alla fine di ogni `insert` e, se superato, nel nodo `prune_archive` esce il 10% delle memorie attive con lo score più basso, tutte insieme (`eviction.prune_archive`, voce `prune` nel log). Le memorie con `safety` vera non sono mai candidate e non ricevono uno score, ma la quota resta il 10% di tutte le attive. Lo score combina i termini accesi: utility (vedi `consolidation_utility` sotto), il decadimento nel tempo (`eviction_time_decay`), una Weibull o una power law secondo `eviction_time_decay_function` (`weibull` di default, `power`), entrambe con scala di un'ora, calcolato su `updated_at` o `retrieved_at` secondo `eviction_time_decay_field`; la frequenza (`eviction_frequency`), cioè `n_used` quando gli usi si contano (`track_used`, vedi sotto) e `n_retrieve` altrimenti, diviso per il più alto fra le candidate. `eviction_combination` sceglie come: `weighted_sum` (default) è 0.5 utility + 0.25 decadimento + 0.25 frequenza, `product` è utility × (0.5 decadimento + 0.5 frequenza); i pesi si riproporzionano sui termini accesi, e senza utility entrambe sono la media dei termini. Gira solo con `MemoryConfig.eviction` acceso: gli switch si cambiano solo nel codice (`config.py`), senza variabile d'ambiente |
-| `MEMORY_GENERATE_ANSWER` | `false` | se il ramo `retrieve` debba anche **comporre una risposta** all'utente. **Spenta di default**: nessun campo del servizio la restituisce — l'archivio arriva al chiamante tramite `retrieved_memories` — quindi finiva solo in `last_messages` come un turno che l'utente non ha mai letto. Tenendola spenta si risparmia una chiamata per ogni `retrieve`, resta una coppia (utente, assistente) per scambio invece di tre messaggi, e la memoria smette di citare sé stessa dentro il consolidamento. `true` la riaccende |
-| `MEMORY_CHROMA_PATH` | `./chroma_db` | cartella dell'archivio (risolta in path assoluto) |
-| `MEMORY_COLLECTION_NAME` | `memory_archive` | collezione ChromaDB |
-| `MEMORY_ENV_FILE` | — | percorso esplicito del file di ambiente |
+| Variable | Meaning |
+| --- | --- |
+| `LLM_CONFIG` | dictionary of the models; the `memory_agent` entry is used |
+| `EMBEDDING_CONFIG` | dictionary of the embedding models; the `memory_agent` entry is used |
+| `MEMORY_LLM_BASE_URL` | endpoint of the chat model (for an OpenAI compatible server it usually ends in `/v1`) |
+| `MEMORY_EMBEDDING_BASE_URL` | endpoint of the embedding model |
+| `MEMORY_API_KEY_ENV` | name of the variable that holds the key, or empty. Empty means "no key": towards an `openai` endpoint the placeholder `EMPTY` is sent. It is **not** `GROQ_API_KEY`: that one is for the other nodes and must not reach the cluster |
+| `MEMORY_LLM_NODE` | entry of `LLM_CONFIG` to use |
+| `MEMORY_MAX_HISTORICAL_MESSAGES` | `2` (default): messages kept before the summary. **Keep it even**: with an odd number the tail of the window is an assistant answer, and every consolidation receives the end of one exchange plus the start of the next instead of a whole (user, assistant) pair |
+| `MEMORY_CORE_MEMORY_LIMIT` | maximum characters of the core memory |
+| `MEMORY_ARCHIVE_LIMIT` | **active** memories in the archive beyond which eviction steps in. It does not block insertion: the graph's `exceed_archive_limit` router checks it at the end of every `insert` and, if exceeded, in the `prune_archive` node the 10% of the active memories with the lowest score leaves, all together (`eviction.prune_archive`, `prune` entry in the log). Memories with `safety` true are never candidates and get no score, but the share stays 10% of all the active ones. The score combines the enabled terms: utility (see `consolidation_utility` below), the decay over time (`eviction_time_decay`), a Weibull or a power law according to `eviction_time_decay_function` (`weibull` or `power`), both with a one-hour scale, computed on `updated_at` or `retrieved_at` according to `eviction_time_decay_field`; the frequency (`eviction_frequency`), that is `n_used` when uses are counted (`track_used`, see below) and `n_retrieve` otherwise, divided by the highest among the candidates. `eviction_combination` chooses how: `weighted_sum` is 0.5 utility + 0.25 decay + 0.25 frequency, `product` is utility × (0.5 decay + 0.5 frequency); the weights are rescaled over the enabled terms, and without utility both are the mean of the terms. It runs only with `MemoryConfig.eviction` on (the default): the switches are changed only in the code (`config.py`), with no environment variable |
+| `MEMORY_GENERATE_ANSWER` | `true` (default) or `false`: whether the `retrieve` branch also **composes an answer** for the user. No field of the service returns it — the archive reaches the caller through `retrieved_memories` — so it only ends up in `last_messages`, as a turn of the conversation. `false` saves one call per `retrieve`, leaves one (user, assistant) pair per exchange instead of three messages, and keeps the memory from quoting itself inside consolidation. `track_used` needs it on, because the list of used memories comes from the answer |
+| `MEMORY_CHROMA_PATH` | archive folder (resolved to an absolute path) |
+| `MEMORY_COLLECTION_NAME` | ChromaDB collection |
+| `MEMORY_ENV_FILE` | explicit path of the environment file |
 
-`retrieval_mode` non ha variabile d'ambiente e si cambia solo in `config.py`. Decide
-se la ricerca in archivio del ramo `retrieve` è una scelta del modello:
+`retrieval_mode` has no environment variable and is changed only in `config.py`.
+It decides whether the archive search of the `retrieve` branch is the model's
+choice:
 
-- `decide` (default): il modello sceglie fra `retrieve_memory` e `NoSearchNeeded`;
-- `always_llm_query`: si cerca sempre, il modello scrive solo la query e `k`.
+- `decide` (default): the model chooses between `retrieve_memory` and `NoSearchNeeded`;
+- `always_llm_query`: it always searches, the model writes only the query and `k`.
 
-In entrambe un recupero incrementa `n_retrieve` delle memorie restituite. Il test
-lungo stampa e salva la modalità della run.
+In both a retrieval increments `n_retrieve` of the returned memories. The long test
+prints and saves the run's mode.
 
-`track_used` (spento di default, anche lui solo in `config.py`) fa dire alla risposta
-quali memorie ha usato. `generate_answer` passa a un secondo prompt, uguale al primo
-più la richiesta della lista, e risponde con la tool call `AnswerWithUsedMemories`:
-prima `answer`, che arriva all'utente come sempre, poi `used_memory_ids`. Le memorie
-core compaiono nel prompt con il loro id, nello stesso formato di quelle d'archivio.
-Ogni memoria della lista, core o archivio, prende `n_used` + 1 e `retrieved_at`
-adesso; il recupero continua a contare `n_retrieve` ma non tocca più `retrieved_at`,
-che diventa l'ultimo uso. Il termine di frequenza dell'eviction passa da `n_retrieve`
-a `n_used`. Con `generate_answer` spento non c'è una lista da leggere e lo switch non
-ha effetto.
+`track_used` (on or off, also only in `config.py`) makes the answer say which
+memories it used. `generate_answer` switches to a second prompt, the same as the
+first plus the request for the list, and answers with the `AnswerWithUsedMemories`
+tool call: first `answer`, which reaches the user as always, then
+`used_memory_ids`. The core memories appear in the prompt with their id, in the
+same format as the archive ones. Every memory in the list, core or archive, gets
+`n_used` + 1 and `retrieved_at` now; retrieval keeps counting `n_retrieve` but no
+longer touches `retrieved_at`, which becomes the last use. The eviction's frequency
+term moves from `n_retrieve` to `n_used`. With `generate_answer` off there is no
+list to read and the switch has no effect.
 
-`consolidation_utility` (solo in `config.py`) fa giudicare al classificatore, nella
-stessa chiamata, ogni fatto `new` e ogni `update`:
+`consolidation_utility` (only in `config.py`) makes the classifier judge, in the
+same call, every `new` fact and every `update`:
 
-- `none` (default): nessun giudizio, prompt e tool di sempre;
-- `single`: `safety` e un voto `utility` da 1 a 5;
-- `need_gain`: `safety` e due voti da 1 a 3, `need` (quanto è probabile che il fatto
-  serva) e `gain` (quanto migliora la risposta quando serve); `utility` resta vuoto.
+- `none`: no judgment, the usual prompt and tool;
+- `single`: `safety` and a `utility` rating from 1 to 5;
+- `need_gain`: `safety` and two ratings from 1 to 3, `need` (how likely the fact is
+  to be needed) and `gain` (how much it improves the answer when it is); `utility`
+  stays empty.
 
-La parte di classificazione del prompt resta identica nelle tre modalità: le due nuove
-aggiungono in coda un passo per `safety` e uno per i voti, e lo schema del tool cambia
-mantenendo il nome `InsertCoreMemories`. `safety` è vero solo se dimenticare il fatto
-può mettere a rischio l'utente (un'allergia, una condizione medica): in quel caso i voti
-non si danno e, se il modello li dà lo stesso, vengono scartati. Un `update` viene
-giudicato di nuovo, un `redundant` tiene i voti che aveva, un `delete` non ne ha. Un voto
-fuori scala conta come non dato. I quattro campi stanno in `CoreMemoryItem` e nei
-metadata dell'archivio, dove un valore mancante è assente invece che `None`.
+The classification part of the prompt stays identical in the three modes: the two
+new ones append a step for `safety` and one for the ratings, and the tool's schema
+changes while keeping the name `InsertCoreMemories`. `safety` is true only if
+forgetting the fact can put the user at risk (an allergy, a medical condition): in
+that case the ratings are not given and, if the model gives them anyway, they are
+discarded. An `update` is judged again, a `redundant` keeps the ratings it had, a
+`delete` has none. An off-scale rating counts as not given. The four fields live in
+`CoreMemoryItem` and in the archive metadata, where a missing value is absent
+rather than `None`.
 
-Nell'eviction il giudizio entra nello score come termine utility, alto vuol dire da
-tenere come per gli altri termini: con `single` la voce del voto in `UTILITY_TABLE`,
-con `need_gain` la cella (need, gain) di `NEED_GAIN_TABLE`, entrambe in
-`eviction.py`. Finché non sono calibrate valgono voto / 5 e (need / 3) · (gain / 3);
-i valori calibrati li stampa `test/calibrate_utility.py` (vedi la sezione Test). Una
-memoria senza voto, perché il modello non l'ha dato o l'ha dato fuori scala, prende
-quello di mezzo (`NEUTRAL_RATINGS`: 3, oppure need 2 e gain 2), così il prune non si
-ferma. In tutte le modalità una memoria con `safety` vera non esce mai dall'archivio
-per il limite.
+In eviction the judgment enters the score as the utility term, high meaning keep
+as for the other terms: with `single` the rating's entry in `UTILITY_TABLE`, with
+`need_gain` the (need, gain) cell of `NEED_GAIN_TABLE`, both in `eviction.py`.
+Until they are calibrated they are rating / 5 and (need / 3) · (gain / 3); the
+calibrated values are printed by `test/calibrate_utility.py` (see the Tests
+section). A memory without a rating, because the model did not give it or gave it
+off the scale, takes the middle one (`NEUTRAL_RATINGS`: 3, or need 2 and gain 2),
+so the prune does not stop. In all modes a memory with `safety` true never leaves
+the archive because of the limit.
 
-`.env` e `.config` vengono cercati risalendo le directory a partire dalla
-working directory e dalla posizione del pacchetto. Se il nodo viene lanciato da
-un install space che non contiene quei file, conviene indicarli esplicitamente
-con `MEMORY_ENV_FILE`.
+`.env` and `.config` are searched for walking up the directories starting from the
+working directory and from the package's location. If the node is launched from an
+install space that does not contain those files, it is better to point to them
+explicitly with `MEMORY_ENV_FILE`.
 
-Attenzione a `MEMORY_CHROMA_PATH`: il default resta relativo alla working
-directory (come prima), quindi lanciare il nodo da cartelle diverse significa
-usare archivi diversi. Impostare un percorso assoluto per avere una memoria
-stabile.
+Watch out for `MEMORY_CHROMA_PATH`: a relative path is resolved against the
+working directory, so launching the node from different folders means using
+different archives. Set an absolute path to have a stable memory.
 
-## Esecuzione
+## Running
 
 ```bash
 ros2 run memory_service memory_server

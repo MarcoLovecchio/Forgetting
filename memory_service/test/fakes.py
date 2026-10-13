@@ -97,11 +97,11 @@ class ScriptedChatModel(BaseChatModel):
 
 
 class FakeCollection:
-    """Il pezzo di API chromadb che il servizio usa da sotto langchain_chroma.
+    """The piece of the chromadb API the service uses from under langchain_chroma.
 
-    Serve per aggiornare i metadata senza ricalcolare l'embedding: langchain non
-    espone un modo per farlo, quindi il codice scende di un livello e il doppio
-    deve scendere con lui.
+    It is needed to update the metadata without recomputing the embedding:
+    langchain exposes no way to do it, so the code goes down one level and the
+    double has to go down with it.
     """
 
     def __init__(self, store):
@@ -112,13 +112,13 @@ class FakeCollection:
         return len(self.store.documents)
 
     def update(self, ids, metadatas=None, **kwargs):
-        # Solo i metadata: documento e vettore restano dove sono. Un doppio che
-        # riscrivesse anche il testo nasconderebbe il motivo per cui questa
-        # chiamata non passa da add_texts.
+        # Only the metadata: document and vector stay where they are. A double that
+        # also rewrote the text would hide the reason why this call does not go
+        # through add_texts.
         for doc_id, metadata in zip(list(ids), list(metadatas or [])):
             self.updates.append(doc_id)
             if doc_id not in self.store.documents:
-                continue  # chroma logga e ignora, non solleva
+                continue  # chroma logs and ignores, it does not raise
             self.store.metadatas[doc_id] = dict(metadata)
 
 
@@ -134,11 +134,11 @@ class FakeVectorStore:
         self.documents: Dict[str, str] = {}
         self.metadatas: Dict[str, Dict[str, Any]] = {}
         self.searches: List[Dict[str, Any]] = []
-        # Ogni add_texts e' un embedding ricalcolato: contarle serve a verificare
-        # che un cambio di status non ne paghi uno.
+        # Every add_texts is a recomputed embedding: counting them checks that a
+        # status change does not pay for one.
         self.writes: List[List[str]] = []
-        # Ogni delete ricevuta, con i suoi id: l'eviction non deve mai farne una
-        # a vuoto, e questo e' il modo di vederlo.
+        # Every delete received, with its ids: eviction must never make an empty
+        # one, and this is the way to see it.
         self.deletes: List[List[str]] = []
         self._collection = FakeCollection(self)
 
@@ -159,10 +159,10 @@ class FakeVectorStore:
     def get(self, ids=None, where=None, **kwargs):
         """Same contract as Chroma.get: no ids means the whole collection.
 
-        `where` solo con l'uguaglianza, che e' quello che il servizio usa. Un
-        operatore ("$in", "$ne") solleva invece di essere ignorato: ignorarlo
-        vorrebbe dire rispondere con tutta la collezione, e il doppio smetterebbe
-        di assomigliare allo store proprio nel punto che si sta provando.
+        `where` only with equality, which is what the service uses. An operator
+        ("$in", "$ne") raises instead of being ignored: ignoring it would mean
+        answering with the whole collection, and the double would stop resembling
+        the store exactly at the point being tested.
         """
         if ids is None:
             selected = list(self.documents)
@@ -170,7 +170,7 @@ class FakeVectorStore:
             selected = [doc_id for doc_id in ids if doc_id in self.documents]
         for key, value in (where or {}).items():
             if key.startswith("$") or isinstance(value, dict):
-                raise NotImplementedError(f"FakeVectorStore.get: filtro non supportato {where!r}")
+                raise NotImplementedError(f"FakeVectorStore.get: unsupported filter {where!r}")
             selected = [doc_id for doc_id in selected
                         if self.metadatas.get(doc_id, {}).get(key) == value]
         return {
@@ -180,18 +180,18 @@ class FakeVectorStore:
         }
 
     def delete(self, ids=None, **kwargs):
-        """Come Chroma.delete, per id.
+        """Like Chroma.delete, by id.
 
-        Senza id solleva: e' il caso da cui l'eviction si difende, e un doppio che
-        lo accettasse in silenzio non potrebbe mai farlo vedere. Ma la chiamata
-        viene registrata **prima** di sollevare: l'eviction assorbe le eccezioni
-        dello store, e un doppio che sollevasse senza lasciare traccia farebbe
-        sparire la delete a vuoto proprio dalla lista che i test guardano.
+        Without ids it raises: it is the case eviction defends itself from, and a
+        double that accepted it silently could never show it. But the call is
+        recorded **before** raising: eviction absorbs the store's exceptions, and
+        a double that raised without leaving a trace would make the empty delete
+        disappear exactly from the list the tests look at.
         """
         ids = list(ids or [])
         self.deletes.append(ids)
         if not ids:
-            raise ValueError("FakeVectorStore.delete chiamata senza id")
+            raise ValueError("FakeVectorStore.delete called without ids")
         for doc_id in ids:
             self.documents.pop(doc_id, None)
             self.metadatas.pop(doc_id, None)
@@ -210,9 +210,9 @@ class FakeVectorStore:
             return all(metadata.get(key) == value for key, value in (filter or {}).items())
 
         ranked = sorted(self.documents.items(), key=lambda item: score(item[1]), reverse=True)
-        # Il filtro PRIMA del taglio: e' tutto il punto di chiederlo allo store
-        # invece di applicarlo dopo. Un doppio che tagliasse prima farebbe
-        # passare il bug che questo filtro esiste per evitare.
+        # The filter BEFORE the cut: that is the whole point of asking the store
+        # for it instead of applying it afterwards. A double that cut first would
+        # let through the bug this filter exists to avoid.
         ranked = [(doc_id, text) for doc_id, text in ranked if matches(doc_id)]
         return [
             Document(id=doc_id, page_content=text, metadata=self.metadatas.get(doc_id, {}))
@@ -223,9 +223,9 @@ class FakeVectorStore:
     def status_of(self, doc_id: str) -> Optional[str]:
         """Status an archived item was stored with, None if it is not there.
 
-        Un documento che esiste ha sempre uno status: lo scrive archive_metadata.
-        Se mancasse, questa riga solleva - meglio che restituire None e far
-        confrontare un'assert con un valore che non c'e'.
+        A document that exists always has a status: archive_metadata writes it.
+        If it were missing, this line raises - better than returning None and
+        having an assert compare against a value that is not there.
         """
         if doc_id not in self.documents:
             return None

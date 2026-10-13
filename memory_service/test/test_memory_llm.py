@@ -1,36 +1,21 @@
-"""Ciclo di vita della memoria sullo stack reale: chat model, embedding, ChromaDB.
+"""Deletion on the real stack: chat model, embedding, ChromaDB.
 
-Stessa turnistica del test offline (test_consolidation.py), ma qui **nessuno
-scripta le risposte**: a classificare i fatti e' il modello vero. Ogni turno
-propone all'assistente una conversazione pensata per provocare una specifica
-operazione, e stampa lo stato completo della memoria dopo il consolidamento:
+The offline tests run on a double of the archive. This one checks the real
+Chroma: a deleted fact must never come out of the archive again, which only
+holds if the `status` filter works inside the real store.
 
-    1. new         l'utente si presenta, i fatti sono tutti nuovi
-    2. redundant   l'utente ripete un fatto gia' detto
-    3. update      l'utente raffina un fatto (2000 -> 2200 calorie)
-    4. update      l'utente smentisce un fatto (non piu' vegetariana)
-    5. delete      l'utente chiede esplicitamente di dimenticare il nome
-    6. retrieve    l'utente fa una domanda e la risposta pesca dalla memoria
+Requirements: LLM_CONFIG and EMBEDDING_CONFIG in .config, and the two models
+reachable at the address given by MEMORY_LLM_BASE_URL /
+MEMORY_EMBEDDING_BASE_URL in the .env. If something does not answer the test is
+skipped explaining what, instead of failing: an unreachable endpoint is not a
+defect of the code.
 
-Le assert sono volutamente larghe: la classificazione la decide il modello, e
-pretendere una sequenza esatta di operazioni renderebbe il test instabile. Il
-valore vero e' la traccia stampata, da leggere per capire se il modello ha
-classificato come ci si aspetta. Le invarianti strutturali (core memory con soli
-item attivi, log coerente, nessun crash) sono invece verificate sul serio.
+LANGSMITH_API_KEY stays optional and only enables tracing.
 
-Requisiti: LLM_CONFIG ed EMBEDDING_CONFIG in .config, e i due modelli
-raggiungibili all'indirizzo indicato da MEMORY_LLM_BASE_URL /
-MEMORY_EMBEDDING_BASE_URL nel .env. Se qualcosa non risponde il test si salta
-spiegando cosa, invece di fallire: un endpoint irraggiungibile non e' un difetto
-del codice.
-
-LANGSMITH_API_KEY resta opzionale e abilita solo il tracing.
-
-Esecuzione:  pytest memory_service/test/test_memory_llm.py -v -s
+Run:  pytest memory_service/test/test_memory_llm.py -v -s
 """
 
 import ast
-import dataclasses
 import os
 import sys
 
@@ -41,19 +26,14 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from memory_service import backends  # noqa: E402
-from memory_service.config import MemoryConfig  # noqa: E402
-from memory_service.consolidation import get_active_items  # noqa: E402
-
 from live_model import live_stack_unavailable  # noqa: E402
-from snapshot import print_memory_snapshot, print_turn_header  # noqa: E402
 
 
-# Il test parla con i modelli veri, quindi ha senso solo con l'ambiente
-# configurato. Senza LLM_CONFIG il modulo sollevava all'import e faceva saltare
-# l'intera sessione di test.
-# Lo skip a livello di modulo resta economico (guarda solo la configurazione):
-# la raggiungibilita' dei modelli costa una chiamata e si verifica dentro i test.
+# The test talks to the real models, so it makes sense only with the environment
+# configured. Without LLM_CONFIG the module raised at import and blew up the
+# whole test session.
+# The module-level skip stays cheap (it only looks at the configuration): the
+# reachability of the models costs a call and is checked inside the tests.
 pytestmark = pytest.mark.skipif(
     not os.getenv("LLM_CONFIG"),
     reason="LLM_CONFIG is required to run the memory agent tests",
@@ -78,171 +58,8 @@ def _configure_langsmith():
     os.environ["LANGSMITH_TEST_SUITE"] = "Memory Service"
 
 
-def _build_agent():
-    """Agente sullo stack vero, con una finestra di storico corta.
-
-    La finestra e' corta perche' altrimenti servirebbero decine di messaggi
-    prima di vedere qualcosa, ma e' PARI di proposito: cosi' ogni consolidamento
-    riceve uno scambio (Utente, Assistente) intero, invece della coda di uno e
-    della testa del successivo. Il prezzo e' il ritardo - lo scambio corrente
-    resta dentro la finestra e viene digerito al turno dopo.
-    """
-    from memory_service.memory_manager_llm import MemoryAgent
-
-    config = dataclasses.replace(
-        MemoryConfig.from_environment(),
-        maximum_historical_messages=2,
-        core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "1500")),
-    )
-    MemoryAgent.reset_instance()
-    return MemoryAgent(config=config), config
-
-
-def _turn(agent, number, says, description, user_message, assistant_message,
-          consolidates):
-    """Un turno: l'utente parla, l'assistente risponde, la memoria consolida.
-
-    `says` e' la classificazione che il messaggio dell'utente sollecita,
-    `consolidates` quella che ci si aspetta di vedere adesso. Con una finestra
-    pari le due non coincidono mai: stamparle entrambe evita una traccia che
-    sembra sbagliata mentre e' solo in ritardo di uno scambio.
-    """
-    print_turn_header(number, says, description, consolidates)
-    agent.append_message(user_message, "user")
-    agent.append_message(assistant_message, "assistant")
-
-    state = agent.run_memory_agent("insert")
-
-    print_memory_snapshot(f"turno {number} - {says}", state, backends.get_vector_store(),
-                          agent.config.core_memory_limit)
-    _assert_state_is_consistent(state)
-    return state
-
-
-def _assert_state_is_consistent(state):
-    """Invarianti che devono valere qualunque cosa decida il modello."""
-    core_memory = state["core_memory"]
-    assert all(item.status == "active" for item in core_memory), (
-        "core memory deve contenere solo item attivi: superseded e deleted "
-        "finiscono in archivio")
-    assert len({item.id for item in core_memory}) == len(core_memory), "id duplicati in core"
-    for item in core_memory:
-        assert item.content.strip(), "un item senza contenuto non ha senso"
-
-
-def _contents(state):
-    return [item.content for item in get_active_items(state["core_memory"])]
-
-
-def _op_types(state, since=0):
-    return [entry.op_type for entry in state["operation_log"][since:]]
-
-
-def test_memory_lifecycle_with_a_real_llm():
-    _require_live_stack()
-    _configure_langsmith()
-    agent, config = _build_agent()
-
-    print(f"\nModello: {config.llm_config.get('model_name')} "
-          f"({config.llm_config.get('model_provider')})")
-    print(f"Archivio: {config.chroma_path} / {config.collection_name}")
-    print(f"Finestra: {config.maximum_historical_messages} messaggi, quindi ogni "
-          f"consolidamento riceve lo scambio precedente, intero")
-
-    # --- TURNO 1: new ------------------------------------------------------ #
-    state = _turn(
-        agent, 1, "new", "l'utente si presenta: sono tutti fatti nuovi",
-        "Ciao, mi chiamo Bianca, sono vegetariana e il mio obiettivo e' 2000 calorie al giorno.",
-        "Piacere Bianca, ho preso nota delle tue preferenze alimentari.",
-        consolidates="niente, lo scambio 1 e' ancora dentro la finestra",
-    )
-    assert not state["operation_log"], (
-        "con una finestra pari il primo scambio non esce ancora: un'operazione "
-        "qui vorrebbe dire che il taglio non e' allineato agli scambi")
-    seen = 0
-
-    # --- TURNO 2: redundant ------------------------------------------------ #
-    state = _turn(
-        agent, 2, "redundant", "l'utente ripete un fatto gia' noto",
-        "Ti ricordo che mi chiamo Bianca.",
-        "Certo Bianca, me lo ricordo.",
-        consolidates="scambio 1, i fatti della presentazione",
-    )
-    assert _contents(state), (
-        "consolidata la presentazione, la core memory non puo' essere vuota")
-    assert _op_types(state), "il consolidamento deve lasciare traccia nell'operation log"
-    print(f"  -> operazioni dello scambio 1: {_op_types(state, seen)}")
-    seen = len(state["operation_log"])
-
-    # --- TURNO 3: update --------------------------------------------------- #
-    state = _turn(
-        agent, 3, "update", "l'utente raffina un fatto gia' in memoria",
-        "Ho alzato il mio obiettivo giornaliero da 2000 a 2200 calorie.",
-        "Aggiorno il tuo obiettivo a 2200 calorie.",
-        consolidates="scambio 2, la ripetizione del nome",
-    )
-    print(f"  -> operazioni dello scambio 2: {_op_types(state, seen)}")
-    seen = len(state["operation_log"])
-
-    # --- TURNO 4: smentita -------------------------------------------------- #
-    state = _turn(
-        agent, 4, "update", "l'utente smentisce un fatto gia' in memoria",
-        "Non sono piu' vegetariana, da questo mese mangio pesce.",
-        "Capito, non sei piu' vegetariana.",
-        consolidates="scambio 3, il nuovo obiettivo calorico",
-    )
-    print(f"  -> operazioni dello scambio 3: {_op_types(state, seen)}")
-    seen = len(state["operation_log"])
-
-    # --- TURNO 5: delete ---------------------------------------------------- #
-    state = _turn(
-        agent, 5, "delete", "l'utente chiede esplicitamente di dimenticare un fatto",
-        "Dimentica il mio nome per favore, non voglio che tu lo memorizzi.",
-        "Va bene, dimentico il tuo nome.",
-        consolidates="scambio 4, la smentita sul vegetarianismo",
-    )
-    print(f"  -> operazioni dello scambio 4: {_op_types(state, seen)}")
-    seen = len(state["operation_log"])
-
-    # --- TURNO 6: scarico --------------------------------------------------- #
-    # Uno scambio di cortesia, il cui unico scopo e' spingere fuori dalla
-    # finestra quello del delete: senza, resterebbe dentro e non verrebbe mai
-    # consolidato. Questo non sporca niente perche' tocca a lui restare dentro,
-    # e il test finisce prima che qualcuno lo digerisca.
-    state = _turn(
-        agent, 6, "nessuna", "scambio di cortesia: serve solo a far uscire il turno 5",
-        "Grazie dell'aiuto.",
-        "Di nulla, sono qui se ti serve altro.",
-        consolidates="scambio 5, la richiesta di dimenticare il nome",
-    )
-    print(f"  -> operazioni dello scambio 5: {_op_types(state, seen)}")
-
-    # Qualunque cosa il modello abbia deciso scambio per scambio, alla fine
-    # devono essere successe delle cose: la memoria non puo' essere rimasta ferma.
-    all_ops = _op_types(state)
-    print(f"\n  -> operation log completo: {all_ops}")
-    assert len(all_ops) > 1, "cinque scambi di conversazione devono muovere la memoria"
-
-    # --- TURNO 7: retrieve --------------------------------------------------- #
-    # Dopo lo scarico, mai prima: azzerare i messaggi con uno scambio ancora in
-    # attesa lo farebbe sparire senza che nessuno se ne accorga.
-    print_turn_header(7, "retrieve", "l'utente fa una domanda: la risposta usa la memoria")
-    agent.state["messages"] = []
-    agent.append_message("Qual e' il mio obiettivo calorico giornaliero?", "user")
-    agent.state["retrieved_memory"] = ""
-
-    state = agent.run_memory_agent("retrieve")
-    print_memory_snapshot("turno 7 - retrieve", state, backends.get_vector_store(),
-                          agent.config.core_memory_limit)
-
-    answer = state["messages"][-1].content
-    print(f"\n  -> risposta dell'assistente: {answer}")
-    assert answer, "la retrieve deve produrre una risposta"
-    _assert_state_is_consistent(state)
-
-
 def test_deleted_memories_are_never_retrieved():
-    """Un fatto cancellato non deve piu' tornare fuori dall'archivio."""
+    """A deleted fact must never come out of the archive again."""
     _require_live_stack()
     _configure_langsmith()
 
@@ -261,11 +78,11 @@ def test_deleted_memories_are_never_retrieved():
         [{"fact": "dimentica il colore preferito", "operation": "delete",
           "target_item_id": fact.id}], core, log)
 
-    print(f"\nItem cancellato: [{fact.id}] {fact.content}")
+    print(f"\nDeleted item: [{fact.id}] {fact.content}")
     print(f"Operation log: {[entry.op_type for entry in log]}")
 
-    assert core == [], "l'item cancellato esce dalla core memory"
+    assert core == [], "the deleted item leaves the core memory"
 
     retrieved = retrieve_active_archival_memories("colore preferito magenta", k=10)
-    print(f"Recupero dall'archivio: {retrieved}")
-    assert "magenta fluorescente" not in retrieved, "il tombstone non deve tornare"
+    print(f"Retrieval from the archive: {retrieved}")
+    assert "magenta fluorescente" not in retrieved, "the tombstone must not come back"

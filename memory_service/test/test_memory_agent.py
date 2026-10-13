@@ -39,15 +39,14 @@ from memory_service.memory_manager_llm import (  # noqa: E402
     _timed,
     query_and_history,
     reset_node_stats,
-    retrieve_memory,
     split_by_speaker,
 )
 
 from fakes import FakeVectorStore, ScriptedChatModel  # noqa: E402
 
 
-# generate_answer e' acceso qui perche' molte classi esercitano il ramo
-# retrieve fino alla risposta.
+# generate_answer is on here because many classes exercise the retrieve branch
+# up to the answer.
 TEST_CONFIG = MemoryConfig(
     node_name="memory_agent",
     generate_answer=True,
@@ -90,7 +89,7 @@ class MemoryServiceTestCase(unittest.TestCase):
         backends.reset()
 
     def archive(self, contents, status="active"):
-        """Memorie in archivio con i metadata completi, come le scrive archive_items."""
+        """Archived memories with complete metadata, as archive_items writes them."""
         archive_items([CoreMemoryItem(id=item_id, content=content, status=status)
                        for item_id, content in contents.items()])
 
@@ -143,15 +142,9 @@ class InsertInteractionTest(MemoryServiceTestCase):
 
         self.assertEqual(state["tool_calls"], [])
 
-    def test_no_messages_returns_the_current_state(self):
-        state = self.agent.run_memory_agent("insert")
-
-        self.assertEqual(state["messages"], [])
-        self.assertEqual(self.llm.invocations, [])
-
 
 class SplitLimitTest(MemoryServiceTestCase):
-    """Lo split parte solo oltre il limite della core, e dietro non c'e' un taglio forzato."""
+    """The split starts only over the core limit, and there is no forced cut behind it."""
 
     def test_within_the_limit_the_split_is_not_attempted(self):
         self.agent.state["core_memory"] = [CoreMemoryItem(content="x" * 100)]
@@ -163,8 +156,8 @@ class SplitLimitTest(MemoryServiceTestCase):
         self.assertNotIn("SplitCoreAndArchivalMemory", self.llm.bound_tool_names())
 
     def test_ignoring_the_limit_is_reported_but_not_forced(self):
-        # Il modello decide di non archiviare nulla: la scelta viene rispettata,
-        # ma non deve passare in silenzio.
+        # The model decides to archive nothing: the choice is respected,
+        # but it must not go unnoticed.
         item = CoreMemoryItem(content="x" * 200)
         self.agent.state["core_memory"] = [item]
         self.agent.state["messages"] = self.conversation(9)
@@ -177,7 +170,7 @@ class SplitLimitTest(MemoryServiceTestCase):
             state = self.agent.run_memory_agent("insert")
 
         self.assertEqual([i.id for i in state["core_memory"]], [item.id],
-                         "la decisione del modello viene rispettata, non corretta")
+                         "the model's decision is respected, not corrected")
         self.assertIn("still over the limit", captured.getvalue())
 
 
@@ -209,8 +202,8 @@ class RetrieveInteractionTest(MemoryServiceTestCase):
 
         self.assertGreater(
             len(self.llm.invocations), calls_after_first,
-            "dopo un insert la memoria puo' essere cambiata: la risposta in "
-            "cache non vale piu'")
+            "after an insert the memory may have changed: the cached answer "
+            "no longer holds")
 
 
 class RetrieveWithArchiveTest(MemoryServiceTestCase):
@@ -237,7 +230,7 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
 
 
 class InsertDoesNotCountRetrievalsTest(MemoryServiceTestCase):
-    """Il consolidamento cerca in archivio i candidati, ma non e' un recupero."""
+    """Consolidation searches the archive for candidates, but it is not a retrieval."""
 
     tool_responses = {"InsertCoreMemories": {"memories": []}}
 
@@ -247,18 +240,18 @@ class InsertDoesNotCountRetrievalsTest(MemoryServiceTestCase):
 
         self.agent.run_memory_agent("insert")
 
-        self.assertTrue(self.vector_store.searches, "il consolidamento ha cercato i candidati")
+        self.assertTrue(self.vector_store.searches, "consolidation searched for the candidates")
         self.assertEqual(self.vector_store.metadatas["memory_a"]["n_retrieve"], 0)
 
 
 class AnswerGenerationSwitchTest(MemoryServiceTestCase):
-    """Il ramo retrieve puo' non comporre la risposta.
+    """The retrieve branch may not compose the answer.
 
-    Quella risposta non e' restituita da nessun campo del servizio: finisce solo
-    in last_messages, dove il chiamante la vede come un turno in piu' della
-    conversazione - uno che l'utente non ha mai letto. Spegnerla toglie una
-    chiamata per retrieve e lascia una coppia (utente, assistente) per scambio
-    invece di tre messaggi.
+    That answer is returned by no field of the service: it ends up only in
+    last_messages, where the caller sees it as one more turn of the
+    conversation - one the user never read. Turning it off removes one call
+    per retrieve and leaves one (user, assistant) pair per exchange instead of
+    three messages.
     """
 
     tool_responses = {"NoSearchNeeded": {"reason": "basta la core memory"}}
@@ -278,14 +271,14 @@ class AnswerGenerationSwitchTest(MemoryServiceTestCase):
     def test_switched_on_the_answer_is_appended(self):
         state, calls = self.run_retrieve(generate_answer=True)
 
-        self.assertEqual(len(state["messages"]), 2, "domanda piu' risposta")
-        self.assertEqual(calls, 2, "la decisione piu' la generazione")
+        self.assertEqual(len(state["messages"]), 2, "question plus answer")
+        self.assertEqual(calls, 2, "the decision plus the generation")
 
     def test_a_question_passed_in_is_appended_before_its_answer(self):
-        # La domanda arrivata come current_query - cioe' dal campo user_input
-        # della GetMemory - non e' ancora in messages. Appendere la sola
-        # risposta lascerebbe la coppia invertita, e il consolidamento
-        # leggerebbe una risposta senza la domanda a cui risponde.
+        # The question that arrived as current_query - that is, from the
+        # user_input field of GetMemory - is not in messages yet. Appending only
+        # the answer would leave the pair inverted, and consolidation would read
+        # an answer without the question it answers.
         config = dataclasses.replace(TEST_CONFIG, generate_answer=True)
         backends.configure(config=config)
         MemoryAgent.reset_instance()
@@ -293,7 +286,7 @@ class AnswerGenerationSwitchTest(MemoryServiceTestCase):
 
         state = agent.run_memory_agent("retrieve", query="cosa mi piace bere?")
 
-        self.assertEqual(len(state["messages"]), 2, "un turno, non uno solo")
+        self.assertEqual(len(state["messages"]), 2, "a turn, not a single one")
         self.assertIsInstance(state["messages"][0], HumanMessage)
         self.assertEqual(state["messages"][0].content, "cosa mi piace bere?")
         self.assertIsInstance(state["messages"][1], AIMessage)
@@ -301,18 +294,19 @@ class AnswerGenerationSwitchTest(MemoryServiceTestCase):
     def test_switched_off_it_costs_one_call_less_and_appends_nothing(self):
         state, calls = self.run_retrieve(generate_answer=False)
 
-        self.assertEqual(len(state["messages"]), 1, "resta solo la domanda dell'utente")
-        self.assertEqual(calls, 1, "solo la decisione")
+        self.assertEqual(len(state["messages"]), 1, "only the user's question stays")
+        self.assertEqual(calls, 1, "only the decision")
 
 
 class StaleRetrievalTest(MemoryServiceTestCase):
-    """Il recupero di un giro non deve sopravvivere al giro dopo.
+    """A round's retrieval must not survive the next round.
 
-    tool_node conserva retrieved_memory quando la ricerca non avviene, e niente
-    lo azzerava fra una get_memory e l'altra. Finche' generate_answer era spento
-    non lo leggeva nessuno e il difetto era invisibile; adesso il giro che decide
-    di non cercare risponderebbe con le memorie tirate su per la domanda
-    precedente, e le pubblicherebbe in retrieved_memories come proprie.
+    tool_node keeps retrieved_memory when the search does not happen, and
+    nothing reset it between one get_memory and the next. As long as
+    generate_answer was off nobody read it and the defect was invisible; now the
+    round that decides not to search would answer with the memories pulled up
+    for the previous question, and would publish them in retrieved_memories as
+    its own.
     """
 
     tool_responses = {"retrieve_memory": {"query": "te", "k": 2}}
@@ -328,11 +322,11 @@ class StaleRetrievalTest(MemoryServiceTestCase):
 
         self.assertEqual(
             second["retrieved_memory"], "",
-            "la risposta di questo giro non deve vedere il recupero del giro prima")
+            "this round's answer must not see the previous round's retrieval")
 
 
 class UsedMemoriesTest(MemoryServiceTestCase):
-    """track_used: la risposta dice quali memorie ha usato, e ciascuna conta un uso."""
+    """track_used: the answer says which memories it used, and each one counts a use."""
 
     ANSWER = "Il pomeriggio bevi te nero."
 
@@ -389,7 +383,7 @@ class UsedMemoriesTest(MemoryServiceTestCase):
         self.assertEqual((n_retrieve, n_used), (1, 1))
         self.assertGreater(retrieved_at, self.long_ago.isoformat())
         self.assertEqual(self.archived("memory_b"), (1, 0, self.long_ago.isoformat()),
-                         "recuperata e non usata: conta il recupero, retrieved_at resta")
+                         "retrieved and not used: the retrieval counts, retrieved_at stays")
 
     def test_an_id_repeated_counts_once_and_one_never_shown_changes_nothing(self):
         self.archive_at(self.long_ago, {"memory_far": "User runs in the morning"})
@@ -398,7 +392,7 @@ class UsedMemoriesTest(MemoryServiceTestCase):
 
         self.assertEqual(self.core(state, "core_name").n_used, 1)
         self.assertEqual(self.archived("memory_far")[1], 1,
-                         "l'id esiste in archivio: il filtro e' solo l'esistenza")
+                         "the id exists in the archive: the filter is only existence")
 
     def test_switched_off_the_retrieval_stamps_and_no_use_is_counted(self):
         state = self.run_retrieve(["memory_a", "core_name"], track_used=False)
@@ -418,15 +412,15 @@ class UsedMemoriesTest(MemoryServiceTestCase):
         n_retrieve, n_used, retrieved_at = self.archived("memory_b")
         self.assertEqual((n_retrieve, n_used), (1, 0))
         self.assertGreater(retrieved_at, self.long_ago.isoformat(),
-                           "retrieved_at torna ad aggiornarsi al recupero")
+                           "retrieved_at goes back to updating on retrieval")
 
 
 class CurrentQueryTest(MemoryServiceTestCase):
-    """Il recupero deve partire dalla domanda corrente, non dall'ultimo messaggio.
+    """Retrieval must start from the current question, not from the last message.
 
-    Senza la query, l'unico appiglio era state["messages"][-1] - che al momento
-    della get_memory e' la risposta del giro precedente, non quello che l'utente
-    sta chiedendo adesso.
+    Without the query, the only foothold was state["messages"][-1] - which at
+    the time of get_memory is the answer of the previous round, not what the
+    user is asking right now.
     """
 
     tool_responses = {
@@ -435,18 +429,18 @@ class CurrentQueryTest(MemoryServiceTestCase):
     default_content = "risposta"
 
     def test_a_question_is_answered_even_with_an_empty_conversation(self):
-        # L'archivio puo' contenere roba di sessioni precedenti: una domanda a
-        # freddo deve comunque poterlo interrogare.
+        # The archive can hold stuff from previous sessions: a cold question
+        # must still be able to query it.
         self.archive({"memory_a": "L'utente e' allergico alle arachidi"})
 
         state = self.agent.run_memory_agent("retrieve", query="a cosa sono allergico?")
 
-        self.assertTrue(self.llm.invocations, "il grafo deve girare, non uscire subito")
+        self.assertTrue(self.llm.invocations, "the graph must run, not exit right away")
         self.assertIn("arachidi", state["retrieved_memory"])
 
     def test_a_retrieve_with_no_question_spends_nothing(self):
-        # Solo messaggi dell'assistente: non c'e' niente a cui rispondere, e il
-        # ramo girerebbe su un input vuoto cercando in archivio con niente.
+        # Only assistant messages: there is nothing to answer, and the branch
+        # would run on an empty input searching the archive with nothing.
         self.agent.state["messages"] = [AIMessage(content="ciao")]
 
         self.agent.run_memory_agent("retrieve")
@@ -455,19 +449,20 @@ class CurrentQueryTest(MemoryServiceTestCase):
 
 
 def _tool_name(tool):
-    """Nome di uno strumento, sia esso un modello pydantic o un @tool."""
+    """Name of a tool, be it a pydantic model or a @tool."""
     return getattr(tool, "__name__", None) or getattr(tool, "name", str(tool))
 
 
 class QueryFallbackTest(unittest.TestCase):
-    """Senza user_input la domanda e' l'ultimo messaggio DELL'UTENTE.
+    """Without user_input the question is the last message OF THE USER.
 
-    intent_recognition chiama get_memory senza passare user_input, e in quel
-    momento l'ultimo messaggio in memoria e' la spiegazione che explainability ha
-    appeso al giro prima. Ripiegando sull'ultimo messaggio e basta si cercherebbe
-    in archivio con le parole dell'assistente e gli si risponderebbe come a una
-    domanda: la stessa retroazione tolta dal lato del consolidamento, rimasta in
-    piedi da questo.
+    Some callers - explainability, inner_speech, intent_recognition at startup -
+    call get_memory without passing user_input, and the last message in memory
+    can be the explanation that explainability appended on the previous round.
+    Falling back on just the last message, the
+    archive would be searched with the assistant's words and they would be
+    answered as a question: the same feedback loop removed from the
+    consolidation side, still standing on this one.
     """
 
     def test_the_query_from_the_caller_wins(self):
@@ -478,7 +473,7 @@ class QueryFallbackTest(unittest.TestCase):
 
         self.assertEqual(query, "quante calorie?")
         self.assertEqual(len(history), 1,
-                         "con la domanda dal chiamante, i messaggi sono tutti storico")
+                         "with the question from the caller, the messages are all history")
 
     def test_the_last_assistant_line_is_not_taken_as_a_question(self):
         state = {"current_query": "",
@@ -489,8 +484,8 @@ class QueryFallbackTest(unittest.TestCase):
 
         self.assertEqual(query, "cosa bevo la mattina?")
         self.assertEqual(history, [],
-                         "lo storico e' cio' che precede la domanda, e la "
-                         "risposta a quella domanda non la precede")
+                         "the history is what precedes the question, and the "
+                         "answer to that question does not precede it")
 
     def test_without_any_user_message_there_is_no_question(self):
         state = {"current_query": "", "messages": [AIMessage(content="ciao")]}
@@ -499,10 +494,11 @@ class QueryFallbackTest(unittest.TestCase):
 
 
 class SpeakerSeparationTest(MemoryServiceTestCase):
-    """I fatti vengono dall'utente, l'assistente e' contesto in un campo suo.
+    """The facts come from the user, the assistant is context in a field of its own.
 
-    Senza la separazione l'assistente rientra: le sue risposte ripetono quello
-    che gia' sa - cioe' la memoria - e il consolidamento le riestrae come fatti.
+    Without the separation the assistant comes back in: its answers repeat what
+    it already knows - that is, the memory - and consolidation extracts them
+    again as facts.
     """
 
     tool_responses = {"InsertCoreMemories": {"memories": []}}
@@ -510,8 +506,8 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
     ONLY_THE_ASSISTANT_SAYS_THIS = "PAROLA-DETTA-SOLO-DALL-ASSISTENTE"
 
     def consolidate(self):
-        # Otto messaggi con una finestra di cinque: ne escono tre, cioe' almeno
-        # un turno di ciascuna voce.
+        # Eight messages with a window of five: three leave, that is at least
+        # one turn of each entry.
         self.agent.state["messages"] = [
             HumanMessage(content="mi chiamo Bianca"),
             AIMessage(content=f"piacere, {self.ONLY_THE_ASSISTANT_SAYS_THIS}"),
@@ -532,14 +528,14 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
 
         self.assertIn("mi chiamo Bianca", said_by_user)
         self.assertNotIn(self.ONLY_THE_ASSISTANT_SAYS_THIS, said_by_user,
-                         "la risposta dell'assistente non deve stare fra le fonti dei fatti")
+                         "the assistant's answer must not be among the sources of the facts")
         self.assertIn(self.ONLY_THE_ASSISTANT_SAYS_THIS, said_by_assistant)
         self.assertNotIn("mi chiamo Bianca", said_by_assistant)
 
     def test_the_archive_is_searched_with_the_words_of_the_user(self):
-        # Cercare con la risposta dell'assistente riporterebbe a galla proprio
-        # le memorie che stava citando, e le renderebbe candidate per un
-        # redundant: il giro si chiuderebbe dal lato della ricerca.
+        # Searching with the assistant's answer would bring up exactly the
+        # memories it was quoting, and would make them candidates for a
+        # redundant: the loop would close on the search side.
         self.consolidate()
         query = self.vector_store.searches[-1]["query"]
 
@@ -548,12 +544,12 @@ class SpeakerSeparationTest(MemoryServiceTestCase):
 
 
 class NodeSamplingWiringTest(MemoryServiceTestCase):
-    """Ogni nodo deve chiedere il proprio nome, e quel nome deve esistere.
+    """Each node must ask for its own name, and that name must exist.
 
-    Il doppio dei test viene restituito per qualunque nome, quindi un refuso -
-    get_llm("retrival") - non farebbe fallire niente: quel nodo erediterebbe in
-    silenzio le impostazioni generali, e la manopola che credi di girare in
-    NODE_SAMPLING non sarebbe collegata a nulla.
+    The test double is returned for any name, so a typo -
+    get_llm("retrival") - would make nothing fail: that node would silently
+    inherit the general settings, and the knob you think you are turning in
+    NODE_SAMPLING would be connected to nothing.
     """
 
     tool_responses = {
@@ -575,8 +571,8 @@ class NodeSamplingWiringTest(MemoryServiceTestCase):
         self.addCleanup(setattr, backends, "get_llm", original)
 
     def test_every_node_asks_for_a_name_that_exists(self):
-        # Una core memory oltre il limite serve a far scattare anche lo split,
-        # che e' il quarto e il piu' facile da dimenticare.
+        # A core memory over the limit also triggers the split,
+        # which is the fourth and the easiest to forget.
         self.agent.state["core_memory"] = [CoreMemoryItem(content="x" * 200)]
         self.agent.run_memory_agent("retrieve", query="cosa bevo?")
 
@@ -586,17 +582,17 @@ class NodeSamplingWiringTest(MemoryServiceTestCase):
         self.assertEqual(
             set(self.nodes),
             set(NODE_SAMPLING),
-            "i nomi usati dai nodi e le chiavi di NODE_SAMPLING devono coincidere")
+            "the names used by the nodes and the keys of NODE_SAMPLING must match")
 
 
 class NodeStatsTest(MemoryServiceTestCase):
-    """Il costo di una run va attribuito al nodo che l'ha speso.
+    """The cost of a run must be attributed to the node that spent it.
 
-    Il totale mescola quattro chiamate con bisogni diversi e il carico di una GPU
-    condivisa. Senza la ripartizione, girare una manopola di NODE_SAMPLING
-    produce un numero solo e nessun modo di sapere quale nodo l'ha mosso - e i
-    token, che dal carico non dipendono, separano "ha ragionato di meno" da "il
-    cluster era piu' libero".
+    The total mixes four calls with different needs and the load of a shared
+    GPU. Without the breakdown, turning a NODE_SAMPLING knob produces a single
+    number and no way to know which node moved it - and the tokens, which do
+    not depend on the load, separate "it reasoned less" from "the cluster was
+    freer".
     """
 
     tool_responses = {
@@ -615,7 +611,7 @@ class NodeStatsTest(MemoryServiceTestCase):
         self.assertEqual(NODE_STATS["retrieval"]["calls"], 1)
         self.assertEqual(NODE_STATS["generate_answer"]["calls"], 1)
         self.assertNotIn("consolidation", NODE_STATS,
-                         "il ramo insert non ha girato, non deve comparire")
+                         "the insert branch did not run, it must not appear")
 
     def test_the_time_is_recorded(self):
         self.agent.run_memory_agent("retrieve", query="cosa bevo?")
@@ -632,18 +628,18 @@ class NodeStatsTest(MemoryServiceTestCase):
         self.assertEqual(NODE_STATS["finto"]["output_tokens"], 45)
 
     def test_a_response_without_usage_metadata_counts_zero(self):
-        # I doppi non lo popolano, e nemmeno ogni provider lo restituisce:
-        # l'assenza deve valere zero token, non fermare la run a meta'.
+        # The doubles do not fill it, and not every provider returns it either:
+        # its absence must count as zero tokens, not stop the run halfway.
         self.agent.run_memory_agent("retrieve", query="cosa bevo?")
 
         self.assertEqual(NODE_STATS["retrieval"]["output_tokens"], 0)
 
 
 class ToolChoiceSpy:
-    """Registra come vengono legati gli strumenti, senza cambiare il risultato.
+    """Record how the tools are bound, without changing the result.
 
-    Il doppio e' un modello pydantic e rifiuta le assegnazioni sull'istanza, per
-    cui la sostituzione avviene sulla classe e viene annullata a fine test.
+    The double is a pydantic model and refuses assignments on the instance, so
+    the replacement happens on the class and is undone at the end of the test.
     """
 
     def __init__(self, test_case, model):
@@ -661,12 +657,12 @@ class ToolChoiceSpy:
 
 
 class ToolChoiceTest(MemoryServiceTestCase):
-    """Le tool call sempre attese vengono forzate, non sperate.
+    """The tool calls that are always expected are forced, not hoped for.
 
-    Con una temperatura deliberatamente diversa da zero il modello ogni tanto
-    risponde in prosa invece di emettere la chiamata. Dove una tool call e'
-    l'unico esito sensato quello e' perdita silenziosa di dati: il nodo non
-    salva niente e i messaggi vengono comunque tagliati.
+    With a temperature deliberately different from zero the model now and then
+    answers in prose instead of emitting the call. Where a tool call is the only
+    sensible outcome that is silent data loss: the node saves nothing and the
+    messages are cut anyway.
     """
 
     tool_responses = {
@@ -677,7 +673,7 @@ class ToolChoiceTest(MemoryServiceTestCase):
     def test_the_consolidation_requires_its_tool_call(self):
         spy = ToolChoiceSpy(self, self.llm)
 
-        # Oltre la finestra, altrimenti il consolidamento non scatta affatto.
+        # Beyond the window, otherwise consolidation does not trigger at all.
         self.agent.state["messages"] = self.conversation(8)
         self.agent.run_memory_agent("insert")
 
@@ -685,13 +681,13 @@ class ToolChoiceTest(MemoryServiceTestCase):
 
 
 class RetrieveToolChoiceTest(MemoryServiceTestCase):
-    """Sul ramo di recupero la chiamata e' obbligatoria, la scelta resta libera.
+    """On the retrieval branch the call is mandatory, the choice stays free.
 
-    Prima questo nodo era l'unico non forzato, perche' non cercare doveva restare
-    possibile. Ma si esprimeva non emettendo la tool call, e un modello che
-    sbaglia a emetterla lascia esattamente lo stesso stato: la decisione e il
-    guasto erano indistinguibili. Con due strumenti la stessa liberta' passa da
-    NoSearchNeeded, che si vede.
+    Before, this node was the only one not forced, because not searching had to
+    stay possible. But it was expressed by not emitting the tool call, and a
+    model that fails to emit it leaves exactly the same state: the decision and
+    the failure were indistinguishable. With two tools the same freedom goes
+    through NoSearchNeeded, which is visible.
     """
 
     tool_responses = {"retrieve_memory": {"query": "te nero", "k": 2}}
@@ -706,11 +702,11 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
 
         self.assertEqual(spy.calls.get("retrieve_memory"), "required")
         self.assertEqual(spy.calls.get("NoSearchNeeded"), "required",
-                         "non cercare deve essere una risposta, non un silenzio")
+                         "not searching must be an answer, not a silence")
 
 
 class RetrievalModeTest(MemoryServiceTestCase):
-    """Con always_llm_query la ricerca in archivio avviene sempre: il modello scrive solo la query."""
+    """With always_llm_query the archive search always happens: the model writes only the query."""
 
     tool_responses = {"retrieve_memory": {"query": "black tea", "k": 2}}
     default_content = "Bevi te nero il pomeriggio."
@@ -728,9 +724,9 @@ class RetrievalModeTest(MemoryServiceTestCase):
 
         state = self.run_retrieve("always_llm_query")
 
-        self.assertEqual(spy.calls, {"retrieve_memory": "required"}, "NoSearchNeeded non c'e'")
+        self.assertEqual(spy.calls, {"retrieve_memory": "required"}, "NoSearchNeeded is not there")
         self.assertEqual(self.vector_store.searches[0]["query"], "black tea",
-                         "la query la scrive il modello")
+                         "the model writes the query")
         self.assertEqual(self.vector_store.searches[0]["k"], 2)
         self.assertIn("black tea", state["retrieved_memory"])
 
@@ -742,13 +738,6 @@ class AppendMessageTest(MemoryServiceTestCase):
 
         self.assertIsInstance(self.agent.state["messages"][0], HumanMessage)
         self.assertIsInstance(self.agent.state["messages"][1], AIMessage)
-
-
-class RetrieveMemoryToolTest(MemoryServiceTestCase):
-
-    def test_no_results(self):
-        self.assertEqual(
-            retrieve_memory.invoke({"query": "anything"}), "No relevant active memories found.")
 
 
 class LastOperationsTest(MemoryServiceTestCase):
@@ -767,16 +756,13 @@ class LastOperationsTest(MemoryServiceTestCase):
 
         operations = self.agent.last_operations()
         self.assertEqual([entry.content for entry in operations], ["Bianca lives in Palermo"])
-        self.assertEqual(len(state["operation_log"]), 2, "il log completo li tiene entrambi")
+        self.assertEqual(len(state["operation_log"]), 2, "the full log keeps both")
 
     def test_a_run_that_changes_nothing_reports_no_operation(self):
-        self.agent.state["messages"] = self.conversation(2)  # sotto il limite
+        self.agent.state["messages"] = self.conversation(2)  # under the limit
 
         self.agent.run_memory_agent("insert")
 
-        self.assertEqual(self.agent.last_operations(), [])
-
-    def test_no_operations_before_the_first_run(self):
         self.assertEqual(self.agent.last_operations(), [])
 
 

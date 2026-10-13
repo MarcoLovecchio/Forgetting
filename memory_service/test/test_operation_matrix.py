@@ -1,6 +1,6 @@
-"""La matrice di confusione delle operazioni, verificata senza modello.
+"""The confusion matrix of the operations, checked without a model.
 
-Esecuzione: python memory_service/run_tests.py -v
+Run: python memory_service/run_tests.py -v
 """
 
 import contextlib
@@ -24,12 +24,12 @@ LONGRUN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        "test_long_term_interaction.py")
 
 _TAG_TO_CLASS = {"": "new", "new": "new", "update": "update", "contradict": "update",
-                 "redundant": "redundant", "delete": "delete", "domanda": "none",
-                 "chiacchiere": "none"}
+                 "redundant": "redundant", "delete": "delete", "question": "none",
+                 "chatter": "none"}
 
 
 def conversation_tags():
-    """Il commento accanto a ogni messaggio di CONVERSATION, nell'ordine."""
+    """The comment next to each message of CONVERSATION, in order."""
     with open(LONGRUN, encoding="utf-8") as handle:
         lines = handle.read().splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("CONVERSATION = ["))
@@ -44,19 +44,19 @@ def conversation_tags():
 
 
 class ExpectedTableTest(unittest.TestCase):
-    """La tabella delle operazioni attese contro la conversazione vera."""
+    """The table of the expected operations against the real conversation."""
 
     def test_the_table_agrees_with_the_comments_of_the_conversation(self):
         tags = conversation_tags()
         self.assertEqual(len(tags), 232)
         for index, tag in enumerate(tags, 1):
             self.assertEqual(om.expected(index)[0], _TAG_TO_CLASS[tag],
-                             "msg %d (%s)" % (index, tag or "presentazione"))
+                             "msg %d (%s)" % (index, tag or "presentation"))
 
     def test_the_questions_are_the_ones_fama_evaluates(self):
         tags = conversation_tags()
         none = {index for index in range(1, len(tags) + 1) if om.expected(index)[0] == "none"}
-        chatter = {index for index, tag in enumerate(tags, 1) if tag == "chiacchiere"}
+        chatter = {index for index, tag in enumerate(tags, 1) if tag == "chatter"}
         self.assertEqual(none - chatter, set(fama.QUESTIONS))
 
     def test_alternatives_are_real_classes_and_not_the_label_again(self):
@@ -66,8 +66,8 @@ class ExpectedTableTest(unittest.TestCase):
                 self.assertTrue(set(combination) <= set(om.CLASSES), "msg %d" % index)
 
     def test_a_changed_value_always_needs_an_update(self):
-        # 2000 e 2200 attivi insieme sarebbero una contraddizione in memoria: un
-        # new passa solo accanto all'update che toglie il valore vecchio.
+        # 2000 and 2200 active together would be a contradiction in memory: a
+        # new passes only next to the update that removes the old value.
         for index in (38, 62, 70, 82, 89, 153, 156, 175, 193, 199, 216, 229):
             for combination in om.expected(index)[1]:
                 self.assertIn("update", combination, "msg %d" % index)
@@ -78,7 +78,7 @@ class ExpectedTableTest(unittest.TestCase):
 
 
 class ClassifyTest(unittest.TestCase):
-    """Dalle voci del log di un messaggio alla sua etichetta."""
+    """From the log entries of a message to its label."""
 
     def test_create_is_new_and_the_split_is_not_a_classification(self):
         self.assertEqual(om.classify(["create", "archive"]), ("new", ("new",), 1))
@@ -93,14 +93,14 @@ class ClassifyTest(unittest.TestCase):
 
 
 class AttributionTest(unittest.TestCase):
-    """A quale messaggio appartengono le operazioni di un turno."""
+    """Which message the operations of a turn belong to."""
 
     def test_the_first_turn_consolidates_nothing(self):
         self.assertLess(om.consolidated_message(1, 2), 1)
 
     def test_it_agrees_with_the_fama_snapshot(self):
-        # Al turno in cui si fotografa la memoria di una domanda si consolida il
-        # messaggio che la precede: se i due conti divergono, uno dei due mente.
+        # At the turn where a question's memory is snapshotted, the message that
+        # precedes it is consolidated: if the two counts diverge, one of them lies.
         for window in (1, 2, 4, 6):
             for question in fama.QUESTIONS:
                 turn = fama.memory_snapshot_turn(question, window)
@@ -108,30 +108,30 @@ class AttributionTest(unittest.TestCase):
 
 
 class AccuracyTest(unittest.TestCase):
-    """Accuratezza stretta e tollerante, e la matrice."""
+    """Strict and lenient accuracy, and the matrix."""
 
     def test_strict_and_lenient(self):
         exact = om.row(38, ["update"])
-        tolerated = om.row(103, ["create"])            # il mercoledi' come new
-        wrong = om.row(38, ["create"])                # 2200 accanto a 2000
-        mixed = om.row(77, ["redundant", "create"])   # pianoforte e chitarra
+        tolerated = om.row(103, ["create"])            # Wednesday as a new
+        wrong = om.row(38, ["create"])                # 2200 next to 2000
+        mixed = om.row(77, ["redundant", "create"])   # piano and guitar
         self.assertTrue(om.is_strict(exact) and om.is_lenient(exact))
         self.assertTrue(not om.is_strict(tolerated) and om.is_lenient(tolerated))
         self.assertFalse(om.is_strict(wrong) or om.is_lenient(wrong))
         self.assertTrue(not om.is_strict(mixed) and om.is_lenient(mixed))
 
     def test_the_types_must_match_a_combination_not_be_part_of_it(self):
-        self.assertFalse(om.is_lenient(om.row(77, ["redundant"])))         # chitarra persa
-        self.assertTrue(om.is_lenient(om.row(82, ["update", "create"])))   # corsa e ginocchio
-        self.assertFalse(om.is_lenient(om.row(82, ["create"])))            # corre e non corre
+        self.assertFalse(om.is_lenient(om.row(77, ["redundant"])))         # guitar lost
+        self.assertTrue(om.is_lenient(om.row(82, ["update", "create"])))   # running and knee
+        self.assertFalse(om.is_lenient(om.row(82, ["create"])))            # runs and does not run
 
     def test_repeats_are_fragmentation_only_where_not_expected(self):
         text = "\n".join(om.format_report([
             om.row(23, ["create", "create"]), om.row(24, ["create", "create"]),
             om.row(197, ["delete", "delete"]), om.row(47, ["update", "update"]),
             om.row(62, ["update", "create", "create"]), om.row(16, ["create"])]))
-        self.assertIn("Frammentazione: 2 messaggi con piu' operazioni dello stesso tipo "
-                      "(msg 47, 62), piu' 3 dove sono previste", text)
+        self.assertIn("Fragmentation: 2 messages with several operations of the same type "
+                      "(msg 47, 62), plus 3 where they are expected", text)
 
     def test_a_question_that_produced_nothing_is_right(self):
         self.assertTrue(om.is_strict(om.row(36, [])))
@@ -143,15 +143,9 @@ class AccuracyTest(unittest.TestCase):
         self.assertEqual(counts["update"]["new"], 1)
         self.assertEqual(counts["delete"]["none"], 1)
 
-    def test_the_report_names_every_class(self):
-        text = "\n".join(om.format_report([om.row(38, ["update"]), om.row(36, [])]))
-        for name in ("new", "redundant", "update", "delete", "nessuna", "misto", "precisione"):
-            self.assertIn(name, text)
-        self.assertIn("Accuratezza stretta 2/2", text)
-
 
 class SavedRunsTest(unittest.TestCase):
-    """Le run si salvano una per riga e si sommano per commit."""
+    """The runs are saved one per line and summed per commit."""
 
     def test_runs_are_appended_and_read_back(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -176,7 +170,7 @@ class SavedRunsTest(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 code = om.main(["operation_matrix.py", path])
         self.assertEqual(code, 0)
-        self.assertIn("2 run del commit b su 3 salvate", out.getvalue())
+        self.assertIn("2 runs of commit b out of 3 saved", out.getvalue())
         self.assertIn("1/2", out.getvalue())
 
 

@@ -28,12 +28,12 @@ class MemoryClient(Node):
         return future.result()
 
     def send_get_request(self, user_input=''):
-        """Chiede lo stato della memoria.
+        """Ask for the memory state.
 
-        `user_input` e' il messaggio corrente dell'utente: passarlo permette al
-        ramo di recupero di cercare in archivio in base a quello che l'utente sta
-        chiedendo adesso. Lasciandolo vuoto il servizio ripiega sull'ultimo
-        messaggio gia' in memoria.
+        `user_input` is the user's current message: passing it lets the
+        retrieval branch search the archive for what the user is asking
+        right now. Left empty, the service falls back on the last user message
+        already in memory.
         """
         req = GetMemory.Request()
         req.user_input = str(user_input)
@@ -44,18 +44,18 @@ class MemoryClient(Node):
 
 def print_memory(title, memory_list, memory_ids):
     """Core memories with their identifier, since the two arrays are aligned."""
-    print(f'{title} ({len(memory_list)} memorie attive):')
+    print(f'{title} ({len(memory_list)} active memories):')
     if not memory_list:
-        print('  (core memory vuota)')
+        print('  (core memory empty)')
     for content, item_id in zip(memory_list, memory_ids):
         print(f'  - [{item_id}] {content}')
 
 
 def print_operations(operation_log):
     """What the consolidation did during the call, one JSON entry per line."""
-    print(f'Operazioni di consolidamento ({len(operation_log)}):')
+    print(f'Consolidation operations ({len(operation_log)}):')
     if not operation_log:
-        print('  (nessuna operazione)')
+        print('  (no operations)')
     for entry in operation_log:
         operation = json.loads(entry)
         related = operation.get('related_item_id') or '-'
@@ -81,13 +81,13 @@ def main(args=None):
         queries=['q1', 'q2'],
         results='result1, result2',
     )
-    print_memory('Dopo update', update_response.memory_list, update_response.memory_ids)
+    print_memory('After update', update_response.memory_list, update_response.memory_ids)
     print_operations(update_response.operation_log)
 
     get_response = client.send_get_request()
     print()
-    print_memory('Memoria corrente', get_response.memory_list, get_response.memory_ids)
-    print('Ultimi messaggi:', list(get_response.last_messages))
+    print_memory('Current memory', get_response.memory_list, get_response.memory_ids)
+    print('Last messages:', list(get_response.last_messages))
     print_operations(get_response.operation_log)
 
     client.destroy_node()
