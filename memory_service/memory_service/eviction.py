@@ -24,10 +24,10 @@ active ones, though, because that is what it takes to get back within the limit.
 The score
 ---------
 Each term is a separate function, with values in [0, 1], high meaning keep.
-eviction_terms computes the enabled terms, by name, and combine_terms combines
-them. time_decay and frequency have their own switch in MemoryConfig, like
-eviction; utility follows consolidation_utility. A new term is added in
-eviction_terms and in the weights, and from there it also reaches the log.
+eviction_terms computes the terms, by name, and combine_terms combines them.
+time_decay and frequency are always there; utility follows
+consolidation_utility. A new term is added in eviction_terms and in the
+weights, and from there it also reaches the log.
 
     utility           the classifier's judgment, according to
                       consolidation_utility; with `none` it is not there:
@@ -63,20 +63,18 @@ eviction_terms and in the weights, and from there it also reaches the log.
                       the archive, like LFU and N_visit
                       of MemoryOS. The count is n_used when uses are counted
                       (track_used, with generate_answer), n_retrieve otherwise:
-                      as for the time decay, only one is ever used. It enters
-                      with eviction_frequency.
+                      as for the time decay, only one is ever used.
 
 combine_terms follows eviction_combination:
 
     weighted_sum      0.5 utility + 0.25 time_decay + 0.25 frequency
     product           utility * (0.5 time_decay + 0.5 frequency)
 
-The weights are rescaled over the enabled terms: without frequency the weighted
-sum is 2/3 utility + 1/3 time_decay, the product utility * time_decay. Without
-utility the two formulas are the mean of the enabled terms.
+The weights are rescaled over the terms present: without utility the two
+formulas are the same mean of time_decay and frequency.
 
-With every term off nothing leaves. The memories leave all together: the scores
-are computed only once, on the candidates of that moment.
+The memories leave all together: the scores are computed only once, on the
+candidates of that moment.
 
 What it touches and what not
 ----------------------------
@@ -284,12 +282,12 @@ def need_gain_term(need: int, gain: int) -> float:
 
 
 def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
-                   frequency_max: Optional[int] = None) -> Dict[str, float]:
-    """The enabled terms, by name: they are also the sub-scores the log reports.
+                   frequency_max: int) -> Dict[str, float]:
+    """The terms, by name: they are also the sub-scores the log reports.
 
     `frequency_max`, the highest count among the candidates on the field of
     frequency_field, depends on the other memories, so whoever has them all
-    computes it. It is needed only with eviction_frequency.
+    computes it.
     """
     terms = {}
     if config.consolidation_utility == "single":
@@ -297,11 +295,9 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     elif config.consolidation_utility == "need_gain":
         terms["utility"] = need_gain_term(metadata.get("need", NEUTRAL_RATINGS["need"]),
                                           metadata.get("gain", NEUTRAL_RATINGS["gain"]))
-    if config.eviction_time_decay:
-        decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
-        terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now)
-    if config.eviction_frequency:
-        terms["frequency"] = frequency_term(metadata[frequency_field(config)], frequency_max)
+    decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
+    terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now)
+    terms["frequency"] = frequency_term(metadata[frequency_field(config)], frequency_max)
     return terms
 
 
@@ -311,22 +307,15 @@ def weighted_mean(terms: Dict[str, float], weights: Dict[str, float]) -> float:
     return sum(weights[name] * value for name, value in terms.items()) / total
 
 
-def combine_terms(terms: Dict[str, float], combination: str) -> Optional[float]:
-    """The score from the terms, in [0, 1]: None if there is none.
+def combine_terms(terms: Dict[str, float], combination: str) -> float:
+    """The score from the terms, in [0, 1]: the lowest leaves first.
 
     Without utility the two combinations are the same mean.
     """
-    if not terms:
-        return None
     if combination == "product" and "utility" in terms:
         rest = {name: value for name, value in terms.items() if name != "utility"}
-        return terms["utility"] * (weighted_mean(rest, PRODUCT_WEIGHTS) if rest else 1)
+        return terms["utility"] * weighted_mean(rest, PRODUCT_WEIGHTS)
     return weighted_mean(terms, WEIGHTED_SUM_WEIGHTS)
-
-
-def eviction_score(metadata: dict, config: MemoryConfig, now: datetime) -> Optional[float]:
-    """The score of a memory: the lowest leaves first. None if no term is enabled."""
-    return combine_terms(eviction_terms(metadata, config, now), config.eviction_combination)
 
 
 def prune_count(active: int, fraction: float = PRUNE_FRACTION) -> int:
@@ -341,11 +330,10 @@ def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
 
     It removes prune_count of the active ones, all together, choosing them among
     those without safety: the protected ones stay out before any computation,
-    even from the highest count of the frequency. With every term off none has a
-    score, and nothing leaves. Return the removed ids, and for each one add a
-    `prune` entry to the log with the score and the terms. Like
-    evict_archived_tombstones it does not raise if the store fails, and the log
-    records only the successful removals.
+    even from the highest count of the frequency. Return the removed ids, and
+    for each one add a `prune` entry to the log with the score and the terms.
+    Like evict_archived_tombstones it does not raise if the store fails, and the
+    log records only the successful removals.
 
     It does not look at the limit: whether the archive exceeds it is decided by
     the graph, with archive_over_limit, before getting here. The `status: active`
@@ -364,17 +352,14 @@ def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
     candidates = [(doc_id, content, metadata)
                   for doc_id, content, metadata in zip(ids, documents, metadatas)
                   if not metadata.get("safety")]
-    frequency_max = (max((metadata[frequency_field(config)] for _, _, metadata in candidates),
-                         default=0)
-                     if config.eviction_frequency else None)
+    frequency_max = max((metadata[frequency_field(config)] for _, _, metadata in candidates),
+                        default=0)
     now = now or datetime.now()
 
     scored = []
     for doc_id, content, metadata in candidates:
         terms = eviction_terms(metadata, config, now, frequency_max)
-        score = combine_terms(terms, config.eviction_combination)
-        if score is not None:
-            scored.append((score, doc_id, content, terms))
+        scored.append((combine_terms(terms, config.eviction_combination), doc_id, content, terms))
     targets = sorted(scored, key=lambda target: target[:2])[:prune_count(len(ids))]
     if not targets:
         return []

@@ -189,7 +189,7 @@ def is_lenient(record: Dict) -> bool:
 
 
 def matrix(records: Iterable[Dict]) -> Dict[str, Counter]:
-    """Righe: operazione attesa. Colonne: operazione eseguita."""
+    """Rows: expected operation. Columns: executed operation."""
     counts = {label: Counter() for label in CLASSES}
     for record in records:
         counts[record["expected"]][record["predicted"]] += 1

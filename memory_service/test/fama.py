@@ -718,8 +718,7 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     ),
 
     111: EvaluationQuestion(
-        111, "msg 110 extended the allergy to peanut oil, msg 72 added penicillin"
-             "penicillina",
+        111, "msg 110 extended the allergy to peanut oil, msg 72 added penicillin",
         (
             recalls("peanuts", "arachid*", "peanut*"),
             recalls("penicillin", "penicillin*"),
@@ -868,8 +867,7 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     ),
 
     179: EvaluationQuestion(
-        179, "task: the sports week, with the pilates of msg 178 and the running of msg 176"
-             "msg 176",
+        179, "task: the sports week, with the pilates of msg 178 and the running of msg 176",
         (
             recalls_some("at least two sports", 2, ("corr*", "corsa", "run*", "jog*"),
                          ("nuot*", "swim*"), "pilates"),

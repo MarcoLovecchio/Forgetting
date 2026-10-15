@@ -112,10 +112,8 @@ class MemoryConfig:
     archive_memory_limit: int = 50
     # Code only: from_environment does not read these, on purpose.
     eviction: bool = True
-    eviction_time_decay: bool = True
     eviction_time_decay_field: Literal["updated_at", "retrieved_at"] = "updated_at"
     eviction_time_decay_function: Literal["weibull", "power"] = "weibull"
-    eviction_frequency: bool = True
     eviction_combination: Literal["weighted_sum", "product"] = "weighted_sum"
     retrieval_mode: Literal["decide", "always_llm_query"] = "decide"
     generate_answer: bool = True

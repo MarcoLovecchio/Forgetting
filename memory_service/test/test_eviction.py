@@ -36,7 +36,6 @@ from memory_service.eviction import (  # noqa: E402
     archive_over_limit,
     combine_terms,
     evict_archived_tombstones,
-    eviction_score,
     eviction_terms,
     frequency_term,
     need_gain_term,
@@ -56,10 +55,8 @@ EVICTION_CONFIG = MemoryConfig(
     generate_answer=False,
     maximum_historical_messages=1,
     core_memory_limit=2000,
-    eviction_time_decay=True,
     eviction_time_decay_field="updated_at",
     eviction_time_decay_function="weibull",
-    eviction_frequency=False,
     eviction_combination="weighted_sum",
     consolidation_utility="none",
     track_used=False,
@@ -260,32 +257,32 @@ class TimeDecayTermTest(unittest.TestCase):
                 self.assertEqual(self.worth(decay, hours=-5), 1.0)
 
 
-class EvictionScoreTest(unittest.TestCase):
-    """The combination of the enabled terms."""
+class TimeDecayFieldTest(unittest.TestCase):
+    """Which timestamp the time decay reads."""
 
     METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(),
-                "retrieved_at": (NOW - timedelta(days=20)).isoformat()}
+                "retrieved_at": (NOW - timedelta(days=20)).isoformat(), "n_retrieve": 0}
 
     def test_the_timestamps_share_one_slot(self):
         # Never a mean between timestamps: the term is one, the selector says which.
         for field in ("updated_at", "retrieved_at"):
             with self.subTest(field=field):
                 config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field=field)
-                self.assertEqual(eviction_score(self.METADATA, config, NOW),
+                self.assertEqual(eviction_terms(self.METADATA, config, NOW, 0)["time_decay"],
                                  weibull_decay_term(self.METADATA[field], NOW))
 
 
 class FrequencyTermTest(EvictionTestCase):
     """The frequency term: a count relative to the highest, on n_retrieve or n_used."""
 
-    FREQUENCY_ONLY = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False,
-                                         eviction_frequency=True)
-    USES_COUNTED = dataclasses.replace(FREQUENCY_ONLY, track_used=True, generate_answer=True)
+    USES_COUNTED = dataclasses.replace(EVICTION_CONFIG, track_used=True, generate_answer=True)
     METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(),
                 "n_retrieve": 3, "n_used": 1}
 
     def archive_counts(self, content, n_retrieve, n_used):
-        item = CoreMemoryItem(content=content, n_retrieve=n_retrieve, n_used=n_used)
+        # The same updated_at for all: only the frequency tells them apart.
+        item = CoreMemoryItem(content=content, n_retrieve=n_retrieve, n_used=n_used,
+                              updated_at=NOW)
         archive_items([item])
         return item.id
 
@@ -297,30 +294,20 @@ class FrequencyTermTest(EvictionTestCase):
     def test_an_archive_never_counted_is_worth_zero_everywhere(self):
         self.assertEqual(frequency_term(0, 0), 0.0)
 
-    def test_with_the_switch_off_it_stays_out_of_the_score(self):
-        self.assertEqual(eviction_score({**self.METADATA, "n_retrieve": 0}, EVICTION_CONFIG, NOW),
-                         eviction_score({**self.METADATA, "n_retrieve": 50}, EVICTION_CONFIG, NOW))
-
-    def test_with_the_switch_on_it_joins_the_terms(self):
-        config = dataclasses.replace(EVICTION_CONFIG, eviction_frequency=True)
-
-        self.assertEqual(eviction_terms(self.METADATA, config, NOW, frequency_max=6),
-                         {"time_decay": weibull_decay_term(self.METADATA["updated_at"], NOW),
-                          "frequency": 0.5})
-
     def test_the_two_counts_share_one_slot(self):
-        for field, config in (("n_retrieve", self.FREQUENCY_ONLY), ("n_used", self.USES_COUNTED)):
+        decay = weibull_decay_term(self.METADATA["updated_at"], NOW)
+        for field, config in (("n_retrieve", EVICTION_CONFIG), ("n_used", self.USES_COUNTED)):
             with self.subTest(field=field):
                 self.assertEqual(eviction_terms(self.METADATA, config, NOW, frequency_max=6),
-                                 {"frequency": self.METADATA[field] / 6})
+                                 {"time_decay": decay, "frequency": self.METADATA[field] / 6})
 
     def test_in_the_prune_the_value_is_relative_to_the_highest(self):
         ids = {n: self.archive_counts(f"fatto {n}", n_retrieve=n, n_used=0) for n in (4, 2, 3)}
 
-        removed = prune_archive(self.log, self.FREQUENCY_ONLY, now=NOW)
+        removed = prune_archive(self.log, EVICTION_CONFIG, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
-        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 out of a maximum of 4")
+        self.assertEqual(self.log[0].score_terms["frequency"], 0.5, "2 out of a maximum of 4")
 
     def test_the_highest_is_taken_on_the_chosen_count(self):
         # All retrieved 9 times: the maximum of retrievals has nothing to do with uses.
@@ -329,7 +316,7 @@ class FrequencyTermTest(EvictionTestCase):
         removed = prune_archive(self.log, self.USES_COUNTED, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
-        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 uses, the maximum is 4")
+        self.assertEqual(self.log[0].score_terms["frequency"], 0.5, "2 uses, the maximum is 4")
 
     def retrieved_and_used(self):
         """Retrieved often but never used, used often but never retrieved, and one in between."""
@@ -347,8 +334,8 @@ class FrequencyTermTest(EvictionTestCase):
 class UtilityTermTest(unittest.TestCase):
     """The classifier's 1-5 rating in the score, and how it combines with the other terms."""
 
-    METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(), "utility": 4,
-                "need": 1, "gain": 3}
+    METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(), "n_retrieve": 0,
+                "utility": 4, "need": 1, "gain": 3}
     TERMS = {"utility": 0.8, "time_decay": 0.4, "frequency": 0.2}
 
     def test_the_vote_picks_its_entry(self):
@@ -361,21 +348,21 @@ class UtilityTermTest(unittest.TestCase):
                                ("need_gain", need_gain_term(1, 3))):
             with self.subTest(mode=mode):
                 config = dataclasses.replace(EVICTION_CONFIG, consolidation_utility=mode)
-                self.assertEqual(eviction_terms(self.METADATA, config, NOW).get("utility"),
+                self.assertEqual(eviction_terms(self.METADATA, config, NOW, 0).get("utility"),
                                  expected)
 
     def test_a_memory_without_a_vote_gets_the_middle_one(self):
         # The model can omit the rating, or give it off the scale: the prune must not stop.
         single = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="single")
         need_gain = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="need_gain")
-        unrated = {"updated_at": NOW.isoformat()}
+        unrated = {"updated_at": NOW.isoformat(), "n_retrieve": 0}
         asymmetric = ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6), (0.7, 0.8, 0.9))
 
         with mock.patch.object(eviction, "UTILITY_TABLE", (0.1, 0.3, 0.5, 0.7, 0.9)), \
                 mock.patch.object(eviction, "NEED_GAIN_TABLE", asymmetric):
-            self.assertEqual(eviction_terms(unrated, single, NOW)["utility"], 0.5)
-            self.assertEqual(eviction_terms(unrated, need_gain, NOW)["utility"], 0.5)
-            self.assertEqual(eviction_terms({**unrated, "need": 3}, need_gain, NOW)["utility"],
+            self.assertEqual(eviction_terms(unrated, single, NOW, 0)["utility"], 0.5)
+            self.assertEqual(eviction_terms(unrated, need_gain, NOW, 0)["utility"], 0.5)
+            self.assertEqual(eviction_terms({**unrated, "need": 3}, need_gain, NOW, 0)["utility"],
                              0.8)
 
     def test_need_picks_the_row_and_gain_the_column(self):
@@ -403,13 +390,12 @@ class UtilityTermTest(unittest.TestCase):
     def test_the_product_is_utility_times_the_mean_of_the_others(self):
         self.assertAlmostEqual(combine_terms(self.TERMS, "product"), 0.8 * (0.4 + 0.2) / 2)
 
-    def test_the_weights_follow_the_terms_switched_on(self):
-        # Without frequency: 2/3 utility and 1/3 time decay; the product is utility * decay.
-        terms = {"utility": 0.8, "time_decay": 0.5}
+    def test_without_utility_the_two_combinations_are_the_same_mean(self):
+        terms = {"time_decay": 0.4, "frequency": 0.2}
 
-        self.assertAlmostEqual(combine_terms(terms, "weighted_sum"), (2 * 0.8 + 0.5) / 3)
-        self.assertAlmostEqual(combine_terms(terms, "product"), 0.8 * 0.5)
-        self.assertAlmostEqual(combine_terms({"utility": 0.8}, "product"), 0.8)
+        for combination in ("weighted_sum", "product"):
+            with self.subTest(combination=combination):
+                self.assertAlmostEqual(combine_terms(terms, combination), 0.3)
 
 
 class PruneCountTest(unittest.TestCase):
@@ -446,15 +432,6 @@ class PruneArchiveTest(EvictionTestCase):
         published = json.loads(serialize_operation_log_for_response(self.log)[0])
         self.assertEqual(published["score_terms"], self.log[0].score_terms)
 
-    def test_with_every_term_off_nothing_leaves(self):
-        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False)
-        for days in range(3):
-            self.archive(f"fatto {days}", days_old=days * 30)
-
-        self.assertEqual(self.prune(config), [])
-        self.assertEqual(self.store.deletes, [])
-        self.assertEqual(self.log, [])
-
     def reinforced_and_retrieved(self):
         """Reinforced yesterday but never retrieved since, idle 10 days but retrieved yesterday."""
         return (self.archive("ha un cane di nome Argo", days_old=1, retrieved_days_old=30),
@@ -485,16 +462,15 @@ class SafetyTest(EvictionTestCase):
         self.assertNotIn(ids[10], [entry.item_id for entry in self.log])
 
     def test_a_protected_memory_is_out_of_the_frequency_max(self):
-        config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay=False,
-                                     eviction_frequency=True)
         for content, n_retrieve, safety in (("e' allergica alle arachidi", 8, True),
                                             ("ha un cane", 2, False), ("ha un gatto", 4, False)):
-            archive_items([CoreMemoryItem(content=content, n_retrieve=n_retrieve, safety=safety)])
+            archive_items([CoreMemoryItem(content=content, n_retrieve=n_retrieve, safety=safety,
+                                          updated_at=NOW)])
 
-        prune_archive(self.log, config, now=NOW)
+        prune_archive(self.log, EVICTION_CONFIG, now=NOW)
 
         self.assertEqual(self.log[0].content, "ha un cane")
-        self.assertEqual(self.log[0].score_terms, {"frequency": 0.5}, "2 out of a maximum of 4")
+        self.assertEqual(self.log[0].score_terms["frequency"], 0.5, "2 out of a maximum of 4")
 
 
 class WiredIntoTheAgentTest(EvictionTestCase):
