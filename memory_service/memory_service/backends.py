@@ -7,10 +7,13 @@ impossible to import - let alone test - without API keys, network access and the
 whole architecture installed.
 
 They are now created on first use and can be replaced by test doubles through
-:func:`configure`.
+:func:`configure`. The clock that stamps and ages the memories can be moved too,
+with :func:`set_clock`.
 """
 
 import os
+import time
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from memory_service.config import NODE_SAMPLING, MemoryConfig
@@ -19,6 +22,8 @@ _config: Optional[MemoryConfig] = None
 _llm: Dict[str, Any] = {}
 _injected_llm: Any = None
 _vector_store: Any = None
+_clock_start: Optional[datetime] = None
+_clock_anchor = 0.0
 
 
 def get_config() -> MemoryConfig:
@@ -47,12 +52,33 @@ def configure(llm: Any = None, vector_store: Any = None,
 
 
 def reset() -> None:
-    """Forget the cached backends (mostly useful between tests)."""
+    """Forget the cached backends and go back to the wall clock (mostly useful between tests)."""
     global _config, _injected_llm, _vector_store
     _config = None
     _llm.clear()
     _injected_llm = None
     _vector_store = None
+    set_clock(None)
+
+
+def now() -> datetime:
+    """The time that stamps and ages the memories: the wall clock, unless set_clock moved it."""
+    if _clock_start is None:
+        return datetime.now()
+    return _clock_start + timedelta(seconds=time.perf_counter() - _clock_anchor)
+
+
+def set_clock(start: Optional[datetime]) -> None:
+    """Move the clock to `start`, from where it advances with real time; None is the wall clock.
+
+    For replaying a dataset: set at the start of each session, the memories carry
+    the session's date and keep the order in which they were written. It never
+    goes back: a start earlier than the current reading is ignored.
+    """
+    global _clock_start, _clock_anchor
+    if start is not None and _clock_start is not None:
+        start = max(start, now())
+    _clock_start, _clock_anchor = start, time.perf_counter()
 
 
 def get_llm(node: str = "") -> Any:

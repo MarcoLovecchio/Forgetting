@@ -43,14 +43,14 @@ weights, and from there it also reaches the log.
 
     time_decay        the time since a timestamp, with one of the two curves
                       according to eviction_time_decay_function; both are 1 at
-                      the moment of the timestamp and take the same slot in the
-                      mean:
-                        weibull_decay_term  exp(-(t/scale)^shape), shape 0.5 and
-                                            scale 1 hour: 1/e after an hour;
-                        power_decay_term    (1 + t/scale)^-d, d 0.5 and scale
-                                            1 hour: 0.5 after 3 hours, 0.2 after
-                                            a day, with the long tail of the
-                                            power law.
+                      the moment of the timestamp, share the scale
+                      eviction_time_decay_scale_hours (91 days by default) and
+                      take the same slot in the mean:
+                        weibull_decay_term  exp(-(t/scale)^shape), shape 0.5:
+                                            1/e at the scale;
+                        power_decay_term    (1 + t/scale)^-d, d 0.5: 0.71 at the
+                                            scale, 0.5 at three times it, with
+                                            the long tail of the power law.
                       On their own they rank the memories the same way, because
                       they depend on the same timestamp: the choice matters when
                       the decay is averaged with other terms. The timestamp is
@@ -138,9 +138,7 @@ EVICTED_STATUSES = ("superseded", "deleted")
 
 PRUNE_FRACTION = 0.10
 DECAY_SHAPE = 0.5
-DECAY_SCALE_HOURS = 1
 POWER_EXPONENT = 0.5
-POWER_SCALE_HOURS = 1
 WEIGHTED_SUM_WEIGHTS = {"utility": 0.5, "time_decay": 0.25, "frequency": 0.25}
 PRODUCT_WEIGHTS = {"time_decay": 0.5, "frequency": 0.5}
 
@@ -239,15 +237,13 @@ def hours_since(timestamp: str, now: datetime) -> float:
     return max(0.0, elapsed.total_seconds() / 3600)
 
 
-def weibull_decay_term(timestamp: str, now: datetime,
-                       scale_hours: float = DECAY_SCALE_HOURS,
+def weibull_decay_term(timestamp: str, now: datetime, scale_hours: float,
                        shape: float = DECAY_SHAPE) -> float:
     """Weibull on the time elapsed since timestamp: 1 at the moment, 1/e at scale_hours."""
     return math.exp(-((hours_since(timestamp, now) / scale_hours) ** shape))
 
 
-def power_decay_term(timestamp: str, now: datetime,
-                     scale_hours: float = POWER_SCALE_HOURS,
+def power_decay_term(timestamp: str, now: datetime, scale_hours: float,
                      exponent: float = POWER_EXPONENT) -> float:
     """Power law on the time since timestamp: (1 + t/scale_hours)^-exponent, 1 at the moment."""
     return (1 + hours_since(timestamp, now) / scale_hours) ** -exponent
@@ -296,7 +292,8 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
         terms["utility"] = need_gain_term(metadata.get("need", NEUTRAL_RATINGS["need"]),
                                           metadata.get("gain", NEUTRAL_RATINGS["gain"]))
     decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
-    terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now)
+    terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now,
+                                config.eviction_time_decay_scale_hours)
     terms["frequency"] = frequency_term(metadata[frequency_field(config)], frequency_max)
     return terms
 
@@ -354,7 +351,7 @@ def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
                   if not metadata.get("safety")]
     frequency_max = max((metadata[frequency_field(config)] for _, _, metadata in candidates),
                         default=0)
-    now = now or datetime.now()
+    now = now or backends.now()
 
     scored = []
     for doc_id, content, metadata in candidates:

@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
@@ -12,6 +13,7 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
 
 from memory_service import backends  # noqa: E402
 from memory_service.config import MemoryConfig, load_environment  # noqa: E402
+from memory_service.consolidation import CoreMemoryItem, OperationLogEntry  # noqa: E402
 
 
 class EnvironmentTestCase(unittest.TestCase):
@@ -390,6 +392,61 @@ class EmbeddingBackendTest(EnvironmentTestCase):
             _build_embeddings(config)
 
         self.assertIn("inventato", str(raised.exception))
+
+
+class ClockTest(unittest.TestCase):
+    """The clock that stamps and ages the memories, and how a replay moves it."""
+
+    START = datetime(2019, 10, 1, 9, 30)
+
+    def setUp(self):
+        backends.reset()
+        self.addCleanup(backends.reset)
+
+    def assert_just_after(self, reading, start):
+        self.assertTrue(start <= reading < start + timedelta(seconds=5), reading)
+
+    def test_by_default_it_is_the_wall_clock(self):
+        before = datetime.now()
+        reading = backends.now()
+
+        self.assertTrue(before <= reading <= datetime.now())
+
+    def test_moved_it_starts_from_the_given_time_and_advances(self):
+        backends.set_clock(self.START)
+        first = backends.now()
+        second = backends.now()
+
+        self.assert_just_after(first, self.START)
+        self.assertLessEqual(first, second)
+
+    def test_memories_keep_the_order_in_which_they_were_written(self):
+        backends.set_clock(self.START)
+        first = CoreMemoryItem(content="ha un cane di nome Argo")
+        second = CoreMemoryItem(content="ha un gatto di nome Milo")
+        entry = OperationLogEntry(op_type="create", item_id=second.id)
+
+        self.assert_just_after(first.updated_at, self.START)
+        self.assertEqual(first.retrieved_at, first.updated_at)
+        self.assertLess(first.updated_at, second.updated_at)
+        self.assertLessEqual(second.updated_at, entry.timestamp)
+
+    def test_it_never_goes_back(self):
+        # In HaluMem a few sessions start before the previous one.
+        backends.set_clock(self.START)
+        reading = backends.now()
+        backends.set_clock(self.START - timedelta(hours=3))
+
+        self.assertGreaterEqual(backends.now(), reading)
+
+    def test_none_and_reset_return_to_the_wall_clock(self):
+        for back in (lambda: backends.set_clock(None), backends.reset):
+            with self.subTest(back=back):
+                backends.set_clock(self.START)
+                back()
+                before = datetime.now()
+
+                self.assertTrue(before <= backends.now() <= datetime.now())
 
 
 if __name__ == "__main__":

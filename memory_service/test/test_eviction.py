@@ -66,6 +66,7 @@ EVICTION_CONFIG = MemoryConfig(
 )
 
 NOW = datetime(2026, 9, 17, 12, 0)
+SCALE_HOURS = EVICTION_CONFIG.eviction_time_decay_scale_hours
 
 
 class EvictionTestCase(unittest.TestCase):
@@ -248,7 +249,7 @@ class TimeDecayTermTest(unittest.TestCase):
     """The two decay curves on the time since a timestamp: Weibull and power law."""
 
     def worth(self, decay, **age):
-        return decay((NOW - timedelta(**age)).isoformat(), NOW)
+        return decay((NOW - timedelta(**age)).isoformat(), NOW, SCALE_HOURS)
 
     def test_a_timestamp_in_the_future_is_worth_one(self):
         # A shifted clock must not give more than 1.
@@ -269,7 +270,7 @@ class TimeDecayFieldTest(unittest.TestCase):
             with self.subTest(field=field):
                 config = dataclasses.replace(EVICTION_CONFIG, eviction_time_decay_field=field)
                 self.assertEqual(eviction_terms(self.METADATA, config, NOW, 0)["time_decay"],
-                                 weibull_decay_term(self.METADATA[field], NOW))
+                                 weibull_decay_term(self.METADATA[field], NOW, SCALE_HOURS))
 
 
 class FrequencyTermTest(EvictionTestCase):
@@ -295,7 +296,7 @@ class FrequencyTermTest(EvictionTestCase):
         self.assertEqual(frequency_term(0, 0), 0.0)
 
     def test_the_two_counts_share_one_slot(self):
-        decay = weibull_decay_term(self.METADATA["updated_at"], NOW)
+        decay = weibull_decay_term(self.METADATA["updated_at"], NOW, SCALE_HOURS)
         for field, config in (("n_retrieve", EVICTION_CONFIG), ("n_used", self.USES_COUNTED)):
             with self.subTest(field=field):
                 self.assertEqual(eviction_terms(self.METADATA, config, NOW, frequency_max=6),
@@ -420,6 +421,17 @@ class PruneArchiveTest(EvictionTestCase):
 
         self.assertCountEqual(removed, [ids[10], ids[9]], "10% of 11, rounded up, is 2")
         self.assertEqual(len(self.store.documents), 9)
+
+    def test_without_now_it_ages_on_the_service_clock(self):
+        # A replay moves the clock to the dataset's dates: a fact 91 days old there
+        # is 91 days old for the prune, whatever the wall clock says.
+        backends.set_clock(NOW)
+        old = self.archive("ha un cane di nome Argo", days_old=91)
+        self.archive("ha un gatto di nome Milo", days_old=0)
+
+        self.assertEqual(prune_archive(self.log, EVICTION_CONFIG), [old])
+        expected = weibull_decay_term((NOW - timedelta(days=91)).isoformat(), NOW, SCALE_HOURS)
+        self.assertAlmostEqual(self.log[0].score_terms["time_decay"], expected, places=4)
 
     def test_the_sub_scores_survive_the_trip_to_the_ros_response(self):
         from memory_service.consolidation import serialize_operation_log_for_response

@@ -68,10 +68,10 @@ class CoreMemoryItem(BaseModel):
     id: str = Field(default_factory=new_item_id)
     content: str
     status: MemoryStatus = "active"
-    updated_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=backends.now)
 
     n_retrieve: int = 0
-    retrieved_at: datetime = Field(default_factory=datetime.now)
+    retrieved_at: datetime = Field(default_factory=backends.now)
     n_used: int = 0
 
     # None when not given: consolidation_utility off, or a safety fact.
@@ -86,7 +86,7 @@ class CoreMemoryItem(BaseModel):
         """updated_at and retrieved_at start from the same instant."""
         if isinstance(data, dict):
             data = dict(data)
-            created = data.setdefault("updated_at", datetime.now())
+            created = data.setdefault("updated_at", backends.now())
             data.setdefault("retrieved_at", created)
         return data
 
@@ -102,7 +102,7 @@ class OperationLogEntry(BaseModel):
     score_terms: Optional[Dict[str, float]] = None
     # create and update only: see logged_ratings.
     ratings: Optional[Dict[str, Union[bool, int]]] = None
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: datetime = Field(default_factory=backends.now)
 
 
 # --------------------------------------------------------------------------- #
@@ -461,7 +461,7 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     metadata = dict(archived["metadata"])
     if status is not None:
         metadata["status"] = status
-    metadata["updated_at"] = datetime.now().isoformat()
+    metadata["updated_at"] = backends.now().isoformat()
     backends.get_vector_store()._collection.update(ids=[item_id], metadatas=[metadata])
     return archived
 
@@ -509,7 +509,7 @@ def count_archived(item_ids: Iterable[str], counter: str, stamp: bool) -> None:
         found = store.get(ids=ids) or {}
         found_ids = found.get("ids") or []
         metadatas = found.get("metadatas") or [{}] * len(found_ids)
-        now = datetime.now().isoformat()
+        now = backends.now().isoformat()
         updated = []
         for metadata in metadatas:
             metadata = dict(metadata)
@@ -538,7 +538,7 @@ def record_uses(item_ids: Iterable[str], core_memory: Iterable[CoreMemoryItem]) 
     Core items change in place; every other id is looked for in the archive.
     """
     ids = list(dict.fromkeys(item_ids))
-    now = datetime.now()
+    now = backends.now()
     in_core = set()
     for item in get_active_items(core_memory):
         if item.id in ids:
@@ -608,7 +608,7 @@ def reinforce_item(
     content: Optional[str] = None,
 ) -> CoreMemoryItem:
     """A fact already stored: refresh it instead of storing it twice."""
-    item.updated_at = datetime.now()
+    item.updated_at = backends.now()
     log.append(OperationLogEntry(
         op_type="redundant", item_id=item.id, content=content or item.content))
     return item
@@ -617,7 +617,7 @@ def reinforce_item(
 def _retire_item(item: CoreMemoryItem, status: MemoryStatus) -> None:
     """Take an item out of active duty and keep it in the archive as a tombstone."""
     item.status = status
-    item.updated_at = datetime.now()
+    item.updated_at = backends.now()
     archive_items([item])
 
 

@@ -190,7 +190,7 @@ NoSearchNeeded. If they do not, or you are not sure, call retrieve_memory: the a
 be in the archive, and not looking is how it gets missed."""),
 ])
 
-# retrieval_mode "always_llm_query": the search always happens, the model writes query and k.
+# retrieval_mode "always": the search always happens, the model writes query and k.
 SEARCH_ONLY_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """You search the assistant's archival memory.
 
@@ -219,7 +219,7 @@ def retrieval_node(state: AgentState, runtime: Runtime[MemoryConfig]):
     print("\tRetrieval node activated")
     user_query, history = query_and_history(state)
 
-    if runtime.context.retrieval_mode == "always_llm_query":
+    if runtime.context.retrieval_mode == "always":
         prompt, tools = SEARCH_ONLY_PROMPT, [retrieve_memory]
     else:
         prompt, tools = DECIDE_PROMPT, [retrieve_memory, NoSearchNeeded]

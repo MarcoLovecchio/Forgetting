@@ -706,7 +706,7 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
 
 
 class RetrievalModeTest(MemoryServiceTestCase):
-    """With always_llm_query the archive search always happens: the model writes only the query."""
+    """With retrieval_mode "always" the search always happens: the model writes only the query."""
 
     tool_responses = {"retrieve_memory": {"query": "black tea", "k": 2}}
     default_content = "Bevi te nero il pomeriggio."
@@ -722,7 +722,7 @@ class RetrievalModeTest(MemoryServiceTestCase):
     def test_with_the_model_query_searching_is_the_only_way_out(self):
         spy = ToolChoiceSpy(self, self.llm)
 
-        state = self.run_retrieve("always_llm_query")
+        state = self.run_retrieve("always")
 
         self.assertEqual(spy.calls, {"retrieve_memory": "required"}, "NoSearchNeeded is not there")
         self.assertEqual(self.vector_store.searches[0]["query"], "black tea",
