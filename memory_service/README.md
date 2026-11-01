@@ -202,7 +202,18 @@ For `need_gain` it also prints the free table, cell by cell, and with at least t
 runs it compares the two on each run left out. No model call: FAMA-memory is
 deterministic.
 
+`test/calibration_runs.py` does the whole thing: five long runs in a row (`--runs`
+changes how many), `reset_archive.py` before each one, and the tables at the end.
+Each run is a process of its own. A run that leaves no trace does not stop the series,
+an archive that cannot be cleaned does. The reset deletes the whole folder, production
+collection included, so point `MEMORY_LONGRUN_CHROMA_PATH` to another folder if that
+one matters. The traces go to `MEMORY_LONGRUN_CALIBRATION`, by default
+`test/longrun_calibration.jsonl`.
+
 ```bash
+python memory_service/test/calibration_runs.py
+
+# one run by hand
 MEMORY_LONGRUN_CALIBRATION=memory_service/test/longrun_calibration.jsonl pytest memory_service/test/test_long_term_interaction.py -v -s
 python memory_service/test/calibrate_utility.py
 ```

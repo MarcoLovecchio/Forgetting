@@ -18,6 +18,7 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
         sys.path.insert(0, path)
 
 import calibrate_utility as cu  # noqa: E402
+import calibration_runs  # noqa: E402
 import fama  # noqa: E402
 from calibrate_utility import Pair  # noqa: E402
 
@@ -223,6 +224,61 @@ class MainTest(unittest.TestCase):
         _, output = self.run_main([old, trace("need_gain", {"goal": {"need": 3, "gain": 3}})])
 
         self.assertIn("single: no runs", output)
+
+
+class CalibrationRunsTest(unittest.TestCase):
+    """The series of long runs, with the two processes replaced."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = os.path.join(folder.name, "trace.jsonl")
+        self.calls = []
+        self.tracing = True
+        self.reset_code = 0
+
+    def fake_run(self, command, env):
+        script = "reset" if command[1] == calibration_runs.RESET_ARCHIVE else "test"
+        self.calls.append(script)
+        if script == "reset":
+            return mock.Mock(returncode=self.reset_code)
+        if self.tracing:
+            with open(self.path, "a", encoding="utf-8") as handle:
+                handle.write("{}\n")
+        return mock.Mock(returncode=0)
+
+    def series(self, runs):
+        environment = {"MEMORY_LONGRUN_CALIBRATION": self.path}
+        with mock.patch.object(calibration_runs.subprocess, "run", self.fake_run), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return calibration_runs.run_series(runs, environment)
+
+    def test_every_run_starts_from_an_empty_archive(self):
+        saved = self.series(3)
+
+        self.assertEqual(saved, 3)
+        self.assertEqual(self.calls, ["reset", "test"] * 3)
+
+    def test_a_run_without_a_trace_does_not_stop_the_series(self):
+        self.tracing = False
+
+        saved = self.series(2)
+
+        self.assertEqual(saved, 0)
+        self.assertEqual(self.calls, ["reset", "test"] * 2)
+
+    def test_a_failed_reset_stops_before_the_test(self):
+        self.reset_code = 1
+
+        self.assertIsNone(self.series(3))
+        self.assertEqual(self.calls, ["reset"])
+
+    def test_the_reset_cleans_the_folder_of_the_long_test(self):
+        environment = calibration_runs.run_environment(
+            {"MEMORY_CHROMA_PATH": "servizio", "MEMORY_LONGRUN_CHROMA_PATH": "prove"})
+
+        self.assertEqual(environment["MEMORY_CHROMA_PATH"], "prove")
+        self.assertEqual(environment["MEMORY_LONGRUN_CALIBRATION"], cu.DEFAULT_TRACES)
 
 
 if __name__ == "__main__":
