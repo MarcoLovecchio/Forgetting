@@ -571,6 +571,11 @@ def _judgment(values):
     return " | " + " ".join(given) if given else ""
 
 
+def _used(count, counted):
+    """The uses of a memory, only when they are counted."""
+    return f" | used {count}" if counted else ""
+
+
 def _last_answer(state):
     """The answer composed by generate_answer: it is the last message of the turn.
 
@@ -621,7 +626,7 @@ def _print_operation_log(log):
                    f" | {entry.content}")
 
 
-def _print_core_memory(state, limit):
+def _print_core_memory(state, limit, counts_used):
     active = get_active_items(state["core_memory"])
     used = len("\n".join(item.content for item in active))
     safe_print(f"\n--- CORE MEMORY ({len(active)} active items, {used}/{limit} characters) ---")
@@ -634,10 +639,10 @@ def _print_core_memory(state, limit):
         safe_print(f"  - [{_short(item.id)}] {item.content}")
         safe_print(f"      updated {_clock(item.updated_at)}"
                    f" | retrieved {_clock(item.retrieved_at)} ({item.n_retrieve})"
-                   f" | used {item.n_used}{_judgment(item.model_dump())}")
+                   f"{_used(item.n_used, counts_used)}{_judgment(item.model_dump())}")
 
 
-def _print_archive(vector_store):
+def _print_archive(vector_store, counts_used):
     try:
         stored = vector_store.get()
     except Exception as error:
@@ -661,8 +666,8 @@ def _print_archive(vector_store):
         safe_print(f"  - [{_short(doc_id)}] ({status}) {content}")
         safe_print(f"      updated {_clock_iso(metadata.get('updated_at'))}"
                    f" | retrieved {_clock_iso(metadata.get('retrieved_at'))}"
-                   f" ({metadata.get('n_retrieve')}) | used {metadata.get('n_used')}"
-                   f"{_judgment(metadata)}")
+                   f" ({metadata.get('n_retrieve')})"
+                   f"{_used(metadata.get('n_used'), counts_used)}{_judgment(metadata)}")
 
     summary = ", ".join(f"{name} {count}" for name, count in sorted(counters.items()))
     safe_print(f"\n  Status summary: {summary}")
@@ -934,8 +939,8 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
             safe_print(f"  ... and {len(failures) - 10} more")
 
     _print_operation_log(state["operation_log"])
-    _print_core_memory(state, config.core_memory_limit)
-    _print_archive(vector_store)
+    _print_core_memory(state, config.core_memory_limit, config.counts_used)
+    _print_archive(vector_store, config.counts_used)
     _print_questions(answers)
     _print_fama(answers)
     _print_operation_matrix(operations)

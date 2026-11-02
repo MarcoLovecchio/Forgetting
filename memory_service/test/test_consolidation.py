@@ -41,6 +41,7 @@ from memory_service.consolidation import (  # noqa: E402
     NO_ARCHIVAL_RESULTS,
     CoreMemoryItem,
     archive_items,
+    build_candidate_memories,
     get_active_items,
     record_uses,
     reinforce_archived_item,
@@ -425,6 +426,24 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertGreater(self.store.metadatas[cat]["retrieved_at"], created)
         self.assertEqual(self.counters(far), (0, self.store.metadatas[far]["updated_at"]),
                          "not returned, it does not count")
+
+    def test_the_candidate_search_counts_only_when_asked(self):
+        cat, far = self.archive("il gatto Milo", "corre la mattina")
+
+        build_candidate_memories([], "gatto", k=1)
+        self.assertEqual(self.store.metadatas[cat]["n_retrieve"], 0)
+
+        build_candidate_memories([], "gatto", k=1, count=True)
+        self.assertEqual(self.store.metadatas[cat]["n_retrieve"], 1)
+        self.assertEqual(self.store.metadatas[far]["n_retrieve"], 0)
+
+    def test_a_counted_candidate_search_can_leave_retrieved_at_alone(self):
+        cat, = self.archive("il gatto Milo")
+        retrieved_at = self.store.metadatas[cat]["retrieved_at"]
+
+        build_candidate_memories([], "gatto", k=1, count=True, stamp=False)
+
+        self.assertEqual(self.counters(cat), (1, retrieved_at))
 
     def test_a_retrieval_is_not_a_write(self):
         # updated_at is the time of the writes, and the vector is not recomputed.

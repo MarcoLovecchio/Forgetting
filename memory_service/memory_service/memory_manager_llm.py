@@ -529,7 +529,10 @@ def summarize_memories_node(state: AgentState, runtime: Runtime[MemoryConfig]):
     summarizer_llm = get_llm("consolidation").bind_tools(
         [CONSOLIDATION_TOOLS[mode]], tool_choice=REQUIRED)
     chain = CONSOLIDATION_PROMPTS[mode] | summarizer_llm
-    core_memories = build_candidate_memories(state["core_memory"], user_messages)
+    core_memories = build_candidate_memories(
+        state["core_memory"], user_messages,
+        count=runtime.context.count_candidate_search,
+        stamp=not runtime.context.counts_used)
     known_memories = "\n".join(f"{item_id}: {content}" for item_id, content in core_memories.items())
     response = _timed("consolidation", lambda: chain.invoke({
         "user_messages": user_messages,

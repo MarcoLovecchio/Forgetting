@@ -218,6 +218,38 @@ MEMORY_LONGRUN_CALIBRATION=memory_service/test/longrun_calibration.jsonl pytest 
 python memory_service/test/calibrate_utility.py
 ```
 
+**The HaluMem benchmark.** `test/halumem_adapter.py` replays HaluMem-Medium through
+the real agent and hands the result to HaluMem's `evaluation.py`. It needs a clone of
+[HaluMem](https://github.com/MemTensor/HaluMem) outside the ROS workspace, with
+`HaluMem-Medium.jsonl` in its `data/` folder. Do not install HaluMem's own dependencies:
+`evaluation.py` only uses packages already in `requirements.txt`.
+
+`run` replays one user per process, each with an archive of its own, exchange by
+exchange with the dataset's clock (`backends.set_clock`). It fixes what the experiments
+fix whatever `config.py` says (`always`, the window of 2, the power law on `updated_at`,
+`count_candidate_search`) and takes from the command line what they vary. It stops at
+once if the models do not answer. A user that finished is skipped when the same
+`--version` is launched again, one that did not starts over.
+
+`evaluate` runs the judge, read from `eval/.env` in the clone: `OPENAI_BASE_URL`,
+`OPENAI_API_KEY`, `OPENAI_MODEL`, `RETRY_TIMES`, `WAIT_TIME_LOWER`, `WAIT_TIME_UPPER`.
+
+```bash
+# a pilot on one user
+python3 memory_service/test/halumem_adapter.py run --halumem PATH --version pilot --users 1
+python3 memory_service/test/halumem_adapter.py evaluate --halumem PATH --version pilot
+
+# what the experiments vary
+python3 memory_service/test/halumem_adapter.py run --halumem PATH --version NAME --workers 4     --utility need_gain --combination product --core-limit N --archive-limit N     --prune-fraction F --model MODEL
+```
+
+Everything lands in `PATH/eval/results/memory_service-NAME/`: `run.json` with the
+configuration and the commit, `memory_service_eval_results.jsonl` for the evaluation,
+`memory_service_eval_stat_result.json` with its scores, `logs/` with the agent's output
+for each user and `archives/` with the Chroma folders. Next to what HaluMem reads, every
+session also keeps its operations, each with the exchange it belongs to, and how many
+memories were active at its end.
+
 ## The models on the cluster
 
 The models run on a Kubernetes cluster behind an **OpenAI compatible** endpoint,
@@ -382,7 +414,7 @@ The values are read from environment variables (from `.env` / `.config`):
 | `MEMORY_LLM_NODE` | entry of `LLM_CONFIG` to use |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `2` (default): messages kept before the summary. **Keep it even**: with an odd number the tail of the window is an assistant answer, and every consolidation receives the end of one exchange plus the start of the next instead of a whole (user, assistant) pair |
 | `MEMORY_CORE_MEMORY_LIMIT` | maximum characters of the core memory |
-| `MEMORY_ARCHIVE_LIMIT` | **active** memories in the archive beyond which eviction steps in. It does not block insertion: the graph's `exceed_archive_limit` router checks it at the end of every `insert` and, if exceeded, in the `prune_archive` node the 10% of the active memories with the lowest score leaves, all together (`eviction.prune_archive`, `prune` entry in the log). Memories with `safety` true are never candidates and get no score, but the share stays 10% of all the active ones. The score combines utility (see `consolidation_utility` below), the decay over time and the frequency. The decay is a Weibull or a power law according to `eviction_time_decay_function` (`weibull` or `power`), both with the scale `eviction_time_decay_scale_hours` (91 days by default), computed on `updated_at` or `retrieved_at` according to `eviction_time_decay_field`. The frequency is `n_used` when uses are counted (`track_used`, see below) and `n_retrieve` otherwise, divided by the highest among the candidates. `eviction_combination` chooses how: `weighted_sum` is 0.5 utility + 0.25 decay + 0.25 frequency, `product` is utility × (0.5 decay + 0.5 frequency); without utility both are the mean of decay and frequency. It runs only with `MemoryConfig.eviction` on (the default): the switches are changed only in the code (`config.py`), with no environment variable |
+| `MEMORY_ARCHIVE_LIMIT` | **active** memories in the archive beyond which eviction steps in. It does not block insertion: the graph's `exceed_archive_limit` router checks it at the end of every `insert` and, if exceeded, in the `prune_archive` node the share `prune_fraction` of the active memories with the lowest score leaves, all together (`eviction.prune_archive`, `prune` entry in the log). Memories with `safety` true are never candidates and get no score, but the share is computed on all the active ones. The score combines utility (see `consolidation_utility` below), the decay over time and the frequency. The decay is a Weibull or a power law according to `eviction_time_decay_function` (`weibull` or `power`), both with the scale `eviction_time_decay_scale_hours` (91 days by default), computed on `updated_at` or `retrieved_at` according to `eviction_time_decay_field`. The frequency is `n_used` when uses are counted (`track_used`, see below) and `n_retrieve` otherwise, divided by the highest among the candidates. `eviction_combination` chooses how: `weighted_sum` is 0.5 utility + 0.25 decay + 0.25 frequency, `product` is utility × (0.5 decay + 0.5 frequency); without utility both are the mean of decay and frequency. It runs only with `MemoryConfig.eviction` on (the default): the switches are changed only in the code (`config.py`), with no environment variable |
 | `MEMORY_GENERATE_ANSWER` | `true` (default) or `false`: whether the `retrieve` branch also **composes an answer** for the user. No field of the service returns it — the archive reaches the caller through `retrieved_memories` — so it only ends up in `last_messages`, as a turn of the conversation. `false` saves one call per `retrieve`, leaves one (user, assistant) pair per exchange instead of three messages, and keeps the memory from quoting itself inside consolidation. `track_used` needs it on, because the list of used memories comes from the answer |
 | `MEMORY_CHROMA_PATH` | archive folder (resolved to an absolute path) |
 | `MEMORY_COLLECTION_NAME` | ChromaDB collection |
@@ -397,6 +429,11 @@ choice:
 
 In both a retrieval increments `n_retrieve` of the returned memories. The long test
 prints and saves the run's mode.
+
+`count_candidate_search` (on or off, also only in `config.py`) makes the archive search
+that consolidation runs for the classifier's candidates count as a retrieval too: no
+model call, and `n_retrieve` grows on every consolidated message. The benchmark adapter
+turns it on, because a replayed dataset has no `get_memory` on every message.
 
 `track_used` (on or off, also only in `config.py`) makes the answer say which
 memories it used. `generate_answer` switches to a second prompt, the same as the

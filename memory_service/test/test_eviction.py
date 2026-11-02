@@ -400,12 +400,12 @@ class UtilityTermTest(unittest.TestCase):
 
 
 class PruneCountTest(unittest.TestCase):
-    """How many leave: 10% of the active ones, rounded up."""
+    """How many leave: the fraction of the active ones, rounded up."""
 
-    def test_ten_percent_rounded_up(self):
+    def test_the_fraction_is_rounded_up(self):
         for active, expected in ((1, 1), (5, 1), (50, 5), (51, 6)):
             with self.subTest(active=active):
-                self.assertEqual(prune_count(active), expected)
+                self.assertEqual(prune_count(active, 0.10), expected)
 
 
 class PruneArchiveTest(EvictionTestCase):
@@ -432,6 +432,12 @@ class PruneArchiveTest(EvictionTestCase):
         self.assertEqual(prune_archive(self.log, EVICTION_CONFIG), [old])
         expected = weibull_decay_term((NOW - timedelta(days=91)).isoformat(), NOW, SCALE_HOURS)
         self.assertAlmostEqual(self.log[0].score_terms["time_decay"], expected, places=4)
+
+    def test_the_share_follows_prune_fraction(self):
+        ids = {days: self.archive(f"fatto {days}", days_old=days) for days in range(4)}
+        config = dataclasses.replace(EVICTION_CONFIG, prune_fraction=0.5)
+
+        self.assertCountEqual(self.prune(config), [ids[3], ids[2]])
 
     def test_the_sub_scores_survive_the_trip_to_the_ros_response(self):
         from memory_service.consolidation import serialize_operation_log_for_response
@@ -516,6 +522,16 @@ class WiredIntoTheAgentTest(EvictionTestCase):
         self.insert([{"fact": "vive a Mondello", "operation": "delete",
                       "target_item_id": item.id}])
         return item
+
+    def test_the_consolidation_counts_its_candidates_only_with_the_switch(self):
+        for switch, expected in ((False, 0), (True, 1)):
+            with self.subTest(switch=switch):
+                self.use_agent(count_candidate_search=switch)
+                memory = self.archive("un messaggio qualsiasi")
+
+                self.insert([])
+
+                self.assertEqual(self.store.metadatas[memory]["n_retrieve"], expected)
 
     def test_the_tombstone_of_this_insert_leaves_in_the_same_insert(self):
         item = self.remember_then_forget()

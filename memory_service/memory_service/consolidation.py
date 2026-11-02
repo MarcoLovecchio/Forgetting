@@ -197,34 +197,31 @@ class NeedGainJudgedOperation(SafetyJudgedOperation):
     """A classified fact, with its safety flag, need and gain."""
 
     need: Optional[Literal[1, 2, 3]] = Field(default=None, description=(
-        "NEED: how likely the assistant is to need this fact again, to answer the user, "
-        "personalize a reply or keep continuity with what was said before. Only the "
-        "likelihood of use: how much the fact helps when it is used is gain, rated "
-        "separately. "
+        "NEED: what kind of fact is this? Only the kind: how much the fact helps when it "
+        "is used is gain, rated separately. "
         "Judge the fact itself, as you wrote it: not how often or how recently the user "
         "said it, not how new or surprising it is. Do not invent a goal of the user that "
         "the messages do not show. "
-        "1: unlikely - incidental, or only about the current conversation; little concrete "
-        "reason to expect it will come up again. "
-        "2: possible - useful only if a particular topic or situation comes up, or soon "
-        "outdated, like a passing state or a one-off event that is over. "
-        "3: likely - a lasting preference, habit, routine, constraint, ongoing activity, "
-        "or a person or animal close to the user, that will come up again; or an upcoming "
-        "commitment or appointment, until it has passed. "
+        "1: one-off - it happened once or holds only for now, and nothing follows from it: "
+        "a purchase, an errand, a mishap, a passing mood. "
+        "2: topical - it stays true, but only one specific topic would bring it up: a "
+        "detail of a hobby, a taste, an old experience. "
+        "3: part of the user's life - it can matter in many different conversations: who "
+        "they are, where they live and work, people and animals close to them, diet, "
+        "health, limits, routines, ongoing activities, upcoming appointments until they "
+        "pass. "
         "Only for new and update, and only when safety is false: leave it out for redundant "
         "and delete, and when safety is true."))
     gain: Optional[Literal[1, 2, 3]] = Field(default=None, description=(
-        "GAIN: when this fact is needed, how much having it improves the assistant's "
-        "answer compared with not having it. Rate it as if the situation that needs it "
-        "had already come up, however rare that situation is: how often it happens is "
-        "need, rated separately. "
-        "1: little - the assistant could give an adequate answer without it; the fact adds "
-        "a detail but changes nothing that matters. "
-        "2: clear - with it the answer is more accurate, more personal or more consistent "
-        "with what the user said before, but nothing goes wrong without it. "
-        "3: critical - without it the assistant could give a wrong answer, break an "
-        "important constraint of the user, or lose track of something essential about who "
-        "the user is. "
+        "GAIN: imagine the fact is needed and the assistant does not have it. What happens? "
+        "Rate it as if the situation that needs it had already come up, however rare that "
+        "situation is: how often it happens is need, rated separately. "
+        "1: nothing noticeable - the answer stays right and useful, it only misses a "
+        "detail. "
+        "2: weaker - still acceptable, but generic, or it asks again what the user already "
+        "said. "
+        "3: wrong - it suggests something the user cannot or will not do, or gets a person, "
+        "place, date or number wrong. "
         "Only for new and update, and only when safety is false: leave it out for redundant "
         "and delete, and when safety is true."))
 
@@ -551,8 +548,8 @@ def record_uses(item_ids: Iterable[str], core_memory: Iterable[CoreMemoryItem]) 
 def retrieve_active_archival_memories(query: str, k: int = 5, stamp: bool = True) -> str:
     """Archive lookup for the retrieval path, tombstones excluded.
 
-    The only search that counts as a retrieval: the candidates the classifier sees
-    during consolidation go through search_archive and are not recorded.
+    The search that counts as a retrieval: the candidates the classifier sees during
+    consolidation go through search_archive, recorded only with count_candidate_search.
     """
     results = search_archive(query, k=k)
     if not results:
@@ -565,11 +562,19 @@ def build_candidate_memories(
     core_memory: Iterable[CoreMemoryItem],
     query: str,
     k: int = ARCHIVE_CANDIDATES_K,
+    count: bool = False,
+    stamp: bool = True,
 ) -> Dict[str, str]:
     """Memories the classifier may point at: the active core ones, plus the archival
-    ones that look related to the text being consolidated."""
+    ones that look related to the text being consolidated.
+
+    With `count` the search is recorded as a retrieval, `stamp` as in record_retrievals.
+    """
     candidates = serialize_core_memory_with_ids(core_memory)
-    for doc_id, content in search_archive(query, k=k):
+    found = search_archive(query, k=k)
+    if count:
+        record_retrievals((doc_id for doc_id, _ in found), stamp)
+    for doc_id, content in found:
         if doc_id not in candidates:
             candidates[doc_id] = content
     return candidates

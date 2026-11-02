@@ -13,7 +13,7 @@ The first is the status, with no exceptions: everything that is `superseded` or
 The second is the archive limit, archive_memory_limit
 (MEMORY_ARCHIVE_LIMIT): a number of active memories that blocks no insertion
 and is checked at the end of the turn, after the tombstones. If it is
-exceeded, the PRUNE_FRACTION of the active memories - rounded up - with the
+exceeded, the prune_fraction of the active memories - rounded up - with the
 lowest score leaves. If it is still exceeded, another share leaves on the next
 turn.
 
@@ -136,7 +136,6 @@ from memory_service.consolidation import OperationLogEntry
 
 EVICTED_STATUSES = ("superseded", "deleted")
 
-PRUNE_FRACTION = 0.10
 DECAY_SHAPE = 0.5
 POWER_EXPONENT = 0.5
 WEIGHTED_SUM_WEIGHTS = {"utility": 0.5, "time_decay": 0.25, "frequency": 0.25}
@@ -315,7 +314,7 @@ def combine_terms(terms: Dict[str, float], combination: str) -> float:
     return weighted_mean(terms, WEIGHTED_SUM_WEIGHTS)
 
 
-def prune_count(active: int, fraction: float = PRUNE_FRACTION) -> int:
+def prune_count(active: int, fraction: float) -> int:
     """How many memories leave out of `active`: the fraction, rounded up.
     """
     return math.ceil(active * fraction)
@@ -357,7 +356,8 @@ def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
     for doc_id, content, metadata in candidates:
         terms = eviction_terms(metadata, config, now, frequency_max)
         scored.append((combine_terms(terms, config.eviction_combination), doc_id, content, terms))
-    targets = sorted(scored, key=lambda target: target[:2])[:prune_count(len(ids))]
+    leaving = prune_count(len(ids), config.prune_fraction)
+    targets = sorted(scored, key=lambda target: target[:2])[:leaving]
     if not targets:
         return []
 

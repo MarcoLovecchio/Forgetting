@@ -33,6 +33,7 @@ TEST_MODULES = (
     "test_eviction",
     "test_operation_matrix",
     "test_calibrate_utility",  # the utility tables from the long test's traces
+    "test_halumem_adapter",  # the benchmark adapter, on an invented user
     "test_memory_server",  # skipped when rclpy is not available
 )
 
