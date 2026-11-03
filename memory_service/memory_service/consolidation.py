@@ -212,8 +212,9 @@ class NeedGainJudgedOperation(MemoryOperation):
         "said it, not how new or surprising it is. Do not invent a goal of the user that "
         "the messages do not show. "
         "Decide in this order and stop at the first that applies. "
-        "First, is it 1, one-off? It is 1 when it happened once or holds only for now, and "
-        "nothing follows from it: a purchase, an errand, a mishap, a passing mood. "
+        "First, is it 1, one-off? It is 1 when it is already over or holds only for now: "
+        "something that happened once, such as a purchase, an errand, a mishap, or a "
+        "passing mood. "
         "If not, is it 3, part of the user's life? It is 3 when it stays true and names one "
         "of these: who the user is, their home, their work or study, a person or an animal "
         "close to them, their diet, health or limits, a habit or routine, an ongoing "
@@ -222,15 +223,13 @@ class NeedGainJudgedOperation(MemoryOperation):
         "Otherwise it is 2, topical: it stays true, but only one specific topic would bring "
         "it up, such as a detail of a hobby, a taste, an opinion, an old experience."))
     gain: Literal[1, 2, 3] = Field(description=(
-        "GAIN: imagine the fact is needed and the assistant does not have it. What happens? "
-        "Rate it as if the situation that needs it had already come up, however rare that "
-        "situation is: how often it happens is need, rated separately. "
-        "1: nothing noticeable - the answer stays right and useful, it only misses a "
-        "detail. "
-        "2: weaker - still acceptable, but generic, or it asks again what the user already "
-        "said. "
-        "3: wrong - it suggests something the user cannot or will not do, or gets a person, "
-        "place, date or number wrong."))
+        "GAIN: what does the fact hold that an answer could not guess? Rate what the fact "
+        "says, not how often it would come up: that is need, rated separately. "
+        "1: a detail that would change no answer, such as a color or a passing remark. "
+        "2: a preference, a habit or a circumstance that makes an answer personal, with no "
+        "exact value in it. "
+        "3: a limit, something the user cannot do, will not do or must avoid; or an exact "
+        "value that cannot be guessed: a name, a place, a date, a time, a number."))
 
 
 class SafetyFactOperation(MemoryOperation):

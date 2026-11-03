@@ -228,7 +228,7 @@ the real agent and hands the result to HaluMem's `evaluation.py`. It needs a clo
 `run` replays one user per process, each with an archive of its own, exchange by
 exchange with the dataset's clock (`backends.set_clock`). It fixes what the experiments
 fix whatever `config.py` says (`always`, the window of 2, the power law on `updated_at`,
-`count_candidate_search`, `retrieve_k` 20 as HaluMem gives the other systems,
+`count_candidate_search` off, `retrieve_k` 20 as HaluMem gives the other systems,
 `answer_with_dates`) and takes from the command line what they vary. It stops at
 once if the models do not answer. A user that finished is skipped when the same
 `--version` is launched again, one that did not starts over. To launch a version again
@@ -442,7 +442,7 @@ prints and saves the run's mode.
 `count_candidate_search` (on or off, also only in `config.py`) makes the archive search
 that consolidation runs for the classifier's candidates count as a retrieval too: no
 model call, and `n_retrieve` grows on every consolidated message. The benchmark adapter
-turns it on, because a replayed dataset has no `get_memory` on every message.
+turns it off: there only the questions count.
 
 `retrieve_k` (also only in `config.py`) is `None` or a number: with `None` the model
 writes `k` in every search of the `retrieve` branch, a number replaces it, whatever the

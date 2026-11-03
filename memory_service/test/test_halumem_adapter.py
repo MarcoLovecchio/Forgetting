@@ -34,7 +34,7 @@ CONFIG = MemoryConfig(
     archive_memory_limit=50,
     retrieval_mode="always",
     consolidation_utility="none",
-    count_candidate_search=True,
+    count_candidate_search=False,
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
@@ -252,13 +252,14 @@ class RunTest(unittest.TestCase):
         with mock.patch.object(adapter.MemoryConfig, "from_environment",
                                return_value=MemoryConfig(retrieval_mode="decide",
                                                          eviction_time_decay_function="weibull",
-                                                         maximum_historical_messages=5)):
+                                                         maximum_historical_messages=5,
+                                                         count_candidate_search=True)):
             config = adapter.run_config(self.arguments())
 
         self.assertEqual(config.retrieval_mode, "always")
         self.assertEqual(config.eviction_time_decay_function, "power")
         self.assertEqual(config.maximum_historical_messages, 2)
-        self.assertTrue(config.count_candidate_search)
+        self.assertFalse(config.count_candidate_search)
         self.assertEqual(config.retrieve_k, 20)
         self.assertTrue(config.answer_with_dates)
 

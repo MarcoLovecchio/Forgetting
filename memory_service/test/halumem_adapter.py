@@ -15,7 +15,7 @@ A session goes like this:
 
 - exchange by exchange, as in production: both messages, then an insert. The clock is
   set to the timestamp of the exchange, so the ages the eviction sees are the dataset's;
-- count_candidate_search is on, because here nothing calls get_memory on every message;
+- count_candidate_search is off: n_retrieve grows only with the questions;
 - at the end the last exchange is still in the window: flush_window consolidates it,
   so it is scored in its own session, and the next session starts with no messages;
 - the questions go through the retrieve branch: the answer is the service's. The search
@@ -272,7 +272,7 @@ def run_config(arguments: argparse.Namespace) -> MemoryConfig:
         eviction=True,
         eviction_time_decay_field="updated_at",
         eviction_time_decay_function="power",
-        count_candidate_search=True,
+        count_candidate_search=False,
         retrieve_k=QUESTION_K,
         answer_with_dates=True,
         **varying,
