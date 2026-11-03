@@ -513,10 +513,11 @@ UTILITY_STEP = """
 NEED_GAIN_STEP = """
 
         4. Need and gain: rate need and gain separately, on the scales the tool describes:
-           need is how likely the fact will be needed again, gain is how much it improves the
-           answer when it is. Rate one without looking at the other. The ratings are about the
-           fact, not about this message: a fact is not more useful because the user repeated
-           it or just said it, and not less useful because it came up in small talk."""
+           need is how likely the fact will come up again, gain is what it holds that an
+           answer could not guess. Rate one without looking at the other. The ratings are
+           about the fact, not about this message: a fact is not more useful because the
+           user repeated it or just said it, and not less useful because it came up in
+           small talk."""
 
 CONSOLIDATION_PROMPTS = {
     mode: ChatPromptTemplate.from_messages([
