@@ -62,6 +62,7 @@ from memory_service import backends  # noqa: E402
 from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
     OperationLogEntry,
+    count_unrated,
     search_archive,
     serialize_core_memory_for_prompt,
     serialize_core_memory_with_dates,
@@ -230,8 +231,14 @@ def replay_user(agent: MemoryAgent, user: Dict[str, Any],
         sessions.append(replay_session(agent, session, name))
         progress(f"{name}: session {index} of {len(user['sessions'])}, "
                  f"{sessions[-1]['active_archive']} active in the archive")
-    return {"uuid": user["uuid"], "user_name": name, "sessions": sessions,
-            "node_stats": {node: dict(stats) for node, stats in NODE_STATS.items()}}
+    replayed = {"uuid": user["uuid"], "user_name": name, "sessions": sessions,
+                "node_stats": {node: dict(stats) for node, stats in NODE_STATS.items()}}
+    counted = count_unrated(((operation["op_type"], operation["ratings"])
+                             for session in sessions for operation in session["operations"]),
+                            agent.config.consolidation_utility)
+    if counted:
+        replayed["unrated"] = {"without_ratings": counted[0], "of": counted[1]}
+    return replayed
 
 
 def run_config(arguments: argparse.Namespace) -> MemoryConfig:
@@ -315,7 +322,7 @@ def process_user(user: Dict[str, Any], config: MemoryConfig, run_dir: str) -> Tu
         with open(partial, "w", encoding="utf-8") as handle:
             json.dump(replayed, handle, ensure_ascii=False)
         os.replace(partial, result_path(run_dir, uuid))
-        return uuid, "ok"
+        return uuid, "ok" + unrated_text([replayed.get("unrated")])
     except Exception:
         with open(os.path.join(run_dir, "tmp", f"{uuid}_error.log"), "w",
                   encoding="utf-8") as handle:
@@ -346,6 +353,27 @@ def merge_results(users: Sequence[Dict[str, Any]], run_dir: str) -> int:
                     output.write(json.dumps(json.load(handle), ensure_ascii=False) + "\n")
                 merged += 1
     return merged
+
+
+def unrated_text(counters: Sequence[Optional[Dict[str, int]]]) -> str:
+    """The ratings missing over some users, as the long test counts them; empty if unrated."""
+    counters = [counter for counter in counters if counter]
+    if not counters:
+        return ""
+    return (f", {sum(counter['without_ratings'] for counter in counters)} of "
+            f"{sum(counter['of'] for counter in counters)} new and updated facts without "
+            f"ratings (safety facts apart)")
+
+
+def finished_unrated(users: Sequence[Dict[str, Any]], run_dir: str) -> str:
+    """unrated_text over every user that finished, in this launch or in an earlier one."""
+    counters = []
+    for user in users:
+        finished = result_path(run_dir, user["uuid"])
+        if os.path.exists(finished):
+            with open(finished, encoding="utf-8") as handle:
+                counters.append(json.load(handle).get("unrated"))
+    return unrated_text(counters)
 
 
 def run_folder(arguments: argparse.Namespace) -> str:
@@ -386,7 +414,8 @@ def run(arguments: argparse.Namespace) -> int:
             print(f"User {uuid}: {outcome}", flush=True)
 
     merged = merge_results(users, run_dir)
-    print(f"{merged} of {len(users)} users in {run_dir}", flush=True)
+    print(f"{merged} of {len(users)} users in {run_dir}{finished_unrated(users, run_dir)}",
+          flush=True)
     return 0 if merged == len(users) else 1
 
 

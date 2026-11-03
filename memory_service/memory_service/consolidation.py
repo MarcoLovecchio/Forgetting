@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from memory_service import backends
 
 ARCHIVE_CANDIDATES_K = 10
+CONTENT_MATCH_K = 5
 
 MemoryStatus = Literal["active", "superseded", "deleted"]
 MemoryOperationType = Literal["new", "redundant", "update", "delete"]
@@ -150,15 +151,20 @@ class InsertCoreMemories(BaseModel):
         "among the known memories."))
 
 
+SAFETY_DESCRIPTION = (
+    "True only if forgetting this fact could put the user at risk: without it the "
+    "assistant could harm the user or put them in danger, as with an allergy, a medical "
+    "condition or treatment, a physical limitation, or something the user must avoid for "
+    "their health or safety. False for everything else, however important it is to the "
+    "user.")
+
+
 class SafetyJudgedOperation(MemoryOperation):
     """A classified fact, flagged when forgetting it could put the user at risk."""
 
     safety: Optional[bool] = Field(default=None, description=(
-        "True only if forgetting this fact could put the user at risk: without it the "
-        "assistant could harm the user or put them in danger, as with an allergy, a medical "
-        "condition or treatment, a physical limitation, or something the user must avoid for "
-        "their health or safety. False for everything else, however important it is to the "
-        "user. Only for new and update: leave it out for redundant and delete."))
+        SAFETY_DESCRIPTION + " Only for new and update: leave it out for redundant and "
+        "delete."))
 
 
 class UtilityJudgedOperation(SafetyJudgedOperation):
@@ -193,26 +199,28 @@ class UtilityJudgedOperation(SafetyJudgedOperation):
         "and delete, and when safety is true."))
 
 
-class NeedGainJudgedOperation(SafetyJudgedOperation):
-    """A classified fact, with its safety flag, need and gain."""
+class NeedGainJudgedOperation(MemoryOperation):
+    """A new or updated fact that is not about safety, with need and gain, both required."""
 
-    need: Optional[Literal[1, 2, 3]] = Field(default=None, description=(
+    operation: Literal["new", "update"]
+    safety: Literal[False] = Field(description=SAFETY_DESCRIPTION)
+    need: Literal[1, 2, 3] = Field(description=(
         "NEED: what kind of fact is this? Only the kind: how much the fact helps when it "
         "is used is gain, rated separately. "
         "Judge the fact itself, as you wrote it: not how often or how recently the user "
         "said it, not how new or surprising it is. Do not invent a goal of the user that "
         "the messages do not show. "
-        "1: one-off - it happened once or holds only for now, and nothing follows from it: "
-        "a purchase, an errand, a mishap, a passing mood. "
-        "2: topical - it stays true, but only one specific topic would bring it up: a "
-        "detail of a hobby, a taste, an old experience. "
-        "3: part of the user's life - it can matter in many different conversations: who "
-        "they are, where they live and work, people and animals close to them, diet, "
-        "health, limits, routines, ongoing activities, upcoming appointments until they "
-        "pass. "
-        "Only for new and update, and only when safety is false: leave it out for redundant "
-        "and delete, and when safety is true."))
-    gain: Optional[Literal[1, 2, 3]] = Field(default=None, description=(
+        "Decide in this order and stop at the first that applies. "
+        "First, is it 3, part of the user's life? It is 3 when it stays true and names one "
+        "of these: who the user is, their home, their work or study, a person or an animal "
+        "close to them, their diet, health or limits, a habit or routine, an ongoing "
+        "activity; or when it is a plan or an appointment that has not come yet. A change "
+        "to one of these, such as a habit the user stopped, is 3 too. "
+        "If not, is it 1, one-off? It is 1 when it happened once or holds only for now, and "
+        "nothing follows from it: a purchase, an errand, a mishap, a passing mood. "
+        "Otherwise it is 2, topical: it stays true, but only one specific topic would bring "
+        "it up, such as a detail of a hobby, a taste, an opinion, an old experience."))
+    gain: Literal[1, 2, 3] = Field(description=(
         "GAIN: imagine the fact is needed and the assistant does not have it. What happens? "
         "Rate it as if the situation that needs it had already come up, however rare that "
         "situation is: how often it happens is need, rated separately. "
@@ -221,9 +229,20 @@ class NeedGainJudgedOperation(SafetyJudgedOperation):
         "2: weaker - still acceptable, but generic, or it asks again what the user already "
         "said. "
         "3: wrong - it suggests something the user cannot or will not do, or gets a person, "
-        "place, date or number wrong. "
-        "Only for new and update, and only when safety is false: leave it out for redundant "
-        "and delete, and when safety is true."))
+        "place, date or number wrong."))
+
+
+class SafetyFactOperation(MemoryOperation):
+    """A new or updated fact whose loss could put the user at risk: protected, not rated."""
+
+    operation: Literal["new", "update"]
+    safety: Literal[True] = Field(description=SAFETY_DESCRIPTION)
+
+
+class UnjudgedOperation(MemoryOperation):
+    """A redundant or deleted fact: it carries no judgment."""
+
+    operation: Literal["redundant", "delete"]
 
 
 # The model sees the same tool name in every mode: only the schema changes.
@@ -251,7 +270,8 @@ class InsertCoreMemoriesWithNeedGain(InsertCoreMemories):
 
     model_config = ConfigDict(title="InsertCoreMemories")
 
-    memories: List[NeedGainJudgedOperation] = Field(
+    memories: List[Union[NeedGainJudgedOperation, SafetyFactOperation,
+                         UnjudgedOperation]] = Field(
         description=InsertCoreMemories.model_fields["memories"].description)
 
 
@@ -308,6 +328,24 @@ def normalize_operation(operation: Any) -> Optional[str]:
 
 
 RATING_SCALES = {"utility": 5, "need": 3, "gain": 3}
+# The ratings each mode asks of a new or updated fact that is not about safety.
+MODE_RATINGS = {"none": (), "single": ("utility",), "need_gain": ("need", "gain")}
+
+
+def count_unrated(entries: Iterable[Tuple[str, Optional[Dict[str, Any]]]],
+                  mode: str) -> Optional[Tuple[int, int]]:
+    """How many new and updated facts lack the ratings of the mode, out of how many.
+
+    `entries` are (op_type, ratings) pairs of the operation log. Safety facts are left
+    out, since they are never rated; None when the mode rates nothing.
+    """
+    names = MODE_RATINGS[mode]
+    if not names:
+        return None
+    judged = [ratings or {} for op_type, ratings in entries
+              if op_type in ("create", "update") and not (ratings or {}).get("safety")]
+    unrated = sum(1 for ratings in judged if any(ratings.get(name) is None for name in names))
+    return unrated, len(judged)
 
 
 def _flag(value: Any) -> Optional[bool]:
@@ -659,7 +697,7 @@ def supersede_item(
     """Replace a core item with a newer version that points back at it.
 
     The newer version inherits n_retrieve and n_used: it is the same fact, evolved.
-    The ratings are not inherited: an update is judged again.
+    The ratings are not inherited: an update is judged again (see _target_judgment).
     """
     _retire_item(old_item, "superseded")
     new_item = CoreMemoryItem(content=new_content, n_retrieve=old_item.n_retrieve,
@@ -736,23 +774,48 @@ def delete_archived_item(item_id: str, log: List[OperationLogEntry]) -> bool:
 # Applying what the LLM decided
 # --------------------------------------------------------------------------- #
 
-def _guess_target(
-    fact: str,
-    candidates: Iterable[CoreMemoryItem],
-) -> Optional[CoreMemoryItem]:
-    """Best effort match when the classifier gives no usable target id.
+def _comparable(text: str) -> str:
+    """A text as the content match reads it: lowercase, without the closing punctuation."""
+    return text.strip().lower().rstrip(" .!?;:")
 
-    Only core memories are matched here: an archival target without a valid id is
-    left to the "no target" path below.
+
+def _same_fact(fact: str, content: str) -> bool:
+    """One text contains the other, the best effort match when the target id is unusable."""
+    fact, content = _comparable(fact), _comparable(content)
+    return bool(fact and content) and (fact in content or content in fact)
+
+
+def _match_by_content(
+    fact: str,
+    core_items: Iterable[CoreMemoryItem],
+) -> Union[CoreMemoryItem, str, None]:
+    """The one memory the fact matches by text, when the classifier gives no usable id.
+
+    Looked for in core memory and among the archived memories closest to the fact: a
+    core item, an archived id, or None. Different texts that all match are no match,
+    since picking one could change the wrong memory; identical texts are one memory
+    stored twice, and the core copy wins. search_archive, because looking for a target
+    is not a retrieval.
     """
-    text = fact.strip().lower()
-    if not text:
+    if not _comparable(fact):
         return None
-    for item in candidates:
-        content = item.content.strip().lower()
-        if content and (text in content or content in text):
-            return item
-    return None
+    candidates = [(item, item.content) for item in core_items]
+    candidates += search_archive(fact, k=CONTENT_MATCH_K)
+    matches = [(target, _comparable(content)) for target, content in candidates
+               if _same_fact(fact, content)]
+    if len({text for _, text in matches}) > 1:
+        print(f"\tSeveral memories match {fact!r} by content: none is chosen")
+        return None
+    return matches[0][0] if matches else None
+
+
+def _target_judgment(target_item: Optional[CoreMemoryItem],
+                     archived_target: Optional[dict]) -> Dict[str, Any]:
+    """safety and ratings of an update's target, in the form read_ratings returns."""
+    names = ("safety", *RATING_SCALES)
+    if target_item is not None:
+        return {name: getattr(target_item, name) for name in names}
+    return {name: archived_target["metadata"].get(name) for name in names}
 
 
 def apply_memory_operations(
@@ -792,10 +855,13 @@ def apply_memory_operations(
             archived_target = get_archive_item(target_id) if target_id else None
             if archived_target is None:
                 # The classifier forgot the id, or invented one: try the text.
-                target_item = _guess_target(fact, active_by_id.values())
-                if target_item is not None:
-                    print(f"\t[{operation}] target matched by content: {target_item.id}")
-                    target_id = target_item.id
+                match = _match_by_content(fact, active_by_id.values())
+                if isinstance(match, CoreMemoryItem):
+                    target_item, target_id = match, match.id
+                    print(f"\t[{operation}] target matched by content: {target_id}")
+                elif match is not None:
+                    archived_target, target_id = get_archive_item(match), match
+                    print(f"\t[{operation}] archived target matched by content: {target_id}")
 
         if operation != "new" and target_item is None and archived_target is None:
             if operation == "delete":
@@ -807,6 +873,12 @@ def apply_memory_operations(
 
         # Only new and update are judged: a redundant keeps the ratings it had.
         ratings = read_ratings(raw_operation)
+        if operation == "update" and all(value is None for value in ratings.values()):
+            # The model left the judgment out: the target's is the closest one there is.
+            inherited = _target_judgment(target_item, archived_target)
+            if any(value is not None for value in inherited.values()):
+                print(f"\t[update] no judgment given, inherited from {target_id}")
+                ratings = inherited
 
         if operation == "new":
             items.append(create_item(fact, log, ratings))

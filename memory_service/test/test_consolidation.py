@@ -42,6 +42,7 @@ from memory_service.consolidation import (  # noqa: E402
     CoreMemoryItem,
     archive_items,
     build_candidate_memories,
+    count_unrated,
     get_active_items,
     record_uses,
     reinforce_archived_item,
@@ -313,6 +314,70 @@ class TargetResolutionTest(unittest.TestCase):
         self.assertEqual(state["core_memory"], [], "nothing is deleted at random")
         self.assertEqual(state["operation_log"], [], "and no operation is recorded")
 
+    def test_the_closing_punctuation_does_not_hide_the_target(self):
+        state = self.consolidate([{"fact": "L'utente ha un cane di nome Argo.",
+                                   "operation": "new"}])
+        dog = state["core_memory"][0]
+
+        state = self.consolidate([{"fact": "L'utente ha un cane di nome Argo, un labrador",
+                                   "operation": "update"}])
+
+        self.assertEqual(state["operation_log"][-1].related_item_id, dog.id)
+        self.assertEqual([item.content for item in state["core_memory"]],
+                         ["L'utente ha un cane di nome Argo, un labrador"])
+
+    def test_a_redundant_without_id_finds_its_archived_memory_by_content(self):
+        yoga = CoreMemoryItem(content="L'utente fa yoga il sabato mattina.")
+        archive_items([yoga])
+
+        state = self.consolidate([{"fact": "L'utente fa yoga il sabato mattina",
+                                   "operation": "redundant",
+                                   "target_item_id": "id-inventato-dal-modello"}])
+
+        self.assertEqual(state["core_memory"], [], "no duplicate")
+        self.assertEqual((state["operation_log"][-1].op_type,
+                          state["operation_log"][-1].item_id), ("redundant", yoga.id))
+        self.assertEqual(self.store.metadatas[yoga.id]["n_retrieve"], 0,
+                         "looking for a target is not a retrieval")
+
+    def test_a_delete_without_id_finds_its_archived_memory_by_content(self):
+        garden = CoreMemoryItem(content="L'utente ha un orto sul balcone.")
+        archive_items([garden])
+
+        self.consolidate([{"fact": "L'utente ha un orto sul balcone.", "operation": "delete"}])
+
+        self.assertEqual(self.store.status_of(garden.id), "deleted")
+
+    def test_several_different_matches_are_no_target(self):
+        allergy = CoreMemoryItem(content="Il cane Argo e' allergico al pollo.")
+        vaccine = CoreMemoryItem(content="Il cane Argo deve fare il vaccino.")
+        archive_items([allergy, vaccine])
+
+        state = self.consolidate([{"fact": "Il cane Argo", "operation": "delete"}])
+
+        self.assertEqual(state["operation_log"], [], "nothing is deleted on a guess")
+        self.assertEqual((self.store.status_of(allergy.id), self.store.status_of(vaccine.id)),
+                         ("active", "active"))
+
+    def test_the_same_text_stored_twice_is_one_target(self):
+        state = self.consolidate([{"fact": "L'utente fa yoga il sabato", "operation": "new"}])
+        in_core = state["core_memory"][0]
+        archive_items([CoreMemoryItem(content="L'utente fa yoga il sabato.")])
+
+        state = self.consolidate([{"fact": "L'utente fa yoga il sabato",
+                                   "operation": "redundant"}])
+
+        self.assertEqual((state["operation_log"][-1].op_type,
+                          state["operation_log"][-1].item_id), ("redundant", in_core.id))
+
+    def test_an_archived_memory_that_only_resembles_the_fact_is_not_a_target(self):
+        archive_items([CoreMemoryItem(content="L'utente corre tre volte a settimana.")])
+
+        state = self.consolidate([{"fact": "L'utente nuota tre volte a settimana",
+                                   "operation": "redundant"}])
+
+        self.assertEqual(state["operation_log"][-1].op_type, "create")
+
 
 class MetadataRewriteTest(unittest.TestCase):
     """Changing the status of an archived item must not recompute the vector.
@@ -492,6 +557,23 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertIn("il gatto Milo", retrieve_active_archival_memories("gatto", k=1))
 
 
+class UnratedCountTest(unittest.TestCase):
+    """count_unrated: the new and updated facts that came without the mode's ratings."""
+
+    LOG = [("create", {"need": 2, "gain": 2}), ("create", {"safety": True}),
+           ("update", None), ("create", {"need": 3}), ("redundant", None),
+           ("create", {"utility": 4})]
+
+    def test_a_safety_fact_needs_no_rating_and_a_partial_one_is_missing(self):
+        self.assertEqual(count_unrated(self.LOG, "need_gain"), (3, 4))
+
+    def test_each_mode_asks_its_own_ratings(self):
+        self.assertEqual(count_unrated(self.LOG, "single"), (3, 4))
+
+    def test_a_mode_that_rates_nothing_has_nothing_to_count(self):
+        self.assertIsNone(count_unrated(self.LOG, "none"))
+
+
 class JudgmentTest(unittest.TestCase):
     """safety, utility, need and gain: given on new and update, kept on redundant."""
 
@@ -523,10 +605,19 @@ class JudgmentTest(unittest.TestCase):
 
     def judged_fields(self):
         """The consolidation tool's name and the fields it asks for beyond the classification."""
-        tool, = self.llm.invocations[-1]["bound"]
-        function = convert_to_openai_tool(tool)["function"]
-        fields = set(function["parameters"]["properties"]["memories"]["items"]["properties"])
+        function = convert_to_openai_tool(self.bound_tool())["function"]
+        fields = set().union(*(form["properties"] for form in self.forms(function)))
         return function["name"], fields - {"fact", "operation", "target_item_id"}
+
+    def bound_tool(self):
+        tool, = self.llm.invocations[-1]["bound"]
+        return tool
+
+    @staticmethod
+    def forms(function):
+        """The shapes an operation can take: one, or one per group of operations."""
+        items = function["parameters"]["properties"]["memories"]["items"]
+        return items.get("anyOf", [items])
 
     def test_each_mode_binds_its_schema_under_the_same_name(self):
         for mode, judged in (("none", set()), ("single", {"safety", "utility"}),
@@ -536,6 +627,37 @@ class JudgmentTest(unittest.TestCase):
                 self.consolidate([])
 
                 self.assertEqual(self.judged_fields(), ("InsertCoreMemories", judged))
+
+    def test_with_need_and_gain_only_new_and_update_off_safety_must_be_rated(self):
+        # Exactly what the prompt asks: no rating for a safety fact, nor for redundant
+        # and delete.
+        self.use("need_gain")
+        self.consolidate([])
+
+        function = convert_to_openai_tool(self.bound_tool())["function"]
+        shapes = [(tuple(form["properties"]["operation"]["enum"]),
+                   form["properties"].get("safety", {}).get("const"), set(form["required"]))
+                  for form in self.forms(function)]
+        self.assertEqual(shapes, [
+            (("new", "update"), False, {"fact", "operation", "safety", "need", "gain"}),
+            (("new", "update"), True, {"fact", "operation", "safety"}),
+            (("redundant", "delete"), None, {"fact", "operation"})])
+
+    def test_an_update_without_a_judgment_takes_its_target_one(self):
+        self.use("need_gain")
+        dog = self.consolidate([{"fact": "ha un cane", "operation": "new", "safety": False,
+                                 "need": 3, "gain": 2}])["core_memory"][0]
+        archived = CoreMemoryItem(content="corre la mattina", safety=False, utility=4)
+        archive_items([archived])
+
+        state = self.consolidate([
+            {"fact": "ha un cane di nome Argo", "operation": "update", "target_item_id": dog.id},
+            {"fact": "corre la sera", "operation": "update", "target_item_id": archived.id},
+        ])
+
+        self.assertEqual([self.judgment(item) for item in state["core_memory"]],
+                         [(False, None, 3, 2), (False, 4, None, None)])
+        self.assertEqual(state["operation_log"][-2].ratings, {"need": 3, "gain": 2})
 
     def test_a_safety_fact_drops_its_ratings(self):
         # It is protected anyway: a rating given all the same must not stay.

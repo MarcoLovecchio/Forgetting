@@ -146,7 +146,11 @@ from langchain_core.messages import AIMessage
 
 from memory_service import backends
 from memory_service.config import NODE_SAMPLING, MemoryConfig
-from memory_service.consolidation import ARCHIVE_CANDIDATES_K, get_active_items
+from memory_service.consolidation import (
+    ARCHIVE_CANDIDATES_K,
+    count_unrated,
+    get_active_items,
+)
 
 import fama
 from live_model import live_stack_unavailable
@@ -599,7 +603,15 @@ def _print_progress(index, total, agent):
     safe_print(f"  [{index:>3}/{total}] core: {active} item | operations: {operations}")
 
 
-def _print_operation_log(log):
+def _print_unrated(log, utility):
+    """How many new and updated facts lack the ratings of the mode, safety facts apart."""
+    counted = count_unrated(((entry.op_type, entry.ratings) for entry in log), utility)
+    if counted:
+        safe_print(f"Without ratings: {counted[0]} of {counted[1]} new and updated facts "
+                   f"(safety facts apart)")
+
+
+def _print_operation_log(log, utility):
     safe_print(f"\n--- OPERATION LOG ({len(log)} operations) ---")
 
     counters = {}
@@ -608,6 +620,7 @@ def _print_operation_log(log):
     if counters:
         summary = ", ".join(f"{name} {count}" for name, count in sorted(counters.items()))
         safe_print(f"Summary: {summary}")
+        _print_unrated(log, utility)
     safe_print("")
 
     if not log:
@@ -938,7 +951,7 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
         if len(failures) > 10:
             safe_print(f"  ... and {len(failures) - 10} more")
 
-    _print_operation_log(state["operation_log"])
+    _print_operation_log(state["operation_log"], config.consolidation_utility)
     _print_core_memory(state, config.core_memory_limit, config.counts_used)
     _print_archive(vector_store, config.counts_used)
     _print_questions(answers)

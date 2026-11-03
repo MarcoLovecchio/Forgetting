@@ -162,8 +162,9 @@ confusion matrix of the operations (`test/operation_matrix.py`), which sums the
 saved runs of the same commit.
 
 During the run it prints only one progress line every 10 messages; at the end it
-prints the report: full operation log, core memory, archive, questions and
-answers, the FAMA table, the confusion matrix and the cost per node. The asserts
+prints the report: full operation log, with how many new and updated facts lack the
+ratings of the mode, core memory, archive, questions and answers, the FAMA table, the
+confusion matrix and the cost per node. The asserts
 are structural (every item that left the core memory is in the archive or has an
 `evict` or `prune` entry in the log, core memory with only active items, unique
 ids, no question without an answer); FAMA is measured and printed, never asserted.
@@ -249,7 +250,9 @@ configuration and the commit, `memory_service_eval_results.jsonl` for the evalua
 `memory_service_eval_stat_result.json` with its scores, `logs/` with the agent's output
 for each user and `archives/` with the Chroma folders. Next to what HaluMem reads, every
 session also keeps its operations, each with the exchange it belongs to, and how many
-memories were active at its end.
+memories were active at its end. Every user keeps in `unrated` how many new and updated
+facts came without the ratings of the mode, counted as in the long test: the run prints
+it when the user finishes, and summed over the finished users at the end.
 
 ## The models on the cluster
 
@@ -469,9 +472,23 @@ changes while keeping the name `InsertCoreMemories`. `safety` is true only if
 forgetting the fact can put the user at risk (an allergy, a medical condition): in
 that case the ratings are not given and, if the model gives them anyway, they are
 discarded. An `update` is judged again, a `redundant` keeps the ratings it had, a
-`delete` has none. An off-scale rating counts as not given. The four fields live in
-`CoreMemoryItem` and in the archive metadata, where a missing value is absent
-rather than `None`.
+`delete` has none. With `need_gain` the schema says so itself: an operation has three
+shapes, `new` and `update` with `safety` false and `need` and `gain` required, `new` and
+`update` with `safety` true and no rating, `redundant` and `delete` with none. An
+`update` that arrives without any judgment all the same (a server that does not hold the
+model to the schema, or `single`, where the fields stay optional) takes its target's,
+and the agent prints it. An off-scale rating counts as not given. The four fields live
+in `CoreMemoryItem` and in the archive metadata, where a missing value is absent rather
+than `None`.
+
+When the classifier gives a `target_item_id` that exists neither in core memory nor in
+the archive, the target is looked for by text among the core memories and the five
+archived memories closest to the fact (`CONTENT_MATCH_K`), a search that does not count
+as a retrieval. A memory matches when one text contains the other, ignoring case and
+the closing punctuation. Only a single match is taken: when memories with different
+texts match, none is chosen, since a guess could change the wrong one; the same text
+stored twice counts as one memory, and the core copy wins. A `redundant` or an `update`
+without a target is stored as a new memory, a `delete` without a target is ignored.
 
 In eviction the judgment enters the score as the utility term, high meaning keep
 as for the other terms: with `single` the rating's entry in `UTILITY_TABLE`, with

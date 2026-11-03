@@ -193,6 +193,16 @@ class ReplayTest(unittest.TestCase):
 
         self.assertEqual(replayed["user_name"], "Rossi Mario")
         self.assertEqual([one["active_core"] for one in replayed["sessions"]], [1, 2])
+        self.assertNotIn("unrated", replayed, "a mode that rates nothing has nothing to count")
+
+    def test_a_user_keeps_how_many_facts_came_without_ratings(self):
+        self.agent.config = dataclasses.replace(CONFIG, consolidation_utility="need_gain")
+        user = {**USER, "sessions": [session(("a", "b"), ("c", "d"))]}
+
+        replayed = adapter.replay_user(self.agent, user)
+
+        self.assertEqual(replayed["unrated"], {"without_ratings": 2, "of": 2},
+                         "the scripted model gives no rating")
 
     def test_a_failed_call_is_tried_again(self):
         calls = []
@@ -269,6 +279,16 @@ class RunTest(unittest.TestCase):
         self.assertEqual(merged, 2)
         path = os.path.join(self.run_dir, f"{adapter.FRAME}_eval_results.jsonl")
         self.assertEqual([user["uuid"] for user in adapter.load_users(path)], ["a", "b"])
+
+    def test_the_missing_ratings_are_summed_over_the_users_that_finished(self):
+        for uuid, counter in (("a", {"without_ratings": 1, "of": 40}),
+                              ("b", {"without_ratings": 0, "of": 35})):
+            with open(adapter.result_path(self.run_dir, uuid), "w", encoding="utf-8") as handle:
+                json.dump({"uuid": uuid, "unrated": counter}, handle)
+
+        self.assertEqual(adapter.finished_unrated([{"uuid": name} for name in "abc"],
+                                                  self.run_dir),
+                         ", 1 of 75 new and updated facts without ratings (safety facts apart)")
 
     def test_launched_again_the_results_file_does_not_double(self):
         with open(adapter.result_path(self.run_dir, "a"), "w", encoding="utf-8") as handle:
