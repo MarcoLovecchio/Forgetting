@@ -116,7 +116,8 @@ class MemoryOperation(BaseModel):
 
     fact: str = Field(description=(
         "The fact itself, in English whatever language the user spoke. Write it about the "
-        "user, in the third person, never as a copy of the sentence the user wrote. State "
+        "user, in the third person, and call them \"the user\", never by name: the name is a "
+        "fact of its own. Never write it as a copy of the sentence the user wrote. State "
         "what is true now, not what changed."))
     operation: MemoryOperationType
     target_item_id: Optional[str] = Field(

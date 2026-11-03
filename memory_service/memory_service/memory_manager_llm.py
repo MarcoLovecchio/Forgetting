@@ -153,7 +153,7 @@ def empty_node(state: AgentState) -> AgentState:
 
 # Tool to retrieve memories from the archive
 @tool
-def retrieve_memory(query: str, k: int = 5,
+def retrieve_memory(query: str, k: int = 20,
                     stamp_retrieved_at: Annotated[bool, InjectedToolArg] = True,
                     dated: Annotated[bool, InjectedToolArg] = False) -> str:
     """Retrieve relevant memories from the archival vector store based on a query.
@@ -683,7 +683,6 @@ class MemoryAgent():
                 "tool_calls": []
             }
             self.up_to_date = False
-            # Where the operation log stood before the last run, see last_operations()
             self._log_offset = 0
 
     @classmethod

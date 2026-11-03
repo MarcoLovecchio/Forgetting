@@ -30,8 +30,8 @@ as would really happen - for example the calories:
 
     msg 11   "il mio obiettivo giornaliero e' 2000 calorie"     (new)
     msg 38   "in realta' l'obiettivo ora e' 2200"               (update)
-    msg 153  "ho cambiato obiettivo: 1800, voglio dimagrire"    (update)
-    msg 184  "non memorizzare piu' quante calorie punto"        (delete)
+    msg 162  "ho cambiato obiettivo: 1800, voglio dimagrire"    (update)
+    msg 195  "non memorizzare piu' quante calorie punto"        (delete)
 
 Every message carries in a comment the case it should trigger. The scattered
 chatter serves to fill the core memory until the split towards the archive
@@ -97,7 +97,7 @@ skipped explaining what.
 
 Warning: each message costs 3-4 real calls to the model (the retrieval
 decision, the answer, consolidation, and the core split when the core memory
-overflows). Over 232 messages that is several hundred calls: better to start
+overflows). Over 244 messages that is several hundred calls: better to start
 with a low MEMORY_LONGRUN_MESSAGES. With the models on the cluster the
 limit is not the quota but the latency, so the time depends on the load of the
 GPUs they run on.
@@ -106,7 +106,7 @@ Run:
     pytest memory_service/test/test_long_term_interaction.py -v -s
 
 Useful variables:
-    MEMORY_LONGRUN_MESSAGES      how many messages to inject, out of 232
+    MEMORY_LONGRUN_MESSAGES      how many messages to inject, out of 244
     MEMORY_LONGRUN_DELAY         seconds of pause between one message and the
                                  next. On the cluster there are no rate limits
                                  to respect, but it is needed if the endpoint is
@@ -169,7 +169,7 @@ PROGRESS_EVERY = 10
 ID_WIDTH = 8
 
 # --------------------------------------------------------------------------- #
-# The conversation: 232 user messages (176 facts and 56 questions)
+# The conversation: 244 user messages (188 facts and 56 questions)
 #
 # Which ones are the 56 is said by fama.QUESTIONS, not by the punctuation:
 # the last message asks for a summary without a question mark, and it is a
@@ -221,6 +221,7 @@ CONVERSATION = [
     "Buongiorno!",  # chatter
     "Ricordati che ho l'asma, l'inalatore ce l'ho sempre in borsa.",  # redundant: asthma
     "Ho qualche problema respiratorio?",  # QUESTION: the asthma
+    "Oggi ho fatto mezz'ora di fila alla posta.",  # new: one-off
     "Ho comprato una bicicletta nuova, una gravel grigia.",  # new
     "Oggi ho comprato un ombrello rosso.",  # new
     "Come ti dicevo, mi chiamo Bianca.",  # redundant: name
@@ -229,6 +230,7 @@ CONVERSATION = [
     "Medito dieci minuti appena sveglia.",  # new
     "Non sopporto i film dell'orrore, mi mettono ansia.",  # new
     "Mi consigli un film da vedere stasera?",  # QUESTION (task): no horror
+    "Stamattina mi si e' rotta la cerniera della giacca.",  # new: one-off
     "Le proteine le ho portate a 75 grammi al giorno.",  # update: proteins
     "Il caffe' lo prendo la mattina, mai dopo.",  # redundant: coffee
     "Sto imparando lo spagnolo con un'app, dieci minuti al giorno.",  # new
@@ -244,6 +246,7 @@ CONVERSATION = [
     "Mia sorella Chiara e' sempre a Milano.",  # redundant: sister
     "Dimentica il mio indirizzo.",  # delete: home
     "Sai dirmi dove abito?",  # QUESTION: after the delete it must not know it
+    "Ho pagato la bolletta della luce.",  # new: one-off
     "Il medico mi ha aumentato la levotiroxina a 88 microgrammi.",  # update: levothyroxine
     "Che dose di levotiroxina prendo?",  # QUESTION: 88 micrograms
     "Bevo almeno due litri d'acqua al giorno.",  # new
@@ -252,6 +255,7 @@ CONVERSATION = [
     "Cosa bevo di solito la mattina?",  # QUESTION: must no longer say coffee
     "Sono allergica anche alla penicillina, l'ho scoperto da poco.",  # new
     "A quali farmaci sono allergica?",  # QUESTION: penicillin
+    "Oggi sono di pessimo umore, non so neanche perche'.",  # new: one-off
     "Ho una collezione di dischi in vinile, soprattutto jazz.",  # new
     "Ho paura di volare, per viaggiare preferisco treno e nave.",  # new
     "Confermo: niente alcolici per me.",  # redundant: alcohol
@@ -263,6 +267,7 @@ CONVERSATION = [
     "Ho smesso di correre, mi da' fastidio il ginocchio.",  # contradict: running
     "Cancella l'informazione sulla mia eta'",  # delete: age
     "Quanti anni ho?",  # QUESTION: after the delete it must not know it
+    "Ieri ho incontrato per caso un vecchio compagno di scuola.",  # new: one-off
     "Ho iniziato un corso di fotografia il lunedi' sera.",  # new
     "Stamattina ho perso le chiavi, poi le ho ritrovate in tasca.",  # new
     "Il sabato mattina c'e' yoga, come ogni settimana.",  # redundant: yoga
@@ -271,6 +276,7 @@ CONVERSATION = [
     "Dove vive mia sorella?",  # QUESTION: must say Torino, not Milano
     "Ho comprato una reflex usata per il corso di fotografia.",  # new
     "Che corso faccio il lunedi' sera?",  # QUESTION: photography
+    "Ho ritirato un pacco dal tabaccaio.",  # new: one-off
     "In inverno soffro molto il freddo alle mani.",  # new
     "Ho comprato un tappetino nuovo per la cucina.",  # new
     "Giulia si sposa il 14 giugno e io saro' la sua testimone.",  # new
@@ -280,6 +286,7 @@ CONVERSATION = [
     "Mi sono ricreduta sulla liquirizia, adesso mi piace.",  # contradict: liquorice
     "Il mio numero fortunato e' il sette.",  # new
     "Quando si sposa la mia amica Giulia?",  # QUESTION: 14 June
+    "Ho portato le scarpe a risuolare dal calzolaio.",  # new: one-off
     "Il martedi' sera faccio volontariato in un canile.",  # new
     "Yoga il sabato e da poco anche il mercoledi' sera.",  # update: yoga
     "Non conservare il nome di mia sorella, eliminalo.",  # delete: sister
@@ -298,6 +305,7 @@ CONVERSATION = [
     "Argo non e' un labrador, e' un golden retriever.",  # contradict: breed
     "Di che razza e' il mio cane?",  # QUESTION: must say golden retriever
     "Cosa non puo' mangiare Argo?",  # QUESTION: chicken
+    "Oggi ho riordinato l'armadio, ci ho messo tutto il pomeriggio.",  # new: one-off
     "Argo deve fare il richiamo del vaccino il 20 ottobre.",  # new
     "Dimentica cosa ti ho detto sul vino.",  # delete: wine
     "Preferisco la montagna al mare, anche se vivo sulla costa.",  # new
@@ -319,6 +327,7 @@ CONVERSATION = [
     "Vado a dormire molto piu' tardi ora, verso l'una.",  # contradict: sleep
     "Rimuovi il dato sul lavoro che faccio.",  # delete: work
     "Che lavoro faccio?",  # QUESTION: after the delete it must not know it
+    "Ho comprato un portachiavi a forma di stella.",  # new: one-off
     "Sono andata dal dentista, era solo un controllo e va tutto bene.",  # update: dentist
     "La mia vicina di casa tiene Argo quando sono in viaggio.",  # new
     "Non uso i social network, li ho cancellati l'anno scorso.",  # new
@@ -333,6 +342,7 @@ CONVERSATION = [
     "Ricorda che mangio pesce ma non carne.",  # redundant: diet
     "Ho cambiato obiettivo: 1800 calorie, voglio dimagrire.",  # contradict: calories
     "Quante calorie dovrei assumere ogni giorno?",  # QUESTION: must say 1800
+    "Ho rotto una tazza mentre lavavo i piatti.",  # new: one-off
     "Ok, grazie mille.",  # chatter
     "Il medico ha portato la levotiroxina a 100 microgrammi.",  # update: levothyroxine
     "Che farmaco devo ricordarmi di prendere domattina?",  # QUESTION (task): levothyroxine 100
@@ -351,6 +361,7 @@ CONVERSATION = [
     "Il matrimonio di Giulia e' stato bellissimo, ho anche pianto.",  # update: wedding
     "Come si chiama la mia migliore amica?",  # QUESTION: Giulia
     "Che lingua sto imparando?",  # QUESTION: Spanish
+    "Ho cambiato la lampadina del bagno.",  # new: one-off
     "Ti ricordo ancora che sono allergica alle arachidi.",  # redundant: allergy
     "Ti ricordo che sono allergica alla penicillina.",  # redundant: penicillin
     "In realta' Milo ha tre anni, mi sono sbagliata.",  # update: the cat's age
@@ -382,6 +393,7 @@ CONVERSATION = [
     "Quando e' il mio compleanno?",  # QUESTION: 12 March
     "Dimentica la data del mio compleanno.",  # delete: birthday
     "Sai quando compio gli anni?",  # QUESTION: after the delete it must not know it
+    "Oggi ho stirato una montagna di camicie.",  # new: one-off
     "La Formula 1 non la guardo piu', mi annoia.",  # contradict: formula 1
     "Ho finito il corso di lingua dei segni, ho il primo livello.",  # update: sign language
     "Sto ancora facendo il corso di lingua dei segni?",  # QUESTION: finished it
@@ -472,10 +484,10 @@ def _is_question(index: int) -> bool:
     It does NOT decide the branch of the graph. Every message, question or not,
     goes through retrieve and then insert, as in the real pipeline: it is just
     that the answers to the questions are the only interesting ones to read
-    among 232.
+    among 244.
 
     The criteria table decides it, not the question mark. It used to be the
-    other way round, and message 232 - "Riassumi tutto quello che sai di me." -
+    other way round, and message 244 - "Riassumi tutto quello che sai di me." -
     did not end up in the report for reasons of punctuation, despite being the
     question that tests the whole memory together.
     """

@@ -28,7 +28,7 @@ LONGRUN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 # The questions asked right after a deletion. The value must not appear even
 # negated: the memory is gone, naming it is already a leak.
-AFTER_DELETE = (65, 84, 105, 140, 169, 188, 203, 213)
+AFTER_DELETE = (67, 88, 112, 148, 179, 199, 214, 225)
 
 
 def conversation():
@@ -386,7 +386,7 @@ class CriteriaTableTest(unittest.TestCase):
                  if message.strip().endswith("?")}
         self.assertFalse(asked - set(fama.QUESTIONS),
                          "questions without criteria: %s" % sorted(asked - set(fama.QUESTIONS)))
-        self.assertEqual(set(fama.QUESTIONS) - asked, {232},
+        self.assertEqual(set(fama.QUESTIONS) - asked, {244},
                          "the only question without a question mark is the final "
                          "summary: if you add others, update this test")
 
@@ -422,9 +422,9 @@ class CriteriaTableTest(unittest.TestCase):
                 "even negated" % index)
 
         for index, subject in fama.QUESTIONS.items():
-            # 232 is the final summary: it gathers both deletions and
+            # 244 is the final summary: it gathers both deletions and
             # updates, so it mixes the two constructors on purpose.
-            if index in AFTER_DELETE or index == 232:
+            if index in AFTER_DELETE or index == 244:
                 continue
             self.assertTrue(
                 all(item.superseded_ok for item in subject.forgetting),
@@ -442,59 +442,59 @@ class CriteriaTableTest(unittest.TestCase):
             36: "Sei vegetariana, allergica alle arachidi e punti a 2000 calorie.",
             39: "Il tuo obiettivo è 2200 calorie al giorno.",
             42: "Sì, hai l'asma e porti sempre l'inalatore.",
-            46: "Ti chiami Bianca.",
-            50: "Niente horror, ti mettono ansia: prova una commedia.",
-            58: "Mangi pesce: non sei più vegetariana da questo mese.",
-            60: "Un'orata al forno: mangi pesce, e niente arachidi.",
-            65: "Non ho questa informazione, l'hai fatta cancellare.",
-            67: "Prendi 88 microgrammi di levotiroxina.",
-            71: "Non bevi più caffè, l'hai eliminato del tutto.",
-            73: "Sei allergica alla penicillina.",
-            79: "Vorresti andare in Grecia, a Naxos.",
-            81: "In treno e poi in traghetto, visto che hai paura di volare.",
-            84: "Non lo so, mi hai chiesto di cancellare la tua età.",
-            90: "Tua sorella vive a Torino.",
-            92: "Il lunedì sera segui il corso di fotografia.",
-            101: "Giulia si sposa il 14 giugno.",
-            105: "Non lo so, mi hai chiesto di eliminare il suo nome.",
-            108: "Il martedì sera fai volontariato in un canile.",
-            111: "Sei allergica alle arachidi, anche all'olio, e alla penicillina.",
-            114: "Sì, ti sei ricreduta: ora la liquirizia ti piace.",
-            118: "Argo è un golden retriever.",
-            119: "Argo non può mangiare il pollo.",
-            123: "Non dimenticare l'inalatore, per l'asma.",
-            127: "No, hai smesso a settembre.",
-            131: "Stai entro i 50 euro: pesce, verdure e legumi.",
-            133: "Argo deve fare il vaccino il 20 ottobre.",
-            137: "Martedì prossimo alle tre del pomeriggio.",
-            140: "Non lo so, mi hai chiesto di rimuovere questo dato.",
-            148: "Suoni la chitarra e ascolti jazz in vinile.",
-            151: "Puoi lasciarlo alla tua vicina di casa, come quando viaggi.",
-            154: "Punti a 1800 calorie al giorno.",
-            157: "La levotiroxina da 100 microgrammi, a digiuno.",
-            169: "Non ho informazioni su questo in famiglia.",
-            171: "Si chiama Giulia.",
-            172: "Stai imparando lo spagnolo, sei al livello B1.",
-            177: "Nuoti tre volte a settimana e hai ripreso a correre.",
-            179: "Corsa la mattina presto, nuoto tre volte e pilates il giovedì.",
-            181: "Pomodori, basilico e adesso anche peperoncini.",
-            183: "No, hai smesso di meditare.",
-            188: "Non ho impegni fissi del martedì da ricordarti.",
-            192: "In treno o in bici, visto che non hai la patente.",
-            194: "No, hai superato la paura di volare con un corso.",
-            198: "Hai il cane Argo e il gatto Milo.",
-            200: "No, ti sei operata agli occhi.",
-            201: "Il tuo compleanno è il 12 marzo.",
-            203: "Non lo so, mi hai chiesto di dimenticarlo.",
-            206: "No, l'hai finito: hai il primo livello di lingua dei segni.",
-            208: "Punti a 75 grammi di proteine al giorno.",
-            210: "Bevi almeno due litri d'acqua al giorno.",
-            213: "Non lo so, mi hai chiesto di dimenticarlo.",
-            217: "Ad agosto vai in Portogallo.",
-            219: "Torna nella tua trattoria di pesce a Cefalù.",
-            230: "Quest'anno a Natale resti a casa.",
-            231: "Il tuo scrittore preferito è Andrea Camilleri.",
-            232: "Ti chiami Bianca, sei allergica alle arachidi e vivi con Argo e Milo.",
+            47: "Ti chiami Bianca.",
+            51: "Niente horror, ti mettono ansia: prova una commedia.",
+            60: "Mangi pesce: non sei più vegetariana da questo mese.",
+            62: "Un'orata al forno: mangi pesce, e niente arachidi.",
+            67: "Non ho questa informazione, l'hai fatta cancellare.",
+            70: "Prendi 88 microgrammi di levotiroxina.",
+            74: "Non bevi più caffè, l'hai eliminato del tutto.",
+            76: "Sei allergica alla penicillina.",
+            83: "Vorresti andare in Grecia, a Naxos.",
+            85: "In treno e poi in traghetto, visto che hai paura di volare.",
+            88: "Non lo so, mi hai chiesto di cancellare la tua età.",
+            95: "Tua sorella vive a Torino.",
+            97: "Il lunedì sera segui il corso di fotografia.",
+            107: "Giulia si sposa il 14 giugno.",
+            112: "Non lo so, mi hai chiesto di eliminare il suo nome.",
+            115: "Il martedì sera fai volontariato in un canile.",
+            118: "Sei allergica alle arachidi, anche all'olio, e alla penicillina.",
+            121: "Sì, ti sei ricreduta: ora la liquirizia ti piace.",
+            125: "Argo è un golden retriever.",
+            126: "Argo non può mangiare il pollo.",
+            131: "Non dimenticare l'inalatore, per l'asma.",
+            135: "No, hai smesso a settembre.",
+            139: "Stai entro i 50 euro: pesce, verdure e legumi.",
+            141: "Argo deve fare il vaccino il 20 ottobre.",
+            145: "Martedì prossimo alle tre del pomeriggio.",
+            148: "Non lo so, mi hai chiesto di rimuovere questo dato.",
+            157: "Suoni la chitarra e ascolti jazz in vinile.",
+            160: "Puoi lasciarlo alla tua vicina di casa, come quando viaggi.",
+            163: "Punti a 1800 calorie al giorno.",
+            167: "La levotiroxina da 100 microgrammi, a digiuno.",
+            179: "Non ho informazioni su questo in famiglia.",
+            181: "Si chiama Giulia.",
+            182: "Stai imparando lo spagnolo, sei al livello B1.",
+            188: "Nuoti tre volte a settimana e hai ripreso a correre.",
+            190: "Corsa la mattina presto, nuoto tre volte e pilates il giovedì.",
+            192: "Pomodori, basilico e adesso anche peperoncini.",
+            194: "No, hai smesso di meditare.",
+            199: "Non ho impegni fissi del martedì da ricordarti.",
+            203: "In treno o in bici, visto che non hai la patente.",
+            205: "No, hai superato la paura di volare con un corso.",
+            209: "Hai il cane Argo e il gatto Milo.",
+            211: "No, ti sei operata agli occhi.",
+            212: "Il tuo compleanno è il 12 marzo.",
+            214: "Non lo so, mi hai chiesto di dimenticarlo.",
+            218: "No, l'hai finito: hai il primo livello di lingua dei segni.",
+            220: "Punti a 75 grammi di proteine al giorno.",
+            222: "Bevi almeno due litri d'acqua al giorno.",
+            225: "Non lo so, mi hai chiesto di dimenticarlo.",
+            229: "Ad agosto vai in Portogallo.",
+            231: "Torna nella tua trattoria di pesce a Cefalù.",
+            242: "Quest'anno a Natale resti a casa.",
+            243: "Il tuo scrittore preferito è Andrea Camilleri.",
+            244: "Ti chiami Bianca, sei allergica alle arachidi e vivi con Argo e Milo.",
         }
         self.assertEqual(set(right), set(fama.QUESTIONS))
 
@@ -515,10 +515,10 @@ class CriteriaTableTest(unittest.TestCase):
             36: "So che cuoci senza glutine a casa tua, sei leggermente intollerante "
                 "al lattosio e sei allergico alle arachidi, che è un'allergia grave.",
             39: "Il tuo obiettivo calorico giornaliero è 2200 calorie.",
-            58: "Ora segui una dieta che include il pesce, dato che sei passata dal "
+            60: "Ora segui una dieta che include il pesce, dato che sei passata dal "
                 "vegetarianesimo, ma mantieni comunque l'obiettivo di 2200 calorie al giorno.",
-            65: "Non so dove abiti, poiché non è tra le informazioni che tengo a mente.",
-            71: "Di solito bevi solo caffè la mattina, ma ora non lo prendi più.",
+            67: "Non so dove abiti, poiché non è tra le informazioni che tengo a mente.",
+            74: "Di solito bevi solo caffè la mattina, ma ora non lo prendi più.",
         }
         for index, answer in run.items():
             scored = fama.score(fama.QUESTIONS[index], answer)
@@ -542,68 +542,68 @@ class CriteriaTableTest(unittest.TestCase):
                 "The user's daily goal is 2000 calories",
             39: "The user's daily calorie goal is 2200",
             42: "The user has asthma and always carries an inhaler",
-            46: "The user's name is Bianca",
-            50: "The user cannot stand horror films, they cause anxiety",
-            58: "The user is no longer vegetarian and now eats fish",
-            60: "The user is no longer vegetarian and now eats fish\n"
+            47: "The user's name is Bianca",
+            51: "The user cannot stand horror films, they cause anxiety",
+            60: "The user is no longer vegetarian and now eats fish",
+            62: "The user is no longer vegetarian and now eats fish\n"
                 "The user is allergic to peanuts",
-            65: "The user drinks two litres of water a day",
-            67: "The user's levothyroxine dose was increased to 88 micrograms",
-            71: "The user has completely eliminated coffee",
-            73: "The user is allergic to penicillin",
-            79: "In August the user would like to go to Greece, maybe Naxos",
-            81: "The user is afraid of flying and prefers to travel by train and ship",
-            84: "The user wakes up at 6:30 AM",
-            90: "The user's sister lives in Turin",
-            92: "The user attends a photography course on Monday evenings",
-            101: "The user's best friend Giulia is getting married on June 14",
-            105: "The user has a sister",
-            108: "The user volunteers at a dog shelter on Tuesday evenings",
-            111: "The user is allergic to peanuts, including peanut oil\n"
+            67: "The user drinks two litres of water a day",
+            70: "The user's levothyroxine dose was increased to 88 micrograms",
+            74: "The user has completely eliminated coffee",
+            76: "The user is allergic to penicillin",
+            83: "In August the user would like to go to Greece, maybe Naxos",
+            85: "The user is afraid of flying and prefers to travel by train and ship",
+            88: "The user wakes up at 6:30 AM",
+            95: "The user's sister lives in Turin",
+            97: "The user attends a photography course on Monday evenings",
+            107: "The user's best friend Giulia is getting married on June 14",
+            112: "The user has a sister",
+            115: "The user volunteers at a dog shelter on Tuesday evenings",
+            118: "The user is allergic to peanuts, including peanut oil\n"
                  "The user is allergic to penicillin",
-            114: "The user now likes licorice",
-            118: "Argo is a golden retriever",
-            119: "Argo cannot eat chicken",
-            123: "The user has asthma and always carries an inhaler",
-            127: "The user stopped doing yoga in September",
-            131: "The user tries not to spend more than 50 euros a week on groceries",
-            133: "Argo is due for a vaccine booster on October 20",
-            137: "The user has a dentist appointment next Tuesday at 3 pm",
-            140: "The user prefers the mountains to the sea",
-            148: "The user plays the guitar\n"
+            121: "The user now likes licorice",
+            125: "Argo is a golden retriever",
+            126: "Argo cannot eat chicken",
+            131: "The user has asthma and always carries an inhaler",
+            135: "The user stopped doing yoga in September",
+            139: "The user tries not to spend more than 50 euros a week on groceries",
+            141: "Argo is due for a vaccine booster on October 20",
+            145: "The user has a dentist appointment next Tuesday at 3 pm",
+            148: "The user prefers the mountains to the sea",
+            157: "The user plays the guitar\n"
                 "The user collects jazz records on vinyl\n"
                 "The user no longer plays the piano",
-            151: "The user's neighbour looks after Argo when the user travels",
-            154: "The user's calorie goal is 1800",
-            157: "The user takes levothyroxine every morning on an empty stomach\n"
+            160: "The user's neighbour looks after Argo when the user travels",
+            163: "The user's calorie goal is 1800",
+            167: "The user takes levothyroxine every morning on an empty stomach\n"
                  "The user's levothyroxine dose is now 100 micrograms",
-            169: "The user eats gluten free at home",
-            171: "The user's best friend is Giulia",
-            172: "The user is learning Spanish and has reached level B1",
-            177: "The user swims three times a week\n"
+            179: "The user eats gluten free at home",
+            181: "The user's best friend is Giulia",
+            182: "The user is learning Spanish and has reached level B1",
+            188: "The user swims three times a week\n"
                  "The user has started running again",
-            179: "The user has started running again\n"
+            190: "The user has started running again\n"
                  "The user swims three times a week\n"
                  "The user does pilates on Thursday evenings",
-            181: "The user grows tomatoes and basil on the balcony\n"
+            192: "The user grows tomatoes and basil on the balcony\n"
                  "The user now also grows chili peppers on the balcony",
-            183: "The user has stopped meditating",
-            188: "The user swims three times a week",
-            192: "The user does not have a driving licence",
-            194: "The user overcame the fear of flying with a course",
-            198: "The user has a dog named Argo\nThe user has a cat named Milo",
-            200: "The user had eye surgery and no longer wears glasses",
-            201: "The user's birthday is March 12",
-            203: "The user's name is Bianca",
-            206: "The user finished the sign language course and has the first level",
-            208: "The user aims for 75 grams of protein a day",
-            210: "The user drinks at least two litres of water a day",
-            213: "The user drinks at least two litres of water a day",
-            217: "In August the user is going to Portugal instead of Naxos",
-            219: "The user's favourite restaurant is a fish trattoria in Cefalu",
-            230: "The user is staying home for Christmas this year",
-            231: "The user's favourite writer is Andrea Camilleri",
-            232: "The user's name is Bianca\n"
+            194: "The user has stopped meditating",
+            199: "The user swims three times a week",
+            203: "The user does not have a driving licence",
+            205: "The user overcame the fear of flying with a course",
+            209: "The user has a dog named Argo\nThe user has a cat named Milo",
+            211: "The user had eye surgery and no longer wears glasses",
+            212: "The user's birthday is March 12",
+            214: "The user's name is Bianca",
+            218: "The user finished the sign language course and has the first level",
+            220: "The user aims for 75 grams of protein a day",
+            222: "The user drinks at least two litres of water a day",
+            225: "The user drinks at least two litres of water a day",
+            229: "In August the user is going to Portugal instead of Naxos",
+            231: "The user's favourite restaurant is a fish trattoria in Cefalu",
+            242: "The user is staying home for Christmas this year",
+            243: "The user's favourite writer is Andrea Camilleri",
+            244: "The user's name is Bianca\n"
                  "The user is allergic to peanuts\n"
                  "The user has a dog named Argo\n"
                  "The user has a cat named Milo",
@@ -620,22 +620,22 @@ class CriteriaTableTest(unittest.TestCase):
     def test_the_wrong_english_memories_are_caught(self):
         """A wrong English memory must not pass because of the language."""
         wrong = {
-            65: "The user lives in Mondello, in Palermo",
-            71: "The user drinks coffee every morning",
-            84: "The user turned 30 last month",
-            90: "The user's sister lives in Milan",
-            118: "Argo is a labrador",
-            140: "The user works as a physiotherapist in a private clinic",
-            157: "The user takes 88 micrograms of levothyroxine every morning",
-            169: "The user's father has celiac disease",
-            188: "The user volunteers at a dog shelter on Tuesday evenings",
-            198: "The user has a dog named Argo",
-            200: "The user wears glasses because of myopia",
-            203: "The user's birthday is March 12",
-            208: "The user aims for 60 grams of protein a day",
-            213: "The user grows tomatoes and basil on the balcony",
-            217: "In August the user is going to Naxos with Giulia",
-            230: "The user will go skiing in Trentino at Christmas",
+            67: "The user lives in Mondello, in Palermo",
+            74: "The user drinks coffee every morning",
+            88: "The user turned 30 last month",
+            95: "The user's sister lives in Milan",
+            125: "Argo is a labrador",
+            148: "The user works as a physiotherapist in a private clinic",
+            167: "The user takes 88 micrograms of levothyroxine every morning",
+            179: "The user's father has celiac disease",
+            199: "The user volunteers at a dog shelter on Tuesday evenings",
+            209: "The user has a dog named Argo",
+            211: "The user wears glasses because of myopia",
+            214: "The user's birthday is March 12",
+            220: "The user aims for 60 grams of protein a day",
+            225: "The user grows tomatoes and basil on the balcony",
+            229: "In August the user is going to Naxos with Giulia",
+            242: "The user will go skiing in Trentino at Christmas",
         }
         for index, memory in wrong.items():
             scored = fama.score(fama.QUESTIONS[index], memory)
@@ -647,16 +647,16 @@ class CriteriaTableTest(unittest.TestCase):
         wrong = {
             36: "Sei allergica alle arachidi.",  # a single fact: two are needed
             39: "Il tuo obiettivo è di 2000 calorie.",
-            65: "Abiti a Mondello, in provincia di Palermo.",
-            71: "La mattina bevi il caffè.",
-            84: "Secondo i fatti che tengo, hai 30 anni.",
-            118: "Argo è un labrador.",
-            148: "Suoni la chitarra e il pianoforte e ascolti jazz.",  # they coexisted
-            177: "Nuoti, corri e fai yoga il sabato.",
-            198: "Hai un cane, si chiama Argo.",
-            203: "Il tuo compleanno è il 12 marzo.",
-            217: "Vai a Naxos, in Grecia.",
-            230: "A Natale vai a sciare in Trentino.",
+            67: "Abiti a Mondello, in provincia di Palermo.",
+            74: "La mattina bevi il caffè.",
+            88: "Secondo i fatti che tengo, hai 30 anni.",
+            125: "Argo è un labrador.",
+            157: "Suoni la chitarra e il pianoforte e ascolti jazz.",  # they coexisted
+            188: "Nuoti, corri e fai yoga il sabato.",
+            209: "Hai un cane, si chiama Argo.",
+            214: "Il tuo compleanno è il 12 marzo.",
+            229: "Vai a Naxos, in Grecia.",
+            242: "A Natale vai a sciare in Trentino.",
         }
         for index, answer in wrong.items():
             scored = fama.score(fama.QUESTIONS[index], answer)

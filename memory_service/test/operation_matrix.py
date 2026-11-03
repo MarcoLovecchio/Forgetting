@@ -14,7 +14,7 @@ A message that produces different types ends up in "mixed".
 Where more readings are defensible there are accepted combinations, and the
 accuracies are two: strict on the label, lenient on the combinations. The types
 produced must coincide with a combination, being a part of one is not enough:
-at msg 77 a redundant alone loses the guitar. A `new` instead of an `update` is
+at msg 81 a redundant alone loses the guitar. A `new` instead of an `update` is
 acceptable only if the old memory stays true (Wednesday is added to Saturday),
 never if the value changes: 2000 and 2200 active together are a contradiction
 in memory.
@@ -51,16 +51,16 @@ _LOG_TO_CLASS = {"create": "new"}
 # chit-chat as no operation, everything else - presentation included - as new.
 # test_operation_matrix checks that they still match.
 _EXPECTED = {
-    "update": (38, 47, 51, 54, 57, 62, 66, 69, 70, 77, 82, 89, 96, 99, 103, 107, 110, 112,
-               116, 117, 124, 126, 132, 134, 138, 141, 146, 147, 150, 153, 156, 158, 160,
-               162, 165, 170, 175, 176, 180, 182, 185, 193, 199, 204, 205, 216, 229),
-    "redundant": (37, 41, 45, 52, 63, 76, 80, 87, 98, 152, 173, 174, 189, 191, 207, 209,
-                  211, 214, 225, 226),
-    "delete": (64, 83, 104, 121, 139, 159, 168, 184, 186, 187, 195, 197, 202, 212, 222, 224),
-    "none": (35, 36, 39, 40, 42, 46, 50, 58, 59, 60, 65, 67, 71, 73, 79, 81, 84, 90, 92, 97,
-             101, 105, 106, 108, 111, 114, 118, 119, 123, 125, 127, 131, 133, 137, 140, 148,
-             151, 154, 155, 157, 167, 169, 171, 172, 177, 179, 181, 183, 188, 190, 192, 194,
-             198, 200, 201, 203, 206, 208, 210, 213, 217, 219, 230, 231, 232),
+    "update": (38, 48, 53, 56, 59, 64, 69, 72, 73, 81, 86, 94, 102, 105, 110, 114, 117, 119,
+               123, 124, 132, 134, 140, 142, 146, 150, 155, 156, 159, 162, 166, 168, 170,
+               172, 175, 180, 186, 187, 191, 193, 196, 204, 210, 216, 217, 228, 241),
+    "redundant": (37, 41, 46, 54, 65, 80, 84, 92, 104, 161, 184, 185, 200, 202, 219, 221,
+                  223, 226, 237, 238),
+    "delete": (66, 87, 111, 129, 147, 169, 178, 195, 197, 198, 206, 208, 213, 224, 234, 236),
+    "none": (35, 36, 39, 40, 42, 47, 51, 60, 61, 62, 67, 70, 74, 76, 83, 85, 88, 95, 97, 103,
+             107, 112, 113, 115, 118, 121, 125, 126, 131, 133, 135, 139, 141, 145, 148, 157,
+             160, 163, 165, 167, 177, 179, 181, 182, 188, 190, 192, 194, 199, 201, 203, 205,
+             209, 211, 212, 214, 218, 220, 222, 225, 229, 231, 242, 243, 244),
 }
 _PRIMARY = {index: label for label, indices in _EXPECTED.items() for index in indices}
 
@@ -71,49 +71,49 @@ ACCEPTED_ALSO: Dict[int, Tuple[Tuple[str, ...], ...]] = {
     20: (("update",),),                   # "corro la mattina presto": detail on running
     35: (("new",),),                      # "sette pazienti" read as a fact about work
     41: (("update",),),                   # "in borsa" can be a new detail
-    43: (("update",),),                   # the bike is already in the commute of msg 6
-    66: (("new",),),                      # levothyroxine stays true, the dose is added
-    70: (("new", "update"),),             # no coffee, and the reason: it made them jittery
-    72: (("update",),),                   # the peanut allergy is already in memory
-    77: (("new",), ("new", "redundant")), # piano confirmed, guitar new
-    81: (("redundant",),),                # the question confirms the trip to Naxos
-    82: (("new", "update"),),             # no running, and the knee that msg 195 deletes
-    83: (("update",),),                   # if msg 3 is an update: the age goes, not the birthday
-    88: (("update",),),                   # swimming instead of running
-    91: (("update",),),                   # detail on the photography course
-    95: (("update",), ("new", "update")), # date and witness about Giulia
-    103: (("new",),),                     # Wednesday is added, Saturday stays true
-    104: (("update",), ("delete", "new")),  # the name goes, the sister in Turin stays true
-    107: (("new",),),                     # the part-time is added, the clinic stays true
-    110: (("new",),),                     # the oil is added, the allergy stays true
-    120: (("update",),),                  # detail on the dog
-    123: (("new",),),                     # the question implies a hike
-    124: (("new",),),                     # the essays are added, the historical novels stay
-    130: (("update",),),                  # the budget is a detail of the shopping of msg 129
-    131: (("redundant",),),               # the question confirms the Thursday shopping
-    132: (("new",),),                     # the snack is added, the afternoon stays true
-    136: (("update",),),                  # detail on the dog
-    142: (("update",),),                  # detail on the dog
-    146: (("new",),),                     # the recipe changes, the favourite dish stays
-    149: (("update",),),                  # the guitar is already in memory
-    150: (("new",),),                     # the wish stays true, the booking is added
-    151: (("redundant",),),               # the question confirms the departure in August
-    152: (("update",),),                  # "ma non carne" adds a detail to the diet
-    153: (("new", "update"),),            # 1800 calories, and the reason: losing weight
-    158: (("new",),),                     # Spanish stays true, the level is added
-    161: (("update",),),                  # detail on the crime novels
-    166: (("update",), ("new", "update")),  # "Milo e' un soriano": detail on the cat, msg 163
-    168: (("update",), ("delete", "update")),  # the gluten-free cooking can stay
-    176: (("new", "update"),),            # if msg 88 put swimming in place of running
-    178: (("update",),),                  # if the sport is in a single memory
-    180: (("new",),),                     # tomatoes and basil stay true
-    184: (("update",),),                  # if the reason of msg 153 is in the same memory
-    189: (("update",), ("new",)),         # the early morning lost among msgs 82, 88 and 176
-    192: (("new",),),                     # the question implies a trip to the lake
-    195: (("update",),),                  # the knee can sit in the memory about running
-    197: (("none",),),                    # relatives already deleted at msgs 104 and 168
-    219: (("new",),),                     # the question implies a dinner out
-    221: (("update",),),                  # detail on the fish-based diet
+    44: (("update",),),                   # the bike is already in the commute of msg 6
+    69: (("new",),),                      # levothyroxine stays true, the dose is added
+    73: (("new", "update"),),             # no coffee, and the reason: it made them jittery
+    75: (("update",),),                   # the peanut allergy is already in memory
+    81: (("new",), ("new", "redundant")), # piano confirmed, guitar new
+    85: (("redundant",),),                # the question confirms the trip to Naxos
+    86: (("new", "update"),),             # no running, and the knee that msg 206 deletes
+    87: (("update",),),                   # if msg 3 is an update: the age goes, not the birthday
+    93: (("update",),),                   # swimming instead of running
+    96: (("update",),),                   # detail on the photography course
+    101: (("update",), ("new", "update")), # date and witness about Giulia
+    110: (("new",),),                     # Wednesday is added, Saturday stays true
+    111: (("update",), ("delete", "new")),  # the name goes, the sister in Turin stays true
+    114: (("new",),),                     # the part-time is added, the clinic stays true
+    117: (("new",),),                     # the oil is added, the allergy stays true
+    128: (("update",),),                  # detail on the dog
+    131: (("new",),),                     # the question implies a hike
+    132: (("new",),),                     # the essays are added, the historical novels stay
+    138: (("update",),),                  # the budget is a detail of the shopping of msg 137
+    139: (("redundant",),),               # the question confirms the Thursday shopping
+    140: (("new",),),                     # the snack is added, the afternoon stays true
+    144: (("update",),),                  # detail on the dog
+    151: (("update",),),                  # detail on the dog
+    155: (("new",),),                     # the recipe changes, the favourite dish stays
+    158: (("update",),),                  # the guitar is already in memory
+    159: (("new",),),                     # the wish stays true, the booking is added
+    160: (("redundant",),),               # the question confirms the departure in August
+    161: (("update",),),                  # "ma non carne" adds a detail to the diet
+    162: (("new", "update"),),            # 1800 calories, and the reason: losing weight
+    168: (("new",),),                     # Spanish stays true, the level is added
+    171: (("update",),),                  # detail on the crime novels
+    176: (("update",), ("new", "update")),  # "Milo e' un soriano": detail on the cat, msg 173
+    178: (("update",), ("delete", "update")),  # the gluten-free cooking can stay
+    187: (("new", "update"),),            # if msg 93 put swimming in place of running
+    189: (("update",),),                  # if the sport is in a single memory
+    191: (("new",),),                     # tomatoes and basil stay true
+    195: (("update",),),                  # if the reason of msg 162 is in the same memory
+    200: (("update",), ("new",)),         # the early morning lost among msgs 86, 93 and 187
+    203: (("new",),),                     # the question implies a trip to the lake
+    206: (("update",),),                  # the knee can sit in the memory about running
+    208: (("none",),),                    # relatives already deleted at msgs 111 and 178
+    231: (("new",),),                     # the question implies a dinner out
+    233: (("update",),),                  # detail on the fish-based diet
 }
 
 # Where several operations of the same type are right, and not fragmentation.
@@ -122,21 +122,21 @@ MULTIPLE_EXPECTED = (
     23,   # sister: the name and the city
     24,   # coeliac mother, and gluten-free at home
     31,   # the tomatoes and the basil
-    75,   # the fear and the preferred means of transport
-    82,   # running in two memories, if msg 20 became a new
-    95,   # the date and the witness
-    126,  # Saturday and Wednesday yoga, if msg 103 became a new
-    134,  # the clinic and the part-time, if msg 107 became a new
-    139,  # the same two memories about work, to be deleted
-    159,  # the bedtime and the alarm time
-    165,  # historical novels and essays, if msg 124 became a new
-    168,  # coeliac disease and gluten-free cooking, if msg 24 made two of them
-    170,  # the date and the witness, if msg 95 made two of them
-    176,  # running taken up again and the knee getting better
-    193,  # the fear and the preferred means of transport, if msg 75 made two of them
-    197,  # all the relatives
-    212,  # the vegetable garden and the chili peppers, if msg 180 became a new
-    216,  # the wish and the booking, if msg 150 became a new
+    79,   # the fear and the preferred means of transport
+    86,   # running in two memories, if msg 20 became a new
+    101,   # the date and the witness
+    134,  # Saturday and Wednesday yoga, if msg 110 became a new
+    142,  # the clinic and the part-time, if msg 114 became a new
+    147,  # the same two memories about work, to be deleted
+    169,  # the bedtime and the alarm time
+    175,  # historical novels and essays, if msg 132 became a new
+    178,  # coeliac disease and gluten-free cooking, if msg 24 made two of them
+    180,  # the date and the witness, if msg 101 made two of them
+    187,  # running taken up again and the knee getting better
+    204,  # the fear and the preferred means of transport, if msg 79 made two of them
+    208,  # all the relatives
+    224,  # the vegetable garden and the chili peppers, if msg 191 became a new
+    228,  # the wish and the booking, if msg 159 became a new
 )
 
 

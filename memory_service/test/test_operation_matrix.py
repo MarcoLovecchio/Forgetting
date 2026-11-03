@@ -48,7 +48,7 @@ class ExpectedTableTest(unittest.TestCase):
 
     def test_the_table_agrees_with_the_comments_of_the_conversation(self):
         tags = conversation_tags()
-        self.assertEqual(len(tags), 232)
+        self.assertEqual(len(tags), 244)
         for index, tag in enumerate(tags, 1):
             self.assertEqual(om.expected(index)[0], _TAG_TO_CLASS[tag],
                              "msg %d (%s)" % (index, tag or "presentation"))
@@ -68,7 +68,7 @@ class ExpectedTableTest(unittest.TestCase):
     def test_a_changed_value_always_needs_an_update(self):
         # 2000 and 2200 active together would be a contradiction in memory: a
         # new passes only next to the update that removes the old value.
-        for index in (38, 62, 70, 82, 89, 153, 156, 175, 193, 199, 216, 229):
+        for index in (38, 64, 73, 86, 94, 162, 166, 186, 204, 210, 228, 241):
             for combination in om.expected(index)[1]:
                 self.assertIn("update", combination, "msg %d" % index)
 
@@ -112,33 +112,33 @@ class AccuracyTest(unittest.TestCase):
 
     def test_strict_and_lenient(self):
         exact = om.row(38, ["update"])
-        tolerated = om.row(103, ["create"])            # Wednesday as a new
+        tolerated = om.row(110, ["create"])            # Wednesday as a new
         wrong = om.row(38, ["create"])                # 2200 next to 2000
-        mixed = om.row(77, ["redundant", "create"])   # piano and guitar
+        mixed = om.row(81, ["redundant", "create"])   # piano and guitar
         self.assertTrue(om.is_strict(exact) and om.is_lenient(exact))
         self.assertTrue(not om.is_strict(tolerated) and om.is_lenient(tolerated))
         self.assertFalse(om.is_strict(wrong) or om.is_lenient(wrong))
         self.assertTrue(not om.is_strict(mixed) and om.is_lenient(mixed))
 
     def test_the_types_must_match_a_combination_not_be_part_of_it(self):
-        self.assertFalse(om.is_lenient(om.row(77, ["redundant"])))         # guitar lost
-        self.assertTrue(om.is_lenient(om.row(82, ["update", "create"])))   # running and knee
-        self.assertFalse(om.is_lenient(om.row(82, ["create"])))            # runs and does not run
+        self.assertFalse(om.is_lenient(om.row(81, ["redundant"])))         # guitar lost
+        self.assertTrue(om.is_lenient(om.row(86, ["update", "create"])))   # running and knee
+        self.assertFalse(om.is_lenient(om.row(86, ["create"])))            # runs and does not run
 
     def test_repeats_are_fragmentation_only_where_not_expected(self):
         text = "\n".join(om.format_report([
             om.row(23, ["create", "create"]), om.row(24, ["create", "create"]),
-            om.row(197, ["delete", "delete"]), om.row(47, ["update", "update"]),
-            om.row(62, ["update", "create", "create"]), om.row(16, ["create"])]))
+            om.row(208, ["delete", "delete"]), om.row(48, ["update", "update"]),
+            om.row(64, ["update", "create", "create"]), om.row(16, ["create"])]))
         self.assertIn("Fragmentation: 2 messages with several operations of the same type "
-                      "(msg 47, 62), plus 3 where they are expected", text)
+                      "(msg 48, 64), plus 3 where they are expected", text)
 
     def test_a_question_that_produced_nothing_is_right(self):
         self.assertTrue(om.is_strict(om.row(36, [])))
         self.assertFalse(om.is_lenient(om.row(36, ["create"])))
 
     def test_the_matrix_counts_expected_against_predicted(self):
-        counts = om.matrix([om.row(38, ["update"]), om.row(47, ["create"]), om.row(64, [])])
+        counts = om.matrix([om.row(38, ["update"]), om.row(48, ["create"]), om.row(66, [])])
         self.assertEqual(counts["update"]["update"], 1)
         self.assertEqual(counts["update"]["new"], 1)
         self.assertEqual(counts["delete"]["none"], 1)
@@ -164,8 +164,8 @@ class SavedRunsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "runs.jsonl")
             om.save_run(path, {"commit": "a", "messages": [om.row(38, ["update"])]})
-            om.save_run(path, {"commit": "b", "messages": [om.row(64, [])]})
-            om.save_run(path, {"commit": "b", "messages": [om.row(64, ["delete"])]})
+            om.save_run(path, {"commit": "b", "messages": [om.row(66, [])]})
+            om.save_run(path, {"commit": "b", "messages": [om.row(66, ["delete"])]})
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 code = om.main(["operation_matrix.py", path])

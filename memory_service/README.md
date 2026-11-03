@@ -136,7 +136,7 @@ pytest memory_service/test/test_memory_llm.py -v -s
 ```
 
 `test/test_long_term_interaction.py` is instead the simulation of a **long
-session**: 232 user messages injected one at a time — 176 facts and 56
+session**: 244 user messages injected one at a time — 188 facts and 56
 questions — mixed as they would really happen. The first 34 are the
 presentation; from there on new facts, repetitions, refinements, contradictions,
 deletion requests and chatter alternate without blocks, respecting only
@@ -444,9 +444,9 @@ that consolidation runs for the classifier's candidates count as a retrieval too
 model call, and `n_retrieve` grows on every consolidated message. The benchmark adapter
 turns it on, because a replayed dataset has no `get_memory` on every message.
 
-`retrieve_k` (also only in `config.py`) is `None` by default, and the model writes `k`
-in every search of the `retrieve` branch; a number replaces it, whatever the model
-wrote. `answer_with_dates` (on or off, also only in `config.py`) puts in front of every
+`retrieve_k` (also only in `config.py`) is `None` or a number: with `None` the model
+writes `k` in every search of the `retrieve` branch, a number replaces it, whatever the
+model wrote. `answer_with_dates` (on or off, also only in `config.py`) puts in front of every
 fact and memory the answer reads the day of its `updated_at`, that is of its last write
 or confirmation, and tells the model what that day means. The benchmark adapter sets
 `retrieve_k` to 20 and turns `answer_with_dates` on.
