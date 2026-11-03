@@ -159,6 +159,23 @@ SAFETY_DESCRIPTION = (
     "their health or safety. False for everything else, however important it is to the "
     "user.")
 
+# need, gain and utility judge with the same words: the two modes differ only in how the
+# judgments are combined.
+ONE_OFF = (
+    "it is already over or holds only for now: something that happened once, such as a "
+    "purchase, an errand, a mishap, or a passing mood")
+PART_OF_LIFE = (
+    "it stays true and names one of these: who the user is, their home, their work or "
+    "study, a person or an animal close to them, their diet, health or limits, a habit or "
+    "routine, an ongoing activity; or when it is a plan or an appointment that has not "
+    "come yet. What the user does not, cannot or never does is a limit. A change to one "
+    "of these, such as a habit the user stopped, counts too")
+TOPICAL = (
+    "it stays true, but only one specific topic would bring it up, such as a detail of a "
+    "hobby, a taste, an opinion, an old experience")
+DETAIL = "a detail that would change no answer, such as a color or a passing remark"
+EXACT_VALUE = "an exact value that cannot be guessed: a name, a place, a date, a time, a number"
+
 
 class SafetyJudgedOperation(MemoryOperation):
     """A classified fact, flagged when forgetting it could put the user at risk."""
@@ -173,28 +190,16 @@ class UtilityJudgedOperation(SafetyJudgedOperation):
 
     utility: Optional[Literal[1, 2, 3, 4, 5]] = Field(default=None, description=(
         "How valuable it will be to keep this fact and find it again in future "
-        "conversations. Weigh two things about the fact together: what kind of fact it is, "
-        "which tells how likely it is to come up again, and what it holds that an answer "
-        "could not guess: a limit, or an exact value such as a name, a place, a date, a "
-        "time or a number. "
-        "A fact that rarely comes up can still score high if it holds a limit or an exact "
-        "value; a fact that matters a lot to the user can still score low if it holds "
-        "nothing an answer could not guess. "
+        "conversations, from what kind of fact it is and from what it holds that an answer "
+        "could not guess. "
         "Judge the fact itself, as you wrote it: not how often or how recently the user "
         "said it, not how new or surprising it is, not how long it is. Do not invent "
         "a goal of the user that the messages do not show. "
-        "1: negligible - incidental, or only about the current conversation; there is no "
-        "concrete reason to expect it will help later. "
-        "2: low - it could help in a narrow situation that may never come up, or it will "
-        "soon be outdated, like a passing mood or a one-off event that is over. "
-        "3: moderate - stable background, such as a hobby, a taste, an opinion or a past "
-        "experience: there is a credible chance it helps when its topic comes up, but how "
-        "often is uncertain. "
-        "4: high - a lasting preference, habit, routine, constraint, ongoing activity, or "
-        "a person or animal close to the user, that will regularly shape answers in its "
-        "area; or an upcoming commitment or appointment, until it has passed. "
-        "5: critical - one of the kinds of 4 that also holds a limit or an exact value, "
-        "such as the core facts of who the user is. "
+        "Decide in this order and stop at the first that applies. "
+        "First, is it 1? It is 1 when " + ONE_OFF + ". "
+        "If not, is it part of the user's life? It is when " + PART_OF_LIFE + ". Then it "
+        "is 5 if it holds a limit or " + EXACT_VALUE + "; otherwise it is 4. "
+        "Otherwise " + TOPICAL + ": it is 2 if it is only " + DETAIL + ", otherwise 3. "
         "Only for new and update, and only when safety is false: leave it out for redundant "
         "and delete, and when safety is true."))
 
@@ -211,24 +216,17 @@ class NeedGainJudgedOperation(MemoryOperation):
         "said it, not how new or surprising it is. Do not invent a goal of the user that "
         "the messages do not show. "
         "Decide in this order and stop at the first that applies. "
-        "First, is it 1, one-off? It is 1 when it is already over or holds only for now: "
-        "something that happened once, such as a purchase, an errand, a mishap, or a "
-        "passing mood. "
-        "If not, is it 3, part of the user's life? It is 3 when it stays true and names one "
-        "of these: who the user is, their home, their work or study, a person or an animal "
-        "close to them, their diet, health or limits, a habit or routine, an ongoing "
-        "activity; or when it is a plan or an appointment that has not come yet. A change "
-        "to one of these, such as a habit the user stopped, is 3 too. "
-        "Otherwise it is 2, topical: it stays true, but only one specific topic would bring "
-        "it up, such as a detail of a hobby, a taste, an opinion, an old experience."))
+        "First, is it 1, one-off? It is 1 when " + ONE_OFF + ". "
+        "If not, is it 3, part of the user's life? It is 3 when " + PART_OF_LIFE + ". "
+        "Otherwise it is 2, topical: " + TOPICAL + "."))
     gain: Literal[1, 2, 3] = Field(description=(
         "GAIN: what does the fact hold that an answer could not guess? Rate what the fact "
         "says, not how often it would come up: that is need, rated separately. "
-        "1: a detail that would change no answer, such as a color or a passing remark. "
+        "1: " + DETAIL + ". "
         "2: a preference, a habit or a circumstance that makes an answer personal, with no "
         "exact value in it. "
-        "3: a limit, something the user cannot do, will not do or must avoid; or an exact "
-        "value that cannot be guessed: a name, a place, a date, a time, a number."))
+        "3: a limit, something the user cannot do, will not do or must avoid, as is any "
+        "fact that says what the user does not or never does; or " + EXACT_VALUE + "."))
 
 
 class SafetyFactOperation(MemoryOperation):
