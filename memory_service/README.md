@@ -32,7 +32,7 @@ message already in memory, which is the question of the previous round.
 | `memory_list` | content of the **active** core memories (superseded and deleted stay out) |
 | `memory_ids` | id of each one, same order as `memory_list`: the two lists zip together |
 | `last_messages` | messages still in the conversation window |
-| `retrieved_memories` | archive memories retrieved for **this** request, one per line in the form `ID: <id>, Content: <text>`. Empty when the core memory was enough or when nothing was found |
+| `retrieved_memories` | archive memories retrieved for **this** request, one per line in the form `ID: <id>, Content: <text>` (`ID: <id>, Date: <day>, Content: <text>` with `answer_with_dates`). Empty when the core memory was enough or when nothing was found |
 | `operation_log` | consolidation operations of **this** call, one JSON per line |
 
 **`UpdateMemory`** — request `user_input`, `queries`, `results`, `explanation`; the
@@ -227,7 +227,8 @@ the real agent and hands the result to HaluMem's `evaluation.py`. It needs a clo
 `run` replays one user per process, each with an archive of its own, exchange by
 exchange with the dataset's clock (`backends.set_clock`). It fixes what the experiments
 fix whatever `config.py` says (`always`, the window of 2, the power law on `updated_at`,
-`count_candidate_search`) and takes from the command line what they vary. It stops at
+`count_candidate_search`, `retrieve_k` 20 as HaluMem gives the other systems,
+`answer_with_dates`) and takes from the command line what they vary. It stops at
 once if the models do not answer. A user that finished is skipped when the same
 `--version` is launched again, one that did not starts over.
 
@@ -434,6 +435,13 @@ prints and saves the run's mode.
 that consolidation runs for the classifier's candidates count as a retrieval too: no
 model call, and `n_retrieve` grows on every consolidated message. The benchmark adapter
 turns it on, because a replayed dataset has no `get_memory` on every message.
+
+`retrieve_k` (also only in `config.py`) is `None` by default, and the model writes `k`
+in every search of the `retrieve` branch; a number replaces it, whatever the model
+wrote. `answer_with_dates` (on or off, also only in `config.py`) puts in front of every
+fact and memory the answer reads the day of its `updated_at`, that is of its last write
+or confirmation, and tells the model what that day means. The benchmark adapter sets
+`retrieve_k` to 20 and turns `answer_with_dates` on.
 
 `track_used` (on or off, also only in `config.py`) makes the answer say which
 memories it used. `generate_answer` switches to a second prompt, the same as the

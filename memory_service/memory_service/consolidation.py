@@ -372,6 +372,23 @@ def serialize_core_memory_with_ids(items: Iterable[CoreMemoryItem]) -> Dict[str,
     return {item.id: item.content for item in get_active_items(items)}
 
 
+def memory_line(content: str, item_id: Optional[str] = None,
+                updated_at: Union[datetime, str, None] = None) -> str:
+    """A memory as the prompts list it: the id, the day it was last written, the content."""
+    fields = [] if item_id is None else [f"ID: {item_id}"]
+    if updated_at is not None:
+        if isinstance(updated_at, str):
+            updated_at = datetime.fromisoformat(updated_at)
+        fields.append(f"Date: {updated_at.date().isoformat()}")
+    return ", ".join(fields + [f"Content: {content}"])
+
+
+def serialize_core_memory_with_dates(items: Iterable[CoreMemoryItem]) -> List[str]:
+    """Core memory with the day each fact was last written, for answer_with_dates."""
+    return [memory_line(item.content, updated_at=item.updated_at)
+            for item in get_active_items(items)]
+
+
 def core_memory_length(items: Iterable[CoreMemoryItem]) -> int:
     """Characters currently occupied by the active core memories."""
     return len("\n".join(serialize_core_memory_for_prompt(items)))
@@ -463,21 +480,24 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     return archived
 
 
-def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str]]:
-    """The k active archival memories closest to a text, as (id, content) pairs."""
+def _search_active(query: str, k: int) -> List[Any]:
+    """The k active archival memories closest to a text, as documents with their metadata."""
     try:
         k = max(1, int(k))
     except (TypeError, ValueError):
         k = ARCHIVE_CANDIDATES_K
 
     try:
-        found = backends.get_vector_store().similarity_search(
+        return backends.get_vector_store().similarity_search(
             query, k=k, filter={"status": "active"})
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
 
-    return [(doc.id, doc.page_content) for doc in found]
+
+def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str]]:
+    """The k active archival memories closest to a text, as (id, content) pairs."""
+    return [(doc.id, doc.page_content) for doc in _search_active(query, k)]
 
 
 NO_ARCHIVAL_RESULTS = "No relevant active memories found."
@@ -545,17 +565,21 @@ def record_uses(item_ids: Iterable[str], core_memory: Iterable[CoreMemoryItem]) 
     count_archived([item_id for item_id in ids if item_id not in in_core], "n_used", stamp=True)
 
 
-def retrieve_active_archival_memories(query: str, k: int = 5, stamp: bool = True) -> str:
+def retrieve_active_archival_memories(query: str, k: int = 5, stamp: bool = True,
+                                      dated: bool = False) -> str:
     """Archive lookup for the retrieval path, tombstones excluded.
 
     The search that counts as a retrieval: the candidates the classifier sees during
     consolidation go through search_archive, recorded only with count_candidate_search.
+    With `dated` every memory also carries the day it was last written.
     """
-    results = search_archive(query, k=k)
-    if not results:
+    found = _search_active(query, k)
+    if not found:
         return NO_ARCHIVAL_RESULTS
-    record_retrievals((doc_id for doc_id, _ in results), stamp)
-    return "\n".join(f"ID: {doc_id}, Content: {content}" for doc_id, content in results)
+    record_retrievals((doc.id for doc in found), stamp)
+    return "\n".join(
+        memory_line(doc.page_content, doc.id, doc.metadata.get("updated_at") if dated else None)
+        for doc in found)
 
 
 def build_candidate_memories(

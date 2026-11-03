@@ -167,6 +167,17 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual(self.agent.state["messages"], [])
         self.assertNotIn("search_duration_ms", question, "the dataset stays as it is")
 
+    def test_the_question_gets_the_memories_and_the_days_of_the_benchmark(self):
+        self.agent.config = dataclasses.replace(CONFIG, retrieve_k=20, answer_with_dates=True)
+        question = {"question": "Come si chiama il cane di Mario?", "answer": "Argo",
+                    "evidence": []}
+
+        replayed = self.replay(session(("a", "b"), questions=[question]))
+
+        self.assertEqual(self.store.searches[-1]["k"], 20)
+        self.assertIn("Date: 2033-12-08, Content: The user has a dog named Argo",
+                      replayed["questions"][0]["context"])
+
     def test_the_same_question_twice_is_asked_twice(self):
         question = {"question": "Dove vive Mario?", "answer": "Mondello", "evidence": []}
 
@@ -223,6 +234,8 @@ class RunTest(unittest.TestCase):
         self.assertEqual(config.eviction_time_decay_function, "power")
         self.assertEqual(config.maximum_historical_messages, 2)
         self.assertTrue(config.count_candidate_search)
+        self.assertEqual(config.retrieve_k, 20)
+        self.assertTrue(config.answer_with_dates)
 
     def test_what_the_experiments_vary_comes_from_the_command_line(self):
         environment = MemoryConfig(llm_config={"model_name": "piccolo", "temperature": 1.0})

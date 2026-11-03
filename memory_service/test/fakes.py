@@ -30,8 +30,8 @@ class ScriptedChatModel(BaseChatModel):
     ``tool_responses`` maps a tool name to the arguments the model should
     "decide" to call it with. When none of the bound tools is scripted, the
     model replies with ``default_content``. Every invocation is recorded in
-    ``invocations``, with the names of the tools it was bound to and the tools
-    themselves.
+    ``invocations``, with the names of the tools it was bound to, the tools
+    themselves and the messages it received.
     """
 
     tool_responses: Dict[str, Dict[str, Any]] = {}
@@ -51,7 +51,7 @@ class ScriptedChatModel(BaseChatModel):
     ) -> ChatResult:
         bound = list(kwargs.get("tools") or [])
         bound_tools = [tool_name_of(tool) for tool in bound]
-        self.invocations.append({"tools": bound_tools, "bound": bound})
+        self.invocations.append({"tools": bound_tools, "bound": bound, "messages": messages})
 
         message = AIMessage(content=self.default_content)
         for name in bound_tools:

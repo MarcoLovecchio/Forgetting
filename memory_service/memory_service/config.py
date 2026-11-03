@@ -118,6 +118,10 @@ class MemoryConfig:
     prune_fraction: float = 0.10
     # The candidate search of the consolidation also counts as a retrieval.
     count_candidate_search: bool = False
+    # None: the model chooses k. Otherwise every search of the retrieve branch returns this many.
+    retrieve_k: Optional[int] = None
+    # The answer reads the day each memory was last written.
+    answer_with_dates: bool = False
     eviction_combination: Literal["weighted_sum", "product"] = "weighted_sum"
     retrieval_mode: Literal["decide", "always"] = "decide"
     generate_answer: bool = True

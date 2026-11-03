@@ -20,10 +20,11 @@ from memory_service.consolidation import (
     build_candidate_memories,
     core_memory_length,
     get_active_items,
+    memory_line,
     record_uses,
     retrieve_active_archival_memories,
     serialize_core_memory_for_prompt,
-    serialize_core_memory_with_ids,
+    serialize_core_memory_with_dates,
 )
 from memory_service.eviction import archive_over_limit, evict_archived_tombstones, prune_archive
 
@@ -153,11 +154,12 @@ def empty_node(state: AgentState) -> AgentState:
 # Tool to retrieve memories from the archive
 @tool
 def retrieve_memory(query: str, k: int = 5,
-                    stamp_retrieved_at: Annotated[bool, InjectedToolArg] = True) -> str:
+                    stamp_retrieved_at: Annotated[bool, InjectedToolArg] = True,
+                    dated: Annotated[bool, InjectedToolArg] = False) -> str:
     """Retrieve relevant memories from the archival vector store based on a query.
     Returns up to k relevant memories.
     Think about the best value of k based on the complexity of the query."""
-    results = retrieve_active_archival_memories(query, k, stamp_retrieved_at)
+    results = retrieve_active_archival_memories(query, k, stamp_retrieved_at, dated)
     print(results)
     return results
 
@@ -246,10 +248,13 @@ def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
         tool_args = tool_call["args"]
 
         if tool_name == "retrieve_memory":
+            if runtime.context.retrieve_k is not None:
+                tool_args = {**tool_args, "k": runtime.context.retrieve_k}
             print(f"Invoking retrieve_memory with args: {tool_args}")
             # When uses are counted, generate_answer updates retrieved_at.
             result = retrieve_memory.invoke(
-                {**tool_args, "stamp_retrieved_at": not runtime.context.counts_used})
+                {**tool_args, "stamp_retrieved_at": not runtime.context.counts_used,
+                 "dated": runtime.context.answer_with_dates})
         elif tool_name == "NoSearchNeeded":
             print(f"\tNo archive search: {tool_args.get('reason', '')}")
             result = NO_SEARCH_NEEDED
@@ -283,6 +288,13 @@ def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
             "retrieved_memory": retrieved_memory, "core_memory": state["core_memory"],
             "operation_log": state["operation_log"]}
 
+# answer_with_dates: what the date in front of every fact and memory means.
+DATES_NOTE = """
+
+         Every fact and memory starts with the day it was last written: use it when the
+         question asks when something happened, and to tell which of two facts that
+         disagree is the newer one. The last messages are newer than any of those days."""
+
 # track_used off: the answer alone.
 ANSWER_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """You are the user's personal assistant. You answer questions about the user only
@@ -293,7 +305,7 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages([
          2. Memories recalled from the archive for this question - stored some time ago. They
             are listed as ID and Content: use only the content, never mention the id.
          3. What the user said in the last messages - the NEWEST information you have. Memory
-            is updated with a delay, so these messages are not in the facts or the memories yet.
+            is updated with a delay, so these messages are not in the facts or the memories yet.{dates}
 
          When the sources disagree about the same fact, the newest wins:
          - if the user recently gave a new value, answer with the new value only;
@@ -335,7 +347,7 @@ ANSWER_WITH_USED_PROMPT = ChatPromptTemplate.from_messages([
          3. What the user said in the last messages - the NEWEST information you have. Memory
             is updated with a delay, so these messages are not in the facts or the memories yet.
          Facts and memories are listed as ID and Content: use only the content in the answer,
-         never mention an id there.
+         never mention an id there.{dates}
 
          When the sources disagree about the same fact, the newest wins:
          - if the user recently gave a new value, answer with the new value only;
@@ -389,14 +401,16 @@ def generate_answer(state: AgentState, runtime: Runtime[MemoryConfig]):
 
     print("\tAnswer agent node activated")
     user_query, history = query_and_history(state)
+    dated = runtime.context.answer_with_dates
     inputs = {"input": user_query,
               "retrieved_memory": state.get("retrieved_memory", ""),
-              "messages": messages_to_str(history)}
+              "messages": messages_to_str(history),
+              "dates": DATES_NOTE if dated else ""}
 
     if runtime.context.track_used:
-        facts = serialize_core_memory_with_ids(state["core_memory"])
         inputs["core_memory"] = "\n".join(
-            f"ID: {item_id}, Content: {content}" for item_id, content in facts.items()) or "(none)"
+            memory_line(item.content, item.id, item.updated_at if dated else None)
+            for item in get_active_items(state["core_memory"])) or "(none)"
         chain = ANSWER_WITH_USED_PROMPT | get_llm("generate_answer").bind_tools(
             [AnswerWithUsedMemories], tool_choice=REQUIRED)
         args = _timed("generate_answer", lambda: chain.invoke(inputs)).tool_calls[0]["args"]
@@ -404,7 +418,9 @@ def generate_answer(state: AgentState, runtime: Runtime[MemoryConfig]):
         record_uses(args["used_memory_ids"], state["core_memory"])
         response = AIMessage(content=args["answer"])
     else:
-        inputs["core_memory"] = serialize_core_memory_for_prompt(state["core_memory"])
+        serialize = (serialize_core_memory_with_dates if dated
+                     else serialize_core_memory_for_prompt)
+        inputs["core_memory"] = serialize(state["core_memory"])
         chain = ANSWER_PROMPT | get_llm("generate_answer")
         response = _timed("generate_answer", lambda: chain.invoke(inputs))
 

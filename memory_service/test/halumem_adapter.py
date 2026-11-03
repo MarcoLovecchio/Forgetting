@@ -16,9 +16,10 @@ A session goes like this:
 - count_candidate_search is on, because here nothing calls get_memory on every message;
 - at the end the last exchange is still in the window: flush_window consolidates it,
   so it is scored in its own session, and the next session starts with no messages;
-- the questions go through the retrieve branch: the answer is the service's. They leave
-  `messages` right after, so they are never consolidated, but like any search they
-  count in n_retrieve.
+- the questions go through the retrieve branch: the answer is the service's. The search
+  returns 20 memories, as HaluMem gives every other system, and the answer reads the day
+  of each memory. They leave `messages` right after, so they are never consolidated,
+  but like any search they count in n_retrieve.
 
 The dataset calls people by name and the service calls them "the user": neutral rewrites
 what goes to the service, personalized what goes to the judge.
@@ -63,6 +64,7 @@ from memory_service.consolidation import (  # noqa: E402
     OperationLogEntry,
     search_archive,
     serialize_core_memory_for_prompt,
+    serialize_core_memory_with_dates,
 )
 from memory_service.memory_manager_llm import (  # noqa: E402
     NODE_STATS,
@@ -75,6 +77,7 @@ DATASET = os.path.join("data", "HaluMem-Medium.jsonl")
 TIME_FORMAT = "%b %d, %Y, %H:%M:%S"
 EXTRACTING_OPERATIONS = ("create", "redundant", "update")
 UPDATE_SEARCH_K = 10
+QUESTION_K = 20
 ATTEMPTS = 5
 RETRY_SECONDS = 30
 
@@ -168,8 +171,9 @@ def answer_question(agent: MemoryAgent, question: Dict[str, Any], name: str) -> 
 
     answered = copy.deepcopy(question)
     answered["asked"] = asked
-    answered["context"] = "\n".join(
-        serialize_core_memory_for_prompt(state["core_memory"]) + [state["retrieved_memory"]])
+    serialize = (serialize_core_memory_with_dates if agent.config.answer_with_dates
+                 else serialize_core_memory_for_prompt)
+    answered["context"] = "\n".join(serialize(state["core_memory"]) + [state["retrieved_memory"]])
     answered["system_response"] = personalized(answer, name)
     answered["search_duration_ms"] = elapsed
     return answered
@@ -252,6 +256,8 @@ def run_config(arguments: argparse.Namespace) -> MemoryConfig:
         eviction_time_decay_field="updated_at",
         eviction_time_decay_function="power",
         count_candidate_search=True,
+        retrieve_k=QUESTION_K,
+        answer_with_dates=True,
         **varying,
     )
 
