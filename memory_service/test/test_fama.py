@@ -312,6 +312,15 @@ class DeleteVersusUpdateTest(unittest.TestCase):
         self.assertFalse(fama.supersedes("milano", "milano").satisfied(
             "Vive a Torino, ci è andata da Milano."))
 
+    def test_an_age_is_not_an_old_value(self):
+        """"old" and "were" mark an old value, not the years of a dog or a child."""
+        labrador = fama.supersedes("labrador", "labrador")
+        self.assertFalse(labrador.satisfied("Argo is a five-year-old Labrador"))
+        self.assertFalse(labrador.satisfied("Argo is a Labrador and is four years old"))
+        piano = fama.supersedes("piano", "piano")
+        self.assertFalse(piano.satisfied("The user plays piano since they were eight years old"))
+        self.assertTrue(piano.satisfied("The user stopped piano, played since they were eight"))
+
 
 class OpenQuestionTest(unittest.TestCase):
     """Open questions want some facts, not those facts."""
@@ -492,7 +501,7 @@ class CriteriaTableTest(unittest.TestCase):
         """Right answers from a real run, word for word, that FAMA used to fail.
 
         36 said three true facts different from the ones demanded; 74 corrected
-        the coffee in the following clause, with a pronoun.
+        the coffee in the following clause, with a pronoun; 242 used the future.
         """
         run = {
             36: "So che cuoci senza glutine a casa tua, sei leggermente intollerante "
@@ -502,6 +511,7 @@ class CriteriaTableTest(unittest.TestCase):
                 "vegetarianesimo, ma mantieni comunque l'obiettivo di 2200 calorie al giorno.",
             67: "Non so dove abiti, poiché non è tra le informazioni che tengo a mente.",
             74: "Di solito bevi solo caffè la mattina, ma ora non lo prendi più.",
+            242: "A Natale resterai a casa.",
         }
         for index, answer in run.items():
             scored = fama.score(fama.QUESTIONS[index], answer)
@@ -599,6 +609,57 @@ class CriteriaTableTest(unittest.TestCase):
                 scored.fama, 1.0,
                 "question %d: FAMA %.2f on a right memory - missing %s, "
                 "leaked %s" % (index, scored.fama, scored.missed, scored.leaked))
+
+    def test_the_right_english_memories_of_a_real_run_score_one(self):
+        """Right memories from real runs, word for word, that FAMA used to fail."""
+        run = {
+            145: "The user has a dentist appointment next Tuesday at 3:00 PM.",
+            205: "The user is no longer afraid of flying (aviophobia).",
+            242: "The user wanted to ski in Trentino for Christmas, but this year they're "
+                 "staying home instead.",
+        }
+        for index, memory in run.items():
+            scored = fama.score(fama.QUESTIONS[index], memory)
+            self.assertEqual(
+                scored.fama, 1.0,
+                "question %d: FAMA %.2f on a right memory - missing %s, "
+                "leaked %s" % (index, scored.fama, scored.missed, scored.leaked))
+
+    def test_a_word_another_memory_shares_does_not_answer(self):
+        """With no eviction, as in calibration, a common word is in many memories.
+
+        A criterion met by any of them hides the loss of the right one, and in the
+        calibration the right one never turns out to serve.
+        """
+        others = (
+            (121, "likes it", "The user does not like the taste of licorice"),
+            (135, "stopped", "The user is no longer vegetarian"),
+            (145, "Tuesday", "The user volunteers at a dog shelter on Tuesday evenings"),
+            (181, "giulia", "The user will be Giulia's witness at her wedding on June 14"),
+            (188, "running taken up again", "The user has stopped running because of the knee"),
+            (194, "stopped", "The user no longer plays the piano"),
+            (218, "finished", "The user completed a course to overcome the fear of flying"),
+        )
+        for index, label, memory in others:
+            criterion = next(item for item in fama.QUESTIONS[index].criteria
+                             if item.label == label)
+            self.assertFalse(criterion.satisfied(memory),
+                             "question %d: %r is met by %r" % (index, label, memory))
+
+    def test_the_wrong_english_memories_of_a_real_run_are_caught(self):
+        """Old values the markers let through: an age read as "old", a plant not listed."""
+        wrong = {
+            125: "Argo is a golden retriever\n"
+                 "The user has a dog named Argo, who is a five-year-old Labrador.",
+            157: "The user plays the guitar\n"
+                 "The user collects jazz records on vinyl\n"
+                 "The user has been playing the piano since they were eight years old.",
+            225: "The user grows peppers on the balcony.",
+        }
+        for index, memory in wrong.items():
+            scored = fama.score(fama.QUESTIONS[index], memory)
+            self.assertLess(scored.fama, 1.0,
+                            "question %d: the wrong memory passes" % index)
 
     def test_the_wrong_english_memories_are_caught(self):
         """A wrong English memory must not pass because of the language."""

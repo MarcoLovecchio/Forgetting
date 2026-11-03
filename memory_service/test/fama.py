@@ -278,6 +278,11 @@ def _has_marker(clause: str, markers: Sequence[str]) -> bool:
     return any(re.search(_pattern(marker), clause) for marker in markers)
 
 
+# An age is not an old value: without this "a five year old labrador" and "since they
+# were eight years old" would pass as superseded on "old" and "were".
+_AGE = re.compile(r"\b(?:since (?:they|she|he|i|you) (?:were|was) )?\w+ years? old\b")
+
+
 def _following_clause(text: str, position: int) -> str:
     """The clause after the value's one, if it is in the same sentence.
 
@@ -298,7 +303,7 @@ def _is_superseded(text: str, position: int) -> bool:
     "bevi solo caffe' la mattina, ma ora non lo prendi piu'" says the coffee
     is over, with the negation after the comma and a pronoun instead of the noun.
     """
-    if _has_marker(_clause_around(text, position), _SUPERSEDED_MARKERS):
+    if _has_marker(_AGE.sub(" ", _clause_around(text, position)), _SUPERSEDED_MARKERS):
         return True
     following = _following_clause(text, position)
     return (following.split(" ", 1)[0] in _ADVERSATIVE
@@ -561,6 +566,8 @@ def memory_snapshot_turn(question: int, maximum_historical_messages: int) -> int
 # The 56 questions
 # --------------------------------------------------------------------------- #
 
+STAYS_HOME = ("rest*a casa", "riman*a casa", "rimarr*a casa", "stay*home")
+
 QUESTIONS: Dict[int, EvaluationQuestion] = {
 
     36: EvaluationQuestion(
@@ -729,7 +736,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         121, "msg 105: a change of mind about liquorice, now the user likes it",
         (
             recalls("liquorice", "liquirizia", "licorice", "liquorice"),
-            recalls("likes it", "piace", "like*", "enjoy*", "ricredut*"),
+            recalls("likes it", "piace", "ricredut*", "likes*licorice", "likes*liquorice",
+                    "licorice*likes", "liquorice*likes", "enjoy*licorice", "enjoy*liquorice"),
         ),
     ),
 
@@ -759,8 +767,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         135, "msg 134 contradicted the yoga: stopped in September",
         (
             recalls("stopped", "smesso", "settembre", "non*piu", "interrott*",
-                    "abbandonat*", "stop*", "quit*", "september", "no longer",
-                    "anymore", "gave up"),
+                    "abbandonat*", "stop*yoga", "quit*yoga", "no longer*yoga",
+                    "yoga*anymore", "gave up*yoga", "yoga*september", "september*yoga"),
             supersedes("yoga days", "sabato", "mercoledi",
                        "saturday", "wednesday"),
         ),
@@ -784,8 +792,9 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     145: EvaluationQuestion(
         145, "msg 136: dentist next Tuesday at three in the afternoon",
         (
-            recalls("Tuesday", "martedi", "tuesday"),
-            recalls("at three", "alle tre", "tre del pomeriggio", "15", "3 pm", "3pm",
+            recalls("Tuesday", "martedi", "dentist*tuesday", "dental*tuesday",
+                    "appointment*tuesday", "tuesday*dentist", "tuesday*dental"),
+            recalls("at three", "alle tre", "tre del pomeriggio", "15", "3 pm", "3pm", "3:00",
                     "three in the afternoon", "3 in the afternoon"),
         ),
     ),
@@ -846,7 +855,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     181: EvaluationQuestion(
         181, "msg 25: the best friend is Giulia",
         (
-            recalls("giulia"),
+            recalls("giulia", "chiama giulia", "e giulia", "migliore amica*giulia",
+                    "giulia*migliore amica", "best friend*giulia", "giulia*best friend"),
         ),
     ),
 
@@ -860,7 +870,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     188: EvaluationQuestion(
         188, "msg 187 took up running again; swimming is three times, yoga is over",
         (
-            recalls("running taken up again", "corr*", "corsa", "run*", "jog*"),
+            recalls("running taken up again", "corr*", "corsa", "resum*run*", "restart*run*",
+                    "run*again", "again*run*", "also run*", "runs regularly", "back to run*"),
             recalls("swimming", "nuot*", "swim*"),
             supersedes("yoga stopped", "yoga"),
         ),
@@ -879,7 +890,7 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         192, "msg 191: chili peppers join the tomatoes and basil of msg 31",
         (
             recalls_some("at least two plants", 2, ("pomodor*", "tomato*"),
-                         ("basilic*", "basil"), ("peperoncin*", "chili*", "chilli*")),
+                         ("basilic*", "basil"), ("peperoncin*", "chili*", "chilli*", "pepper*")),
         ),
     ),
 
@@ -887,8 +898,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         194, "msg 193: stopped meditating",
         (
             recalls("meditation", "medit*"),
-            recalls("stopped", "smesso", "stop*", "no longer", "non*piu", "anymore",
-                    "quit*", "gave up"),
+            recalls("stopped", "smesso", "non*piu", "stop*meditat*", "quit*meditat*",
+                    "no longer meditat*", "meditat*anymore", "gave up meditat*"),
         ),
     ),
 
@@ -911,7 +922,8 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         205, "msg 204: got over the fear of flying",
         (
             recalls("flying", "volare", "fly*", "flight*", "aere*", "plane*"),
-            recalls("got over", "superat*", "overc*", "got over"),
+            recalls("got over", "superat*", "overc*", "got over", "no longer afraid",
+                    "not afraid*anymore", "non*piu*paura"),
         ),
     ),
 
@@ -951,8 +963,9 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         218, "msg 217: finished the sign language course",
         (
             recalls("sign language", "lingua dei segni", "segni", "sign language"),
-            recalls("finished", "finit*", "conclus*", "finished", "completed",
-                    "primo livello", "first level"),
+            recalls("finished", "finit*", "conclus*", "primo livello", "first level",
+                    "complet*sign language", "finish*sign language", "sign language*complet*",
+                    "sign language*finish*"),
         ),
     ),
 
@@ -975,7 +988,7 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
         225, "msg 224 deleted the vegetable garden on the balcony",
         (
             forgets("deleted vegetable garden", "orto", "pomodor*", "tomato*", "basilic*",
-                    "basil", "peperoncin*", "chili*", "chilli*", "vegetable garden",
+                    "basil", "peperoncin*", "chili*", "chilli*", "pepper*", "vegetable garden",
                     "vegetable patch"),
         ),
     ),
@@ -999,10 +1012,9 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
     242: EvaluationQuestion(
         242, "msg 241: no skiing in Trentino, at Christmas the user stays home",
         (
-            recalls("stays home", "resto a casa", "resti a casa", "restare a casa",
-                    "rimani a casa", "stay at home", "stays at home", "staying at home",
-                    "stay home", "stays home", "staying home"),
-            supersedes("skiing in Trentino", "sciare", "sci", "ski", "skiing", "trentino"),
+            recalls("stays home", *STAYS_HOME),
+            supersedes("skiing in Trentino", "sciare", "sci", "ski", "skiing", "trentino",
+                       replaced_by=STAYS_HOME),
         ),
     ),
 
