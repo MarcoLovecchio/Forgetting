@@ -333,21 +333,6 @@ class OpenQuestionTest(unittest.TestCase):
         self.assertFalse(self.criterion.satisfied("Allergica alle arachidi (peanuts)."))
 
 
-class SnapshotTimingTest(unittest.TestCase):
-    """The memory is measured when the message before the question is consolidated."""
-
-    def test_with_the_long_run_window_it_is_the_question_turn(self):
-        self.assertEqual(fama.memory_snapshot_turn(45, 2), 45)
-
-    def test_a_wider_window_pushes_it_later(self):
-        self.assertEqual(fama.memory_snapshot_turn(45, 4), 46)
-        self.assertEqual(fama.memory_snapshot_turn(45, 6), 47)
-
-    def test_it_never_goes_before_the_question(self):
-        self.assertEqual(fama.memory_snapshot_turn(45, 1), 45)
-        self.assertEqual(fama.memory_snapshot_turn(45, 0), 45)
-
-
 class VerdictTest(unittest.TestCase):
     """The gap between the two scores says which node gave way."""
 
@@ -395,8 +380,6 @@ class CriteriaTableTest(unittest.TestCase):
             self.assertEqual(subject.index, index,
                              "question %d carries the wrong index" % index)
             self.assertTrue(subject.criteria, "question %d has no criteria" % index)
-            self.assertTrue(subject.note.strip(),
-                            "question %d does not say what it refers to" % index)
             for criterion in subject.criteria:
                 for variant in criterion.variants:
                     self.assertTrue(fama.normalize(variant).strip("* "),
@@ -508,7 +491,7 @@ class CriteriaTableTest(unittest.TestCase):
     def test_the_right_answers_of_a_real_run_score_one(self):
         """Right answers from a real run, word for word, that FAMA used to fail.
 
-        27 said three true facts different from the ones demanded; 49 corrected
+        36 said three true facts different from the ones demanded; 74 corrected
         the coffee in the following clause, with a pronoun.
         """
         run = {

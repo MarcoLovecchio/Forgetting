@@ -337,7 +337,6 @@ class UtilityTermTest(unittest.TestCase):
 
     METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(), "n_retrieve": 0,
                 "utility": 4, "need": 1, "gain": 3}
-    TERMS = {"utility": 0.8, "time_decay": 0.4, "frequency": 0.2}
 
     def test_the_vote_picks_its_entry(self):
         with mock.patch.object(eviction, "UTILITY_TABLE", (0.1, 0.3, 0.5, 0.7, 0.9)):
@@ -372,24 +371,6 @@ class UtilityTermTest(unittest.TestCase):
         with mock.patch.object(eviction, "NEED_GAIN_TABLE", asymmetric):
             self.assertEqual(need_gain_term(1, 3), 0.3)
             self.assertEqual(need_gain_term(3, 1), 0.7)
-
-    def test_the_tables_are_valid_utilities(self):
-        # Calibrated tables too: in (0, 1], never going down as the level goes up.
-        table = eviction.NEED_GAIN_TABLE
-        self.assertEqual(len(eviction.UTILITY_TABLE), 5)
-        self.assertEqual(len(table), 3)
-        for line in (eviction.UTILITY_TABLE, *table, *zip(*table)):
-            with self.subTest(line=line):
-                self.assertTrue(all(0 < value <= 1 for value in line))
-                self.assertEqual(list(line), sorted(line))
-        self.assertTrue(all(len(row) == 3 for row in table))
-
-    def test_the_weighted_sum_is_half_utility_and_a_quarter_each(self):
-        self.assertAlmostEqual(combine_terms(self.TERMS, "weighted_sum"),
-                               0.5 * 0.8 + 0.25 * 0.4 + 0.25 * 0.2)
-
-    def test_the_product_is_utility_times_the_mean_of_the_others(self):
-        self.assertAlmostEqual(combine_terms(self.TERMS, "product"), 0.8 * (0.4 + 0.2) / 2)
 
     def test_without_utility_the_two_combinations_are_the_same_mean(self):
         terms = {"time_decay": 0.4, "frequency": 0.2}

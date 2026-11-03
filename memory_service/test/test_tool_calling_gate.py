@@ -74,8 +74,6 @@ KNOWN_MEMORIES = {new_item_id(): content for content in (
 
 # Collected from all the checks and printed at the end.
 RESULTS = []
-# Observations that are neither passes nor failures.
-NOTES = []
 
 
 def _memories_for_prompt():
@@ -147,52 +145,6 @@ class ToolCallingGateTest(ModelGateTestCase):
             return None
 
         self.assertRate("answers", attempt)
-
-    def test_1b_reasoning_is_reported_not_judged(self):
-        """Does the model reason? It is a piece of information, not a defect.
-
-        The tool calls arrive from a structured field separate from the text, so
-        the reasoning does not corrupt the extraction. What it costs is context
-        and latency, plus the fact that if it ends up in `content` it enters the
-        answers to the user - and from there the memory, because the answer is
-        consolidated.
-
-        The two lines printed here say different things and must be read
-        together:
-
-            configured    what we asked for, that is the enable_thinking
-                          entry of LLM_CONFIG in the .config
-            in content    what is really seen in the text of the answer
-
-        If the server runs with --reasoning-parser the reasoning is there but
-        ends up in a field of its own: "configured: on" with "in content: no"
-        is not a contradiction, it is the best situation. "off" with
-        "in content: yes" instead means the option had no effect, and it is a
-        problem.
-
-        It also makes an A/B comparison readable: two gate runs with different
-        settings could otherwise be told apart only from memory.
-        """
-        setting = backends.get_config().llm_config.get("enable_thinking")
-        configured = {True: "on", False: "off",
-                      None: "server default"}[setting]
-
-        response = self.llm.invoke("Rispondi solo con la parola: pronto.")
-        content = str(response.content)
-        thinking = "<think>" in content
-
-        safe_print("")
-        safe_print(f"  thinking configured: {configured}")
-        safe_print(f"  reasoning visible in content: {'yes' if thinking else 'no'}")
-        if thinking:
-            safe_print("    it will enter the answers to the user and from there the memory:")
-            safe_print("    consider --reasoning-parser on the server, or turn it off entirely")
-        if setting is False and thinking:
-            safe_print("    WARNING: asked off, but the reasoning shows anyway")
-        # Deliberately outside RESULTS: it would end up in the final verdict as
-        # "BELOW THRESHOLD" and would make a model that works fine look unsuitable.
-        NOTES.append(f"thinking configured: {configured}, visible in content: "
-                     f"{'yes' if thinking else 'no'}")
 
     def _choice_chain(self):
         """The retrieval node: two tools bound together, one mandatory."""
@@ -374,10 +326,6 @@ def tearDownModule():
 
     worst = min(successes / attempts for _, successes, attempts, _ in RESULTS)
     safe_print("")
-    for note in NOTES:
-        safe_print(f"  note: {note}")
-    if NOTES:
-        safe_print("")
     if worst >= THRESHOLD:
         safe_print("  The model handles structured output: you can go on.")
     else:

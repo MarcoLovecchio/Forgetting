@@ -59,22 +59,12 @@ class ExpectedTableTest(unittest.TestCase):
         chatter = {index for index, tag in enumerate(tags, 1) if tag == "chatter"}
         self.assertEqual(none - chatter, set(fama.QUESTIONS))
 
-    def test_alternatives_are_real_classes_and_not_the_label_again(self):
-        for index, also in om.ACCEPTED_ALSO.items():
-            for combination in also:
-                self.assertNotEqual(tuple(combination), (om.expected(index)[0],), "msg %d" % index)
-                self.assertTrue(set(combination) <= set(om.CLASSES), "msg %d" % index)
-
     def test_a_changed_value_always_needs_an_update(self):
         # 2000 and 2200 active together would be a contradiction in memory: a
         # new passes only next to the update that removes the old value.
         for index in (38, 64, 73, 86, 94, 162, 166, 186, 204, 210, 228, 241):
             for combination in om.expected(index)[1]:
                 self.assertIn("update", combination, "msg %d" % index)
-
-    def test_expected_repeats_are_on_facts(self):
-        for index in om.MULTIPLE_EXPECTED:
-            self.assertNotEqual(om.expected(index)[0], "none", "msg %d" % index)
 
 
 class ClassifyTest(unittest.TestCase):

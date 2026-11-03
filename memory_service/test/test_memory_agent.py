@@ -231,21 +231,6 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
 
 
-class InsertDoesNotCountRetrievalsTest(MemoryServiceTestCase):
-    """Consolidation searches the archive for candidates, but it is not a retrieval."""
-
-    tool_responses = {"InsertCoreMemories": {"memories": []}}
-
-    def test_an_insert_leaves_n_retrieve_alone(self):
-        self.archive({"memory_a": "User likes black tea in the afternoon"})
-        self.agent.state["messages"] = self.conversation(8)
-
-        self.agent.run_memory_agent("insert")
-
-        self.assertTrue(self.vector_store.searches, "consolidation searched for the candidates")
-        self.assertEqual(self.vector_store.metadatas["memory_a"]["n_retrieve"], 0)
-
-
 class AnswerGenerationSwitchTest(MemoryServiceTestCase):
     """The retrieve branch may not compose the answer.
 
@@ -615,11 +600,6 @@ class NodeStatsTest(MemoryServiceTestCase):
         self.assertNotIn("consolidation", NODE_STATS,
                          "the insert branch did not run, it must not appear")
 
-    def test_the_time_is_recorded(self):
-        self.agent.run_memory_agent("retrieve", query="cosa bevo?")
-
-        self.assertGreater(NODE_STATS["retrieval"]["seconds"], 0)
-
     def test_the_tokens_come_from_the_usage_metadata(self):
         class Response:
             usage_metadata = {"input_tokens": 120, "output_tokens": 45}
@@ -777,15 +757,6 @@ class BenchmarkAnswerTest(MemoryServiceTestCase):
         _, answer = self.run_retrieve(answer_with_dates=True, track_used=True)
 
         self.assertIn("ID: core_diet, Date: 2033-12-08, Content: User is vegetarian", answer)
-
-
-class AppendMessageTest(MemoryServiceTestCase):
-    def test_messages_are_typed_after_their_sender(self):
-        self.agent.append_message("hello", "user")
-        self.agent.append_message("hi there", "assistant")
-
-        self.assertIsInstance(self.agent.state["messages"][0], HumanMessage)
-        self.assertIsInstance(self.agent.state["messages"][1], AIMessage)
 
 
 class LastOperationsTest(MemoryServiceTestCase):

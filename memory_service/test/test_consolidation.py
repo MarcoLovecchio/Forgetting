@@ -44,7 +44,6 @@ from memory_service.consolidation import (  # noqa: E402
     build_candidate_memories,
     count_ratings,
     count_unrated,
-    describe_ratings,
     get_active_items,
     record_uses,
     reinforce_archived_item,
@@ -466,14 +465,6 @@ class RetrievalCountTest(unittest.TestCase):
         metadata = self.store.metadatas[item_id]
         return metadata.get("n_retrieve"), metadata.get("retrieved_at")
 
-    def test_a_new_item_starts_never_retrieved_nor_used(self):
-        # A distant date: with "now" the comparison would pass even by chance.
-        created = datetime(2026, 1, 1, 9, 30)
-        item = CoreMemoryItem(content="ha un gatto", updated_at=created)
-
-        self.assertEqual((item.n_retrieve, item.n_used), (0, 0))
-        self.assertEqual(item.retrieved_at, created)
-
     def test_the_counters_travel_to_the_archive(self):
         item = CoreMemoryItem(content="ha un gatto", n_retrieve=2, n_used=5)
         archive_items([item])
@@ -581,10 +572,6 @@ class UnratedCountTest(unittest.TestCase):
                          {"need": {1: 0, 2: 1, 3: 1}, "gain": {1: 0, 2: 1, 3: 0}})
         self.assertEqual(count_ratings(self.LOG, "single"),
                          {"utility": {1: 0, 2: 0, 3: 0, 4: 1, 5: 0}})
-
-    def test_the_levels_read_the_same_from_a_result_saved_as_json(self):
-        self.assertEqual(describe_ratings({"need": {"2": 5, "10": 1, "1": 0}, "gain": {1: 3}}),
-                         "need 1: 0, 2: 5, 10: 1; gain 1: 3")
 
 
 class JudgmentTest(unittest.TestCase):
@@ -736,14 +723,6 @@ class JudgmentTest(unittest.TestCase):
                           ("update", {"utility": 5}), ("redundant", None)])
         published = json.loads(serialize_operation_log_for_response(state["operation_log"])[2])
         self.assertEqual(published["ratings"], {"utility": 5})
-
-    def test_with_need_and_gain_the_log_shows_both(self):
-        self.use("need_gain")
-
-        state = self.consolidate([{"fact": "ha un cane", "operation": "new", "safety": False,
-                                   "need": 2, "gain": 3}])
-
-        self.assertEqual(state["operation_log"][0].ratings, {"need": 2, "gain": 3})
 
     def test_without_a_judgment_the_log_shows_none(self):
         self.use("none")

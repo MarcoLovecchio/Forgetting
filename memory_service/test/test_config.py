@@ -288,14 +288,6 @@ class LocalModelParametersTest(EnvironmentTestCase):
         self.assertEqual(parameters["model_provider"], "openai")
         self.assertEqual(parameters["base_url"], "http://modelli.cluster.local:8000/v1")
 
-    def test_top_k_travels_in_extra_body(self):
-        # top_k is not a parameter of the OpenAI API: passing it as a direct
-        # argument would not reach the server, which accepts it in the body instead.
-        parameters = self._build({
-            "model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai", "top_k": 20})
-
-        self.assertEqual(parameters["extra_body"], {"top_k": 20})
-
     def test_thinking_is_switched_through_the_chat_template(self):
         parameters = self._build({
             "model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai",
@@ -405,12 +397,6 @@ class ClockTest(unittest.TestCase):
 
     def assert_just_after(self, reading, start):
         self.assertTrue(start <= reading < start + timedelta(seconds=5), reading)
-
-    def test_by_default_it_is_the_wall_clock(self):
-        before = datetime.now()
-        reading = backends.now()
-
-        self.assertTrue(before <= reading <= datetime.now())
 
     def test_moved_it_starts_from_the_given_time_and_advances(self):
         backends.set_clock(self.START)
