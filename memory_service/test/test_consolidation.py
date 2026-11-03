@@ -42,7 +42,9 @@ from memory_service.consolidation import (  # noqa: E402
     CoreMemoryItem,
     archive_items,
     build_candidate_memories,
+    count_ratings,
     count_unrated,
+    describe_ratings,
     get_active_items,
     record_uses,
     reinforce_archived_item,
@@ -558,7 +560,7 @@ class RetrievalCountTest(unittest.TestCase):
 
 
 class UnratedCountTest(unittest.TestCase):
-    """count_unrated: the new and updated facts that came without the mode's ratings."""
+    """count_unrated and count_ratings: what the new and updated facts got, mode by mode."""
 
     LOG = [("create", {"need": 2, "gain": 2}), ("create", {"safety": True}),
            ("update", None), ("create", {"need": 3}), ("redundant", None),
@@ -572,6 +574,17 @@ class UnratedCountTest(unittest.TestCase):
 
     def test_a_mode_that_rates_nothing_has_nothing_to_count(self):
         self.assertIsNone(count_unrated(self.LOG, "none"))
+        self.assertIsNone(count_ratings(self.LOG, "none"))
+
+    def test_every_level_is_counted_also_when_never_given(self):
+        self.assertEqual(count_ratings(self.LOG, "need_gain"),
+                         {"need": {1: 0, 2: 1, 3: 1}, "gain": {1: 0, 2: 1, 3: 0}})
+        self.assertEqual(count_ratings(self.LOG, "single"),
+                         {"utility": {1: 0, 2: 0, 3: 0, 4: 1, 5: 0}})
+
+    def test_the_levels_read_the_same_from_a_result_saved_as_json(self):
+        self.assertEqual(describe_ratings({"need": {"2": 5, "10": 1, "1": 0}, "gain": {1: 3}}),
+                         "need 1: 0, 2: 5, 10: 1; gain 1: 3")
 
 
 class JudgmentTest(unittest.TestCase):

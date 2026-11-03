@@ -3,7 +3,9 @@
 Run: python memory_service/run_tests.py -v
 """
 
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import sys
@@ -204,6 +206,19 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual(replayed["unrated"], {"without_ratings": 2, "of": 2},
                          "the scripted model gives no rating")
 
+    def test_a_user_keeps_how_many_times_each_level_was_given(self):
+        self.agent.config = dataclasses.replace(CONFIG, consolidation_utility="need_gain")
+        self.llm.script({"InsertCoreMemories": {"memories": [
+            {"fact": "The user has a dog named Argo", "operation": "new", "safety": False,
+             "need": 3, "gain": 2}]}})
+        user = {**USER, "sessions": [session(("a", "b"), ("c", "d"))]}
+
+        replayed = adapter.replay_user(self.agent, user)
+
+        self.assertEqual(replayed["unrated"], {"without_ratings": 0, "of": 2})
+        self.assertEqual(replayed["ratings"], {"need": {"1": 0, "2": 0, "3": 2},
+                                               "gain": {"1": 0, "2": 2, "3": 0}})
+
     def test_a_failed_call_is_tried_again(self):
         calls = []
 
@@ -280,15 +295,48 @@ class RunTest(unittest.TestCase):
         path = os.path.join(self.run_dir, f"{adapter.FRAME}_eval_results.jsonl")
         self.assertEqual([user["uuid"] for user in adapter.load_users(path)], ["a", "b"])
 
-    def test_the_missing_ratings_are_summed_over_the_users_that_finished(self):
-        for uuid, counter in (("a", {"without_ratings": 1, "of": 40}),
-                              ("b", {"without_ratings": 0, "of": 35})):
+    def test_the_judgment_is_summed_over_the_users_that_finished(self):
+        for uuid, counter, need in (("a", {"without_ratings": 1, "of": 40}, [5, 30, 4]),
+                                    ("b", {"without_ratings": 0, "of": 35}, [2, 25, 8])):
+            ratings = {"need": dict(zip("123", need))}
             with open(adapter.result_path(self.run_dir, uuid), "w", encoding="utf-8") as handle:
-                json.dump({"uuid": uuid, "unrated": counter}, handle)
+                json.dump({"uuid": uuid, "unrated": counter, "ratings": ratings}, handle)
 
-        self.assertEqual(adapter.finished_unrated([{"uuid": name} for name in "abc"],
-                                                  self.run_dir),
-                         ", 1 of 75 new and updated facts without ratings (safety facts apart)")
+        self.assertEqual(adapter.finished_judgment([{"uuid": name} for name in "abc"],
+                                                   self.run_dir),
+                         ", 1 of 75 new and updated facts without ratings (safety facts apart); "
+                         "need 1: 7, 2: 55, 3: 12")
+
+    def clean(self, *extra):
+        os.makedirs(os.path.join(self.run_dir, "eval", "results"), exist_ok=True)
+        run_dir = os.path.join(self.run_dir, "eval", "results", f"{adapter.FRAME}-v")
+        os.makedirs(os.path.join(run_dir, "archives", "uuid-1"), exist_ok=True)
+        os.makedirs(os.path.join(run_dir, "tmp"), exist_ok=True)
+        with open(os.path.join(run_dir, "tmp", "uuid-1.json"), "w", encoding="utf-8") as handle:
+            json.dump({"uuid": "uuid-1"}, handle)
+        arguments = adapter.parse_arguments(
+            ["clean", "--halumem", self.run_dir, "--version", "v", "-y", *extra])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(adapter.clean(arguments), 0)
+        return run_dir
+
+    def test_clean_deletes_the_archives_and_keeps_the_results(self):
+        run_dir = self.clean()
+
+        self.assertFalse(os.path.exists(os.path.join(run_dir, "archives")))
+        self.assertTrue(os.path.exists(os.path.join(run_dir, "tmp", "uuid-1.json")),
+                        "launched again, the users already done are still skipped")
+
+    def test_clean_all_deletes_the_whole_run(self):
+        run_dir = self.clean("--all")
+
+        self.assertFalse(os.path.exists(run_dir))
+
+    def test_a_version_cannot_lead_out_of_the_results_folder(self):
+        for version in ("../x", "..", "a/b", ".hidden", "-v"):
+            with self.subTest(version=version), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                adapter.parse_arguments(["clean", "--halumem", "x", f"--version={version}"])
 
     def test_launched_again_the_results_file_does_not_double(self):
         with open(adapter.result_path(self.run_dir, "a"), "w", encoding="utf-8") as handle:

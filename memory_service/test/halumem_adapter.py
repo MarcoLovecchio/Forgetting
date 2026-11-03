@@ -8,6 +8,8 @@ the answer to every question.
     run        replays the dialogues through the real agent, with the models on the
                cluster and an archive on disk for each user; it never calls the judge
     evaluate   runs HaluMem's evaluation.py on the result, with the judge of eval/.env
+    clean      deletes the archives of a run, which evaluate does not need; with --all
+               the whole run, to launch it again from scratch
 
 A session goes like this:
 
@@ -33,6 +35,7 @@ logs/<uuid>.log, every operation with the exchange it belongs to to the result f
 
     python3 memory_service/test/halumem_adapter.py run --halumem PATH --version NAME
     python3 memory_service/test/halumem_adapter.py evaluate --halumem PATH --version NAME
+    python3 memory_service/test/halumem_adapter.py clean --halumem PATH --version NAME
 
 Results are in PATH/eval/results/memory_service-NAME.
 """
@@ -62,7 +65,9 @@ from memory_service import backends  # noqa: E402
 from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
     OperationLogEntry,
+    count_ratings,
     count_unrated,
+    describe_ratings,
     search_archive,
     serialize_core_memory_for_prompt,
     serialize_core_memory_with_dates,
@@ -72,6 +77,7 @@ from memory_service.memory_manager_llm import (  # noqa: E402
     MemoryAgent,
     reset_node_stats,
 )
+from reset_archive import directory_size  # noqa: E402
 
 FRAME = "memory_service"
 DATASET = os.path.join("data", "HaluMem-Medium.jsonl")
@@ -233,11 +239,15 @@ def replay_user(agent: MemoryAgent, user: Dict[str, Any],
                  f"{sessions[-1]['active_archive']} active in the archive")
     replayed = {"uuid": user["uuid"], "user_name": name, "sessions": sessions,
                 "node_stats": {node: dict(stats) for node, stats in NODE_STATS.items()}}
-    counted = count_unrated(((operation["op_type"], operation["ratings"])
-                             for session in sessions for operation in session["operations"]),
-                            agent.config.consolidation_utility)
+    mode = agent.config.consolidation_utility
+    entries = [(operation["op_type"], operation["ratings"])
+               for session in sessions for operation in session["operations"]]
+    counted = count_unrated(entries, mode)
     if counted:
         replayed["unrated"] = {"without_ratings": counted[0], "of": counted[1]}
+        # Keys as JSON writes them, so a result read back sums like one just made.
+        replayed["ratings"] = {name: {str(level): count for level, count in levels.items()}
+                               for name, levels in count_ratings(entries, mode).items()}
     return replayed
 
 
@@ -322,7 +332,7 @@ def process_user(user: Dict[str, Any], config: MemoryConfig, run_dir: str) -> Tu
         with open(partial, "w", encoding="utf-8") as handle:
             json.dump(replayed, handle, ensure_ascii=False)
         os.replace(partial, result_path(run_dir, uuid))
-        return uuid, "ok" + unrated_text([replayed.get("unrated")])
+        return uuid, "ok" + judgment_text([replayed])
     except Exception:
         with open(os.path.join(run_dir, "tmp", f"{uuid}_error.log"), "w",
                   encoding="utf-8") as handle:
@@ -355,25 +365,39 @@ def merge_results(users: Sequence[Dict[str, Any]], run_dir: str) -> int:
     return merged
 
 
-def unrated_text(counters: Sequence[Optional[Dict[str, int]]]) -> str:
-    """The ratings missing over some users, as the long test counts them; empty if unrated."""
-    counters = [counter for counter in counters if counter]
-    if not counters:
+def judgment_text(results: Sequence[Dict[str, Any]]) -> str:
+    """The missing ratings and each level given, summed over some users; empty if unrated."""
+    results = [result for result in results if result.get("unrated")]
+    if not results:
         return ""
-    return (f", {sum(counter['without_ratings'] for counter in counters)} of "
-            f"{sum(counter['of'] for counter in counters)} new and updated facts without "
-            f"ratings (safety facts apart)")
+    levels: Dict[str, Dict[str, int]] = {}
+    for result in results:
+        for name, counts in result["ratings"].items():
+            for level, count in counts.items():
+                levels.setdefault(name, {}).setdefault(level, 0)
+                levels[name][level] += count
+    return (f", {sum(result['unrated']['without_ratings'] for result in results)} of "
+            f"{sum(result['unrated']['of'] for result in results)} new and updated facts "
+            f"without ratings (safety facts apart); {describe_ratings(levels)}")
 
 
-def finished_unrated(users: Sequence[Dict[str, Any]], run_dir: str) -> str:
-    """unrated_text over every user that finished, in this launch or in an earlier one."""
-    counters = []
+def finished_judgment(users: Sequence[Dict[str, Any]], run_dir: str) -> str:
+    """judgment_text over every user that finished, in this launch or in an earlier one."""
+    results = []
     for user in users:
         finished = result_path(run_dir, user["uuid"])
         if os.path.exists(finished):
             with open(finished, encoding="utf-8") as handle:
-                counters.append(json.load(handle).get("unrated"))
-    return unrated_text(counters)
+                results.append(json.load(handle))
+    return judgment_text(results)
+
+
+def version_name(text: str) -> str:
+    """A version is a folder name: nothing that could lead out of the results folder."""
+    if not re.fullmatch(r"\w[\w.-]*", text):
+        raise argparse.ArgumentTypeError(
+            f"{text!r}: use letters, digits, '_', '-' and '.', not starting with '.' or '-'")
+    return text
 
 
 def run_folder(arguments: argparse.Namespace) -> str:
@@ -414,9 +438,32 @@ def run(arguments: argparse.Namespace) -> int:
             print(f"User {uuid}: {outcome}", flush=True)
 
     merged = merge_results(users, run_dir)
-    print(f"{merged} of {len(users)} users in {run_dir}{finished_unrated(users, run_dir)}",
+    print(f"{merged} of {len(users)} users in {run_dir}{finished_judgment(users, run_dir)}",
           flush=True)
     return 0 if merged == len(users) else 1
+
+
+def clean(arguments: argparse.Namespace) -> int:
+    """Delete the archives of a run, or with --all the whole run.
+
+    The archives are not needed by evaluate. Without --all the results stay, so a launch
+    with the same --version still skips the users already done.
+    """
+    run_dir = run_folder(arguments)
+    target = run_dir if arguments.all else os.path.join(run_dir, "archives")
+    if not os.path.isdir(target):
+        print(f"Nothing to delete: {target} does not exist")
+        return 0
+    what = "the whole run" if arguments.all else f"{len(os.listdir(target))} user archives"
+    print(f"{target}: {what}, {directory_size(target) / 2 ** 20:.1f} MiB")
+    if not arguments.all:
+        print("The results stay: launched again, the users already done are skipped.")
+    if not arguments.yes and input("Delete? [y/N] ").strip().lower() not in ("s", "si", "y", "yes"):
+        print("Cancelled.")
+        return 1
+    shutil.rmtree(target)
+    print("Deleted.")
+    return 0
 
 
 def evaluate(arguments: argparse.Namespace) -> int:
@@ -443,7 +490,8 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--halumem", required=True, help="the folder of the HaluMem clone")
-    common.add_argument("--version", required=True, help="the name of this run")
+    common.add_argument("--version", required=True, type=version_name,
+                        help="the name of this run")
 
     replay = steps.add_parser("run", parents=[common], help="replay the dataset")
     replay.add_argument("--users", type=int, help="only the first users, for a pilot")
@@ -460,6 +508,12 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     judge.add_argument("--judge-workers", type=int, default=10, dest="judge_workers",
                        help="judge calls at the same time, per user")
     judge.set_defaults(step_function=evaluate)
+
+    wipe = steps.add_parser("clean", parents=[common], help="delete the archives of a run")
+    wipe.add_argument("--all", action="store_true",
+                      help="the whole run, results included, to launch it again from scratch")
+    wipe.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+    wipe.set_defaults(step_function=clean)
     return parser.parse_args(argv)
 
 

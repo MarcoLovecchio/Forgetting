@@ -163,7 +163,7 @@ saved runs of the same commit.
 
 During the run it prints only one progress line every 10 messages; at the end it
 prints the report: full operation log, with how many new and updated facts lack the
-ratings of the mode, core memory, archive, questions and answers, the FAMA table, the
+ratings of the mode and how many times each level of each rating was given, core memory, archive, questions and answers, the FAMA table, the
 confusion matrix and the cost per node. The asserts
 are structural (every item that left the core memory is in the archive or has an
 `evict` or `prune` entry in the log, core memory with only active items, unique
@@ -231,7 +231,8 @@ fix whatever `config.py` says (`always`, the window of 2, the power law on `upda
 `count_candidate_search`, `retrieve_k` 20 as HaluMem gives the other systems,
 `answer_with_dates`) and takes from the command line what they vary. It stops at
 once if the models do not answer. A user that finished is skipped when the same
-`--version` is launched again, one that did not starts over.
+`--version` is launched again, one that did not starts over. To launch a version again
+from scratch, `clean --all` deletes it.
 
 `evaluate` runs the judge, read from `eval/.env` in the clone: `OPENAI_BASE_URL`,
 `OPENAI_API_KEY`, `OPENAI_MODEL`, `RETRY_TIMES`, `WAIT_TIME_LOWER`, `WAIT_TIME_UPPER`.
@@ -240,6 +241,9 @@ once if the models do not answer. A user that finished is skipped when the same
 # a pilot on one user
 python3 memory_service/test/halumem_adapter.py run --halumem PATH --version pilot --users 1
 python3 memory_service/test/halumem_adapter.py evaluate --halumem PATH --version pilot
+
+# the archives of a run, which evaluate does not need; --all deletes the whole run
+python3 memory_service/test/halumem_adapter.py clean --halumem PATH --version pilot
 
 # what the experiments vary
 python3 memory_service/test/halumem_adapter.py run --halumem PATH --version NAME --workers 4     --utility need_gain --combination product --core-limit N --archive-limit N     --prune-fraction F --model MODEL
@@ -251,8 +255,9 @@ configuration and the commit, `memory_service_eval_results.jsonl` for the evalua
 for each user and `archives/` with the Chroma folders. Next to what HaluMem reads, every
 session also keeps its operations, each with the exchange it belongs to, and how many
 memories were active at its end. Every user keeps in `unrated` how many new and updated
-facts came without the ratings of the mode, counted as in the long test: the run prints
-it when the user finishes, and summed over the finished users at the end.
+facts came without the ratings of the mode, and in `ratings` how many times each level of
+each rating was given, counted as in the long test: the run prints both when the user
+finishes, and summed over the finished users at the end.
 
 ## The models on the cluster
 

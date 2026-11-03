@@ -148,7 +148,9 @@ from memory_service import backends
 from memory_service.config import NODE_SAMPLING, MemoryConfig
 from memory_service.consolidation import (
     ARCHIVE_CANDIDATES_K,
+    count_ratings,
     count_unrated,
+    describe_ratings,
     get_active_items,
 )
 
@@ -603,12 +605,14 @@ def _print_progress(index, total, agent):
     safe_print(f"  [{index:>3}/{total}] core: {active} item | operations: {operations}")
 
 
-def _print_unrated(log, utility):
-    """How many new and updated facts lack the ratings of the mode, safety facts apart."""
-    counted = count_unrated(((entry.op_type, entry.ratings) for entry in log), utility)
+def _print_judgment(log, utility):
+    """The new and updated facts without the ratings of the mode, and each level given."""
+    entries = [(entry.op_type, entry.ratings) for entry in log]
+    counted = count_unrated(entries, utility)
     if counted:
         safe_print(f"Without ratings: {counted[0]} of {counted[1]} new and updated facts "
                    f"(safety facts apart)")
+        safe_print(f"Ratings given: {describe_ratings(count_ratings(entries, utility))}")
 
 
 def _print_operation_log(log, utility):
@@ -620,7 +624,7 @@ def _print_operation_log(log, utility):
     if counters:
         summary = ", ".join(f"{name} {count}" for name, count in sorted(counters.items()))
         safe_print(f"Summary: {summary}")
-        _print_unrated(log, utility)
+        _print_judgment(log, utility)
     safe_print("")
 
     if not log:

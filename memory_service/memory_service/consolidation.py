@@ -211,13 +211,13 @@ class NeedGainJudgedOperation(MemoryOperation):
         "said it, not how new or surprising it is. Do not invent a goal of the user that "
         "the messages do not show. "
         "Decide in this order and stop at the first that applies. "
-        "First, is it 3, part of the user's life? It is 3 when it stays true and names one "
+        "First, is it 1, one-off? It is 1 when it happened once or holds only for now, and "
+        "nothing follows from it: a purchase, an errand, a mishap, a passing mood. "
+        "If not, is it 3, part of the user's life? It is 3 when it stays true and names one "
         "of these: who the user is, their home, their work or study, a person or an animal "
         "close to them, their diet, health or limits, a habit or routine, an ongoing "
         "activity; or when it is a plan or an appointment that has not come yet. A change "
         "to one of these, such as a habit the user stopped, is 3 too. "
-        "If not, is it 1, one-off? It is 1 when it happened once or holds only for now, and "
-        "nothing follows from it: a purchase, an errand, a mishap, a passing mood. "
         "Otherwise it is 2, topical: it stays true, but only one specific topic would bring "
         "it up, such as a detail of a hobby, a taste, an opinion, an old experience."))
     gain: Literal[1, 2, 3] = Field(description=(
@@ -346,6 +346,33 @@ def count_unrated(entries: Iterable[Tuple[str, Optional[Dict[str, Any]]]],
               if op_type in ("create", "update") and not (ratings or {}).get("safety")]
     unrated = sum(1 for ratings in judged if any(ratings.get(name) is None for name in names))
     return unrated, len(judged)
+
+
+def count_ratings(entries: Iterable[Tuple[str, Optional[Dict[str, Any]]]],
+                  mode: str) -> Optional[Dict[str, Dict[int, int]]]:
+    """How many new and updated facts got each level of each rating of the mode.
+
+    Every level is there, also the ones never given; None when the mode rates nothing.
+    """
+    names = MODE_RATINGS[mode]
+    if not names:
+        return None
+    counts = {name: dict.fromkeys(range(1, RATING_SCALES[name] + 1), 0) for name in names}
+    for op_type, ratings in entries:
+        if op_type in ("create", "update"):
+            for name in names:
+                level = (ratings or {}).get(name)
+                if level in counts[name]:
+                    counts[name][level] += 1
+    return counts
+
+
+def describe_ratings(counts: Dict[str, Dict[Any, int]]) -> str:
+    """The levels given, as the reports print them: "need 1: 4, 2: 30, 3: 9; gain ..."."""
+    return "; ".join(
+        f"{name} " + ", ".join(f"{level}: {count}" for level, count
+                               in sorted(levels.items(), key=lambda item: int(item[0])))
+        for name, levels in counts.items())
 
 
 def _flag(value: Any) -> Optional[bool]:
