@@ -118,10 +118,11 @@ class MemoryOperation(BaseModel):
         "The fact itself, in English whatever language the user spoke. Write it about the "
         "user, in the third person, and call them \"the user\", never by name: the name is a "
         "fact of its own. Never write it as a copy of the sentence the user wrote. State "
-        "what is true now, not what changed. For an update, write the whole memory again: "
-        "copy the old memory and change only the parts that what the user said "
-        "contradicts. A part the user says has changed, ended or is no longer true is "
-        "contradicted; every other part stays, even if the user did not mention it."))
+        "what is true now, not what changed. For an update, write the whole memory again, "
+        "with what the user said put into it: replace each part their words contradict "
+        "(what they say has changed, ended or is no longer true) and keep every other "
+        "part, even if they did not mention it. The change goes in this fact, not in a "
+        "separate new one; if the text would stay as it was, it is a redundant."))
     operation: MemoryOperationType
     target_item_id: Optional[str] = Field(
         default=None,
@@ -142,8 +143,8 @@ class InsertCoreMemories(BaseModel):
       change (target_item_id required).
     - update: the stored memory has to change to include what the user said - a new value, a
       correction, or one more detail (target_item_id required). The fact REPLACES that memory,
-      so write it complete: keep every part of the old memory that what the user said does
-      not contradict.
+      so write it complete: what the user contradicts is replaced, the rest is kept, and the
+      change never goes to a separate new fact.
     - delete: use ONLY when the user explicitly asks to delete, forget, remove or stop storing
       a specific fact (target_item_id required). Write as fact the text of the memory being
       deleted, not the request.
