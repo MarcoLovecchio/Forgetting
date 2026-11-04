@@ -206,16 +206,19 @@ For `need_gain` it also prints the free table, cell by cell, and with at least t
 runs it compares the two on each run left out. No model call: FAMA-memory is
 deterministic.
 
-`test/calibration_runs.py` does the whole thing: five long runs in a row (`--runs`
-changes how many), `reset_archive.py` before each one, and the tables at the end.
-Each run is a process of its own. A run that leaves no trace does not stop the series,
-an archive that cannot be cleaned does. The reset deletes the whole folder, production
-collection included, so point `MEMORY_LONGRUN_CHROMA_PATH` to another folder if that
-one matters. The traces go to `MEMORY_LONGRUN_CALIBRATION`, by default
-`test/longrun_calibration.jsonl`.
+`test/calibration_runs.py` does the whole thing: five long runs (`--runs` changes how
+many), `reset_archive.py` before each one, and the tables at the end. Each run is a
+process of its own; `--workers N` runs N of them at the same time, each worker on an
+archive of its own in `test/calibration_work/` (`--work` to change it, ignored by
+git), so the production archive is never touched. With more than one worker the
+output of each run goes to `run<k>.log` in the same folder. A run that leaves no trace
+does not stop the series, an archive that cannot be cleaned does. The traces go to
+`MEMORY_LONGRUN_CALIBRATION`, by default `test/longrun_calibration.jsonl`, and the
+operations to `MEMORY_LONGRUN_RESULTS`: each run writes files of its own and the series
+appends them when the run ends.
 
 ```bash
-python memory_service/test/calibration_runs.py
+python memory_service/test/calibration_runs.py --workers 5
 
 # one run by hand
 MEMORY_LONGRUN_CALIBRATION=memory_service/test/longrun_calibration.jsonl pytest memory_service/test/test_long_term_interaction.py -v -s

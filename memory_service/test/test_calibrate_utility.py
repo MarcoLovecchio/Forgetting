@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -232,32 +233,48 @@ class CalibrationRunsTest(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
+        self.work = os.path.join(folder.name, "work")
         self.path = os.path.join(folder.name, "trace.jsonl")
+        self.results = os.path.join(folder.name, "operations.jsonl")
         self.calls = []
+        self.lock = threading.Lock()
         self.tracing = True
         self.reset_code = 0
+        self.barrier = None
+        self.together = set()
 
-    def fake_run(self, command, env):
+    def fake_run(self, command, env, **_):
         script = "reset" if command[1] == calibration_runs.RESET_ARCHIVE else "test"
-        self.calls.append(script)
+        with self.lock:
+            self.calls.append((script, env["MEMORY_CHROMA_PATH"]))
         if script == "reset":
             return mock.Mock(returncode=self.reset_code)
+        if self.barrier:
+            self.together.add(env["MEMORY_LONGRUN_CHROMA_PATH"])
+            self.barrier.wait(timeout=5)
         if self.tracing:
-            with open(self.path, "a", encoding="utf-8") as handle:
-                handle.write("{}\n")
+            for variable in ("MEMORY_LONGRUN_CALIBRATION", "MEMORY_LONGRUN_RESULTS"):
+                with open(env[variable], "a", encoding="utf-8") as handle:
+                    handle.write("{}\n")
         return mock.Mock(returncode=0)
 
-    def series(self, runs):
-        environment = {"MEMORY_LONGRUN_CALIBRATION": self.path}
+    def series(self, runs, workers=1, **environment):
+        environment = {"MEMORY_LONGRUN_CALIBRATION": self.path,
+                       "MEMORY_LONGRUN_RESULTS": self.results, **environment}
         with mock.patch.object(calibration_runs.subprocess, "run", self.fake_run), \
                 contextlib.redirect_stdout(io.StringIO()):
-            return calibration_runs.run_series(runs, environment)
+            return calibration_runs.run_series(runs, environment, workers, self.work)
+
+    def lines(self, path):
+        with open(path, encoding="utf-8") as handle:
+            return len(handle.readlines())
 
     def test_every_run_starts_from_an_empty_archive(self):
         saved = self.series(3)
 
         self.assertEqual(saved, 3)
-        self.assertEqual(self.calls, ["reset", "test"] * 3)
+        self.assertEqual([script for script, _ in self.calls], ["reset", "test"] * 3)
+        self.assertEqual((self.lines(self.path), self.lines(self.results)), (3, 3))
 
     def test_a_run_without_a_trace_does_not_stop_the_series(self):
         self.tracing = False
@@ -265,20 +282,39 @@ class CalibrationRunsTest(unittest.TestCase):
         saved = self.series(2)
 
         self.assertEqual(saved, 0)
-        self.assertEqual(self.calls, ["reset", "test"] * 2)
+        self.assertEqual([script for script, _ in self.calls], ["reset", "test"] * 2)
 
     def test_a_failed_reset_stops_before_the_test(self):
         self.reset_code = 1
 
         self.assertIsNone(self.series(3))
-        self.assertEqual(self.calls, ["reset"])
+        self.assertEqual([script for script, _ in self.calls], ["reset"])
 
-    def test_the_reset_cleans_the_folder_of_the_long_test(self):
-        environment = calibration_runs.run_environment(
-            {"MEMORY_CHROMA_PATH": "servizio", "MEMORY_LONGRUN_CHROMA_PATH": "prove"})
+    def test_two_workers_run_at_the_same_time_on_two_archives(self):
+        self.barrier = threading.Barrier(2)
 
-        self.assertEqual(environment["MEMORY_CHROMA_PATH"], "prove")
-        self.assertEqual(environment["MEMORY_LONGRUN_CALIBRATION"], cu.DEFAULT_TRACES)
+        saved = self.series(2, workers=2)
+
+        self.assertEqual(saved, 2)
+        self.assertEqual(len(self.together), 2)
+        self.assertEqual(self.lines(self.path), 2)
+
+    def test_the_production_archive_is_never_reset(self):
+        self.series(4, workers=2, MEMORY_CHROMA_PATH="servizio",
+                    MEMORY_LONGRUN_CHROMA_PATH="prove")
+
+        archives = {archive for _, archive in self.calls}
+        self.assertEqual(archives, {os.path.join(self.work, "worker1"),
+                                    os.path.join(self.work, "worker2")})
+
+    def test_a_trace_left_by_a_stopped_series_is_not_merged(self):
+        os.makedirs(self.work)
+        with open(os.path.join(self.work, "run1.trace.jsonl"), "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+
+        self.series(1)
+
+        self.assertEqual(self.lines(self.path), 1)
 
 
 if __name__ == "__main__":
