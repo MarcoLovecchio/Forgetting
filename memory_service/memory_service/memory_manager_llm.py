@@ -509,7 +509,7 @@ UTILITY_STEP = """
            conversations, on the scale the tool describes. The rating is about the fact, not
            about this message: a fact is not more useful because the user repeated it or just
            said it, and not less useful because it came up in small talk. An update is worth
-           what the new fact is worth: that it changed adds nothing."""
+           what the whole new memory is worth: that it changed adds nothing."""
 
 NEED_GAIN_STEP = """
 
@@ -518,8 +518,8 @@ NEED_GAIN_STEP = """
            answer could not guess. Rate one without looking at the other. The ratings are
            about the fact, not about this message: a fact is not more useful because the
            user repeated it or just said it, and not less useful because it came up in
-           small talk. An update is worth what the new fact is worth: that it changed adds
-           nothing."""
+           small talk. An update is worth what the whole new memory is worth: that it changed
+           adds nothing."""
 
 CONSOLIDATION_PROMPTS = {
     mode: ChatPromptTemplate.from_messages([

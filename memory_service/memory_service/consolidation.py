@@ -162,7 +162,8 @@ SAFETY_DESCRIPTION = (
     "assistant could harm the user or put them in danger, as with an allergy, a medical "
     "condition or treatment, a physical limitation, or something the user must avoid for "
     "their health or safety. False for everything else, however important it is to the "
-    "user.")
+    "user. For an update, judge the whole memory as you rewrote it: if any part of it "
+    "could put the user at risk, it is true.")
 
 # need, gain and utility judge with the same words: the two modes differ only in how the
 # judgments are combined.
