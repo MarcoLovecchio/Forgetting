@@ -7,7 +7,8 @@ the answer to every question.
 
     run        replays the dialogues through the real agent, with the models on the
                cluster and an archive on disk for each user; it never calls the judge
-    evaluate   runs HaluMem's evaluation.py on the result, with the judge of eval/.env
+    evaluate   runs HaluMem's evaluation.py on the result, with the judge of eval/.env,
+               then prints, user by user, the judgments it could not use
     clean      deletes the archives of a run, which evaluate does not need; with --all
                the whole run, to launch it again from scratch
 
@@ -392,6 +393,53 @@ def finished_judgment(users: Sequence[Dict[str, Any]], run_dir: str) -> str:
     return judgment_text(results)
 
 
+# (kind, records, field, labels) as aggregate_eval_results reads them: without labels any
+# value but None is usable.
+JUDGMENTS = (
+    ("integrity", "memory_integrity_records", "memory_integrity_score", None),
+    ("accuracy", "memory_accuracy_records", "memory_accuracy_score", None),
+    ("update", "memory_update_records", "memory_update_type",
+     ("Correct", "Hallucination", "Omission", "Other")),
+    ("question", "question_answering_records", "result_type",
+     ("Correct", "Hallucination", "Omission")),
+)
+
+
+def unusable(value: Any, labels: Optional[Tuple[str, ...]]) -> bool:
+    return value is None if labels is None else value not in labels
+
+
+def unusable_judgments(run_dir: str) -> Dict[str, Dict[str, int]]:
+    """Per user, the judgments evaluation.py cannot use: a call that kept failing, or a label
+    outside its list. It saves them with the user in tmp2 and never asks again."""
+    found = {}
+    folder = os.path.join(run_dir, "tmp2")
+    for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else []:
+        if not name.endswith(".json"):
+            continue
+        with open(os.path.join(folder, name), encoding="utf-8") as handle:
+            judged = json.load(handle)
+        counts = {kind: sum(unusable(record.get(field), labels)
+                            for record in judged.get(records, []))
+                  for kind, records, field, labels in JUDGMENTS}
+        if any(counts.values()):
+            found[name[:-len(".json")]] = counts
+    return found
+
+
+def unusable_text(found: Dict[str, Dict[str, int]]) -> str:
+    if not found:
+        return "Every judgment is usable."
+    lines = [f"{uuid}: " + ", ".join(f"{count} {kind}" for kind, count in counts.items() if count)
+             for uuid, counts in found.items()]
+    total = sum(sum(counts.values()) for counts in found.values())
+    lines.append(f"{total} judgments empty or invalid in {len(found)} users: the (all) scores "
+                 "and the F1 count them as wrong, the (valid) ones leave them out. To judge "
+                 "those users again, delete their tmp2/<uuid>.json and launch evaluate again: "
+                 "the others are skipped.")
+    return "\n".join(lines)
+
+
 def version_name(text: str) -> str:
     """A version is a folder name: nothing that could lead out of the results folder."""
     if not re.fullmatch(r"\w[\w.-]*", text):
@@ -481,6 +529,7 @@ def evaluate(arguments: argparse.Namespace) -> int:
 
     evaluation.main(FRAME, arguments.version, user_num=users,
                     max_workers=arguments.judge_workers)
+    print(unusable_text(unusable_judgments(run_dir)), flush=True)
     return 0
 
 

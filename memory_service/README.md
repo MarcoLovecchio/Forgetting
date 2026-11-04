@@ -239,6 +239,10 @@ from scratch, `clean --all` deletes it.
 
 `evaluate` runs the judge, read from `eval/.env` in the clone: `OPENAI_BASE_URL`,
 `OPENAI_API_KEY`, `OPENAI_MODEL`, `RETRY_TIMES`, `WAIT_TIME_LOWER`, `WAIT_TIME_UPPER`.
+A judge call that keeps failing, or answers with a label HaluMem does not know, stays
+empty in the user's cached result and is never asked again: the (all) scores and the F1
+count it as wrong. At the end `evaluate` prints these judgments user by user; deleting
+the user's `tmp2/<uuid>.json` and launching `evaluate` again judges that user again.
 
 ```bash
 # a pilot on one user

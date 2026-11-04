@@ -308,6 +308,34 @@ class RunTest(unittest.TestCase):
                          ", 1 of 75 new and updated facts without ratings (safety facts apart); "
                          "need 1: 7, 2: 55, 3: 12")
 
+    def test_the_judgments_the_evaluation_cannot_use_are_found_user_by_user(self):
+        os.makedirs(os.path.join(self.run_dir, "tmp2"))
+        judged = {
+            "a": {"memory_integrity_records": [{"memory_integrity_score": None},
+                                               {"memory_integrity_score": 0}],
+                  "memory_accuracy_records": [{"memory_accuracy_score": 2}],
+                  "memory_update_records": [{"memory_update_type": "correct"},
+                                            {"memory_update_type": "Other"}],
+                  "question_answering_records": [{"result_type": "Other"},
+                                                 {"result_type": None},
+                                                 {"result_type": "Omission"}]},
+            "b": {"memory_integrity_records": [{"memory_integrity_score": 2}],
+                  "question_answering_records": [{"result_type": "Correct"}]},
+        }
+        for uuid, records in judged.items():
+            with open(os.path.join(self.run_dir, "tmp2", f"{uuid}.json"), "w",
+                      encoding="utf-8") as handle:
+                json.dump(records, handle)
+
+        found = adapter.unusable_judgments(self.run_dir)
+
+        self.assertEqual(found, {"a": {"integrity": 1, "accuracy": 0, "update": 1, "question": 2}})
+        self.assertTrue(adapter.unusable_text(found).startswith(
+            "a: 1 integrity, 1 update, 2 question\n4 judgments empty or invalid in 1 users"))
+
+    def test_before_the_judge_there_is_nothing_to_report(self):
+        self.assertEqual(adapter.unusable_judgments(self.run_dir), {})
+
     def clean(self, *extra):
         os.makedirs(os.path.join(self.run_dir, "eval", "results"), exist_ok=True)
         run_dir = os.path.join(self.run_dir, "eval", "results", f"{adapter.FRAME}-v")

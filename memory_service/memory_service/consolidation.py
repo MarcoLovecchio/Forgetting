@@ -118,7 +118,9 @@ class MemoryOperation(BaseModel):
         "The fact itself, in English whatever language the user spoke. Write it about the "
         "user, in the third person, and call them \"the user\", never by name: the name is a "
         "fact of its own. Never write it as a copy of the sentence the user wrote. State "
-        "what is true now, not what changed."))
+        "what is true now, not what changed. For an update, write the whole memory again: "
+        "the text of the old memory with only what the user changed changed, and every "
+        "other part of it kept."))
     operation: MemoryOperationType
     target_item_id: Optional[str] = Field(
         default=None,
