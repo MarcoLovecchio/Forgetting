@@ -136,18 +136,21 @@ pytest memory_service/test/test_memory_llm.py -v -s
 ```
 
 `test/test_long_term_interaction.py` is instead the simulation of a **long
-session**: 244 user messages injected one at a time — 188 facts and 56
+session**: 264 user messages injected one at a time — 200 facts and 64
 questions — mixed as they would really happen. The first 34 are the
 presentation; from there on new facts, repetitions, refinements, contradictions,
 deletion requests and chatter alternate without blocks, respecting only
-causality (a fact is introduced before it is modified).
+causality (a fact is introduced before it is modified). The last 20 add events:
+things that happened once, with a detail a later question asks for (a concert, a
+repair, a loan, a dinner, a lottery win, an exhibition), so that a fact that
+happened once can also turn out useful.
 
 Every message goes through the real pipeline, whatever it says: a `get_memory`
 (the `retrieve` branch) and then an `update_memory` with the answer (the `insert`
 branch). The service has no notion of a question. **Questions** exist only in the
-evaluation: they are the 56 messages listed in `test/fama.py` (`fama.QUESTIONS`),
-not the ones ending with `?` — the last one, the final summary, has no question
-mark. Many are placed right after an update, a contradiction or a deletion — "sai
+evaluation: they are the 64 messages listed in `test/fama.py` (`fama.QUESTIONS`),
+not the ones ending with `?` — message 244, the summary, has no question mark.
+Many are placed right after an update, a contradiction or a deletion — "sai
 dirmi dove abito?" comes after "dimentica il mio indirizzo" —, others recall facts
 written much earlier, and ten are assistant tasks that use the facts without
 naming them ("mi consigli cosa cucinare per cena?"). The ones about facts that

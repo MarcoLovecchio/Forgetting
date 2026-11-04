@@ -55,9 +55,9 @@ data.
 
 Limits
 ------
-- The FAMA questions are 56, among recalls, tasks, updates and deletes: many
-  pairs, few served. More runs are needed, and the report says how many pairs
-  each level rests on.
+- The FAMA questions are 64, among recalls, tasks, updates, deletes and
+  events: many pairs, few served. More runs are needed, and the report says
+  how many pairs each level rests on.
 - Removing a memory measures a marginal value: if two memories say the same
   thing, neither of them turns out served.
 - The calibration holds for the long test's conversation and its questions.

@@ -56,6 +56,13 @@ cucinare per cena?" wants fish and no peanuts, "come mi conviene andare al
 lago?" wants the missing driving licence. This way the task decides which
 memories are needed, not whoever wrote the question.
 
+The conversation ends with a block of events: things that happened once, with a
+detail that a later question asks for - a concert, a repair, a loan, a dinner, a
+lottery win, an exhibition - and two topical facts with an exact value, a
+favourite film and a shoe size. Everywhere else a fact that happened once is
+trivial and no question asks about it: without the block, such a fact would
+never serve a question, and the calibration would learn that it never can.
+
 The report shows, for each question, what the assistant answered and whether
 the archive was consulted on that round. The answer is the service's one,
 composed by generate_answer on the core memory plus the possible retrieval: the
@@ -70,7 +77,7 @@ During the run the agent's output is suppressed: only one progress line every
 log, core memory, archive, questions with their answers, the FAMA table, the
 confusion matrix and the cost per node.
 
-The 56 questions are also the evaluation points of **FAMA** (Memora,
+The 64 questions are also the evaluation points of **FAMA** (Memora,
 arXiv:2604.20006): each one carries binary criteria in fama.py - what the
 answer must contain, what it must no longer contain - and the report derives a
 score from them. It computes it twice, with the same criteria: once on the
@@ -87,7 +94,7 @@ operation_matrix.py can sum with the others of the same commit.
 The asserts are structural (invariants that must hold whatever the model
 decides), not on the content: with a real LLM demanding an exact classification
 would make the test unusable. **FAMA too is measured and printed, never
-asserted**: with 56 questions and a sampling far from greedy a threshold would
+asserted**: with 64 questions and a sampling far from greedy a threshold would
 turn the sampling variance into a test that fails at random.
 
 Requirements: LLM_CONFIG and EMBEDDING_CONFIG in .config, and the two models
@@ -97,7 +104,7 @@ skipped explaining what.
 
 Warning: each message costs 3-4 real calls to the model (the retrieval
 decision, the answer, consolidation, and the core split when the core memory
-overflows). Over 244 messages that is several hundred calls: better to start
+overflows). Over 264 messages that is several hundred calls: better to start
 with a low MEMORY_LONGRUN_MESSAGES. With the models on the cluster the
 limit is not the quota but the latency, so the time depends on the load of the
 GPUs they run on.
@@ -106,7 +113,7 @@ Run:
     pytest memory_service/test/test_long_term_interaction.py -v -s
 
 Useful variables:
-    MEMORY_LONGRUN_MESSAGES      how many messages to inject, out of 244
+    MEMORY_LONGRUN_MESSAGES      how many messages to inject, out of 264
     MEMORY_LONGRUN_DELAY         seconds of pause between one message and the
                                  next. On the cluster there are no rate limits
                                  to respect, but it is needed if the endpoint is
@@ -169,10 +176,10 @@ PROGRESS_EVERY = 10
 ID_WIDTH = 8
 
 # --------------------------------------------------------------------------- #
-# The conversation: 244 user messages (188 facts and 56 questions)
+# The conversation: 264 user messages (200 facts and 64 questions)
 #
-# Which ones are the 56 is said by fama.QUESTIONS, not by the punctuation:
-# the last message asks for a summary without a question mark, and it is a
+# Which ones are the 64 is said by fama.QUESTIONS, not by the punctuation:
+# message 244 asks for a summary without a question mark, and it is a
 # question like the others.
 # --------------------------------------------------------------------------- #
 
@@ -422,7 +429,28 @@ CONVERSATION = [
     "Niente sci a Natale, quest'anno resto a casa.",  # contradict: Christmas
     "Cosa faccio a Natale?",  # QUESTION: stays at home
     "Chi e' il mio scrittore preferito?",  # QUESTION: Camilleri
-    "Riassumi tutto quello che sai di me.",  # QUESTION (final): overall picture
+    "Riassumi tutto quello che sai di me.",  # QUESTION: overall picture
+    # --- events: happened once, with a detail a later question asks for ---- #
+    "Sabato sono stata al concerto di Carmen Consoli al Teatro Massimo.",  # new: one-off
+    "Stamattina ho fatto colazione al bar sotto casa.",  # new: one-off
+    "Il tecnico della lavatrice mi ha chiesto 120 euro per la riparazione.",  # new: one-off
+    "Il mio film preferito e' Nuovo Cinema Paradiso.",  # new
+    "Ho prestato cinquanta euro a Elena, una compagna del corso di fotografia.",  # new: one-off
+    "Di chi era il concerto a cui sono andata sabato?",  # QUESTION: Carmen Consoli, an event
+    "Ieri sera ho cenato con Giulia in una pizzeria a Sferracavallo.",  # new: one-off
+    "Porto il 38 di scarpe.",  # new
+    "Ti ricordo che Argo e' un golden retriever.",  # redundant: Argo
+    "Ho vinto 200 euro alla lotteria della parrocchia.",  # new: one-off
+    "Quanto ho speso per riparare la lavatrice?",  # QUESTION: 120 euro, an event
+    "Domenica ho visitato la mostra su Caravaggio a Palazzo Abatellis.",  # new: one-off
+    "Stasera ho sfogliato un vecchio album di fotografie.",  # new: one-off
+    "A chi ho prestato dei soldi?",  # QUESTION: Elena, an event
+    "Qual e' il mio film preferito?",  # QUESTION: Nuovo Cinema Paradiso
+    "Oggi ho fatto una lunga passeggiata con Argo.",  # new: one-off
+    "Dove ho cenato con Giulia l'altra sera?",  # QUESTION: Sferracavallo, an event
+    "Quanto ho vinto alla lotteria?",  # QUESTION: 200 euro, an event
+    "Che numero di scarpe porto?",  # QUESTION: 38
+    "Che mostra ho visitato domenica?",  # QUESTION: Caravaggio, an event
 ]
 
 
@@ -484,7 +512,7 @@ def _is_question(index: int) -> bool:
     It does NOT decide the branch of the graph. Every message, question or not,
     goes through retrieve and then insert, as in the real pipeline: it is just
     that the answers to the questions are the only interesting ones to read
-    among 244.
+    among 264.
 
     The criteria table decides it, not the question mark. It used to be the
     other way round, and message 244 - "Riassumi tutto quello che sai di me." -

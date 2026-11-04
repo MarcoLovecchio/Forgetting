@@ -48,7 +48,7 @@ class ExpectedTableTest(unittest.TestCase):
 
     def test_the_table_agrees_with_the_comments_of_the_conversation(self):
         tags = conversation_tags()
-        self.assertEqual(len(tags), 244)
+        self.assertEqual(len(tags), 264)
         for index, tag in enumerate(tags, 1):
             self.assertEqual(om.expected(index)[0], _TAG_TO_CLASS[tag],
                              "msg %d (%s)" % (index, tag or "presentation"))

@@ -2,7 +2,7 @@
 
 For each message of the long test's conversation: the operation it should
 trigger, from the comment next to it in CONVERSATION, against the one
-consolidation really made. FAMA looks at the state of the memory on 56
+consolidation really made. FAMA looks at the state of the memory on 64
 questions; this one looks at every single decision.
 
 The unit is the message, not the operation. A message that produces two `new`
@@ -55,12 +55,13 @@ _EXPECTED = {
                123, 124, 132, 134, 140, 142, 146, 150, 155, 156, 159, 162, 166, 168, 170,
                172, 175, 180, 186, 187, 191, 193, 196, 204, 210, 216, 217, 228, 241),
     "redundant": (37, 41, 46, 54, 65, 80, 84, 92, 104, 161, 184, 185, 200, 202, 219, 221,
-                  223, 226, 237, 238),
+                  223, 226, 237, 238, 253),
     "delete": (66, 87, 111, 129, 147, 169, 178, 195, 197, 198, 206, 208, 213, 224, 234, 236),
     "none": (35, 36, 39, 40, 42, 47, 51, 60, 61, 62, 67, 70, 74, 76, 83, 85, 88, 95, 97, 103,
              107, 112, 113, 115, 118, 121, 125, 126, 131, 133, 135, 139, 141, 145, 148, 157,
              160, 163, 165, 167, 177, 179, 181, 182, 188, 190, 192, 194, 199, 201, 203, 205,
-             209, 211, 212, 214, 218, 220, 222, 225, 229, 231, 242, 243, 244),
+             209, 211, 212, 214, 218, 220, 222, 225, 229, 231, 242, 243, 244, 250, 255,
+             258, 259, 261, 262, 263, 264),
 }
 _PRIMARY = {index: label for label, indices in _EXPECTED.items() for index in indices}
 

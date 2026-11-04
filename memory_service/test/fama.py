@@ -112,7 +112,7 @@ Three things do not match, and they are all declared:
 
 2. **MPA on an empty set.** Their code sets it to 0, and since there lam is 1
    those questions are worth 0 whatever happens. In their dataset the branch
-   never runs; here it would run nine times out of 56, capping the total below
+   never runs; here it would run nine times out of 64, capping the total below
    84 points regardless. It is 1 by vacuity, as the paper's prose says.
    The computation is in `score`, and so is the reason.
 
@@ -123,7 +123,7 @@ Three things do not match, and they are all declared:
    must contain. The number stays a single one.
 
 So the number is computed as in the paper, but **it is not comparable with its
-tables**: different data, one person instead of ten, 56 questions instead of a
+tables**: different data, one person instead of ten, 64 questions instead of a
 hundred and fifty, and another judge. It is a number to compare this
 architecture with itself from one run to the next.
 """
@@ -465,7 +465,7 @@ def score(question: EvaluationQuestion, text: str) -> Score:
     # happens. In their dataset it never happens - the questions are lists
     # ("quali task restano?") and something always remains - so it is a
     # defensive branch that never runs. Here instead it happens nine times out
-    # of 56: after a deletion there is no valid value to remember, and "non lo
+    # of 64: after a deletion there is no valid value to remember, and "non lo
     # so" is the right answer. With MPA at 0 those nine questions could never be
     # right and the total would be capped below 84 points, whatever the
     # architecture does.
@@ -563,7 +563,7 @@ def memory_snapshot_turn(question: int, maximum_historical_messages: int) -> int
 
 
 # --------------------------------------------------------------------------- #
-# The 56 questions
+# The 64 questions
 # --------------------------------------------------------------------------- #
 
 STAYS_HOME = ("rest*a casa", "riman*a casa", "rimarr*a casa", "stay*home")
@@ -1042,6 +1042,63 @@ QUESTIONS: Dict[int, EvaluationQuestion] = {
             forgets("job", "fisioterapist*", "physiotherap*",
                     "physical therap*", "clinic*"),
             forgets("address", "mondello", "palermo"),
+        ),
+    ),
+
+    250: EvaluationQuestion(
+        250, "msg 245: an event, the concert of Carmen Consoli",
+        (
+            recalls("Carmen Consoli", "consoli"),
+        ),
+    ),
+
+    255: EvaluationQuestion(
+        255, "msg 247: an event, the repair of the washing machine for 120 euro",
+        (
+            recalls("120 euro", "120", "centoventi", "one hundred twenty",
+                    "one hundred and twenty"),
+        ),
+    ),
+
+    258: EvaluationQuestion(
+        258, "msg 249: an event, fifty euro lent to Elena",
+        (
+            recalls("Elena", "elena"),
+        ),
+    ),
+
+    259: EvaluationQuestion(
+        259, "msg 248: the favourite film is Nuovo Cinema Paradiso",
+        (
+            recalls("Nuovo Cinema Paradiso", "cinema paradiso"),
+        ),
+    ),
+
+    261: EvaluationQuestion(
+        261, "msg 251: an event, the dinner with Giulia in Sferracavallo",
+        (
+            recalls("Sferracavallo", "sferracavallo"),
+        ),
+    ),
+
+    262: EvaluationQuestion(
+        262, "msg 254: an event, 200 euro won at the lottery",
+        (
+            recalls("200 euro", "200", "duecento", "two hundred"),
+        ),
+    ),
+
+    263: EvaluationQuestion(
+        263, "msg 252: the shoe size is 38",
+        (
+            recalls("size 38", "38", "trentotto", "thirty eight"),
+        ),
+    ),
+
+    264: EvaluationQuestion(
+        264, "msg 256: an event, the Caravaggio exhibition",
+        (
+            recalls("Caravaggio", "caravaggio"),
         ),
     ),
 }

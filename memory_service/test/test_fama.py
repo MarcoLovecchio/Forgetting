@@ -369,7 +369,7 @@ class VerdictTest(unittest.TestCase):
 
 
 class CriteriaTableTest(unittest.TestCase):
-    """The table of the 56 questions, against the real conversation."""
+    """The table of the 64 questions, against the real conversation."""
 
     def test_every_question_in_the_conversation_has_criteria(self):
         """A question without criteria would vanish from the count without saying so.
@@ -487,6 +487,14 @@ class CriteriaTableTest(unittest.TestCase):
             242: "Quest'anno a Natale resti a casa.",
             243: "Il tuo scrittore preferito è Andrea Camilleri.",
             244: "Ti chiami Bianca, sei allergica alle arachidi e vivi con Argo e Milo.",
+            250: "Era il concerto di Carmen Consoli, al Teatro Massimo.",
+            255: "Hai speso 120 euro per la riparazione.",
+            258: "Li hai prestati a Elena, del corso di fotografia.",
+            259: "Il tuo film preferito è Nuovo Cinema Paradiso.",
+            261: "In una pizzeria a Sferracavallo.",
+            262: "Hai vinto 200 euro.",
+            263: "Porti il 38.",
+            264: "La mostra su Caravaggio a Palazzo Abatellis.",
         }
         self.assertEqual(set(right), set(fama.QUESTIONS))
 
@@ -600,6 +608,14 @@ class CriteriaTableTest(unittest.TestCase):
                  "The user is allergic to peanuts\n"
                  "The user has a dog named Argo\n"
                  "The user has a cat named Milo",
+            250: "The user went to a Carmen Consoli concert at the Teatro Massimo",
+            255: "The washing machine repair cost the user 120 euros",
+            258: "The user lent fifty euros to Elena, a classmate from the photography course",
+            259: "The user's favourite film is Nuovo Cinema Paradiso",
+            261: "The user had dinner with Giulia at a pizzeria in Sferracavallo",
+            262: "The user won 200 euros in the parish lottery",
+            263: "The user's shoe size is 38",
+            264: "The user visited the Caravaggio exhibition at Palazzo Abatellis",
         }
         self.assertEqual(set(stores), set(fama.QUESTIONS))
 
