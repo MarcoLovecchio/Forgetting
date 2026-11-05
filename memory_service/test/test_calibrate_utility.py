@@ -9,9 +9,7 @@ import json
 import os
 import sys
 import tempfile
-import threading
 import unittest
-from unittest import mock
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
@@ -19,51 +17,39 @@ for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
         sys.path.insert(0, path)
 
 import calibrate_utility as cu  # noqa: E402
-import calibration_runs  # noqa: E402
-import fama  # noqa: E402
+import calibration_ratings as cr  # noqa: E402
+import halumem_adapter as adapter  # noqa: E402
 from calibrate_utility import Pair  # noqa: E402
 
-
-GOAL = "The user's daily calorie goal is 2200."
-DOG = "The user has a dog named Argo."
-HOME = "The user lives in Mondello."
-NUTS = "The user is allergic to peanuts."
+from fakes import ScriptedChatModel  # noqa: E402
 
 
-# Two stand-in questions, detached from the long test's conversation: GOAL_QUESTION
-# wants the 2200, HOME_QUESTION does not want the deleted address.
-GOAL_QUESTION, HOME_QUESTION = 1001, 1002
-QUESTIONS = {
-    GOAL_QUESTION: fama.EvaluationQuestion(GOAL_QUESTION, "prova", (
-        fama.recalls("2200", "2200"),
-        fama.supersedes("2000", "2000", replaced_by=("2200",)))),
-    HOME_QUESTION: fama.EvaluationQuestion(HOME_QUESTION, "prova", (
-        fama.forgets("indirizzo", "mondello", "palermo"),)),
-}
+DOG = "Rossi Mario ha un cane di nome Argo."
+JAZZ = "A Rossi Mario piace il jazz."
+CAT = "Rossi Mario ha un gatto."
 
 
-def setUpModule():
-    patcher = mock.patch.dict(fama.QUESTIONS, QUESTIONS)
-    patcher.start()
-    unittest.addModuleCleanup(patcher.stop)
+def point(content, source="secondary"):
+    return {"memory_content": content, "memory_source": source, "is_update": "False",
+            "original_memories": []}
 
 
-def trace(mode, ratings):
-    """A run with the two stand-in questions."""
-    def memory(name, content):
-        return {"id": name, "content": content, **ratings.get(name, {})}
-
-    return {"commit": "abc", "consolidation_utility": mode, "questions": [
-        {"index": GOAL_QUESTION, "fama": 1.0, "memories": [
-            memory("goal", GOAL), memory("dog", DOG),
-            {"id": "nuts", "content": NUTS, "safety": True}]},
-        {"index": HOME_QUESTION, "fama": 0.0,
-         "memories": [memory("goal", GOAL), memory("home", HOME)]},
-    ]}
+def question(*evidence):
+    return {"question": "?", "answer": "-", "question_type": "Basic Fact Recall",
+            "evidence": [{"memory_content": text} for text in evidence]}
 
 
-def pair(value, run=0, **ratings):
-    return Pair(run, GOAL_QUESTION, ratings, value)
+def session(points=(), questions=()):
+    return {"memory_points": list(points), "questions": list(questions)}
+
+
+def user(uuid, *sessions):
+    return {"uuid": uuid, "persona_info": "Name: Rossi Mario; Gender: Male; Age: 30",
+            "sessions": list(sessions)}
+
+
+def pair(served, user=0, **ratings):
+    return Pair(user, {"safety": False, **ratings}, served)
 
 
 def is_valid_utility(line):
@@ -71,25 +57,31 @@ def is_valid_utility(line):
 
 
 class PairsTest(unittest.TestCase):
-    """Each pair is worth FAMA-memory with the memory minus FAMA-memory without."""
+    """A rated point and a question of a later session: served if the question cites it."""
 
-    RUN = trace("single", {"goal": {"utility": 4}, "dog": {"utility": 3},
-                           "home": {"utility": 2}})
+    USER = user("u", session([point(DOG), point(JAZZ), point(CAT, "interference")],
+                             [question(DOG)]),
+                session([], [question(DOG)]))
 
-    def test_a_memory_is_worth_what_its_absence_costs_and_safety_stays_out(self):
-        values = {(item.question, item.memory["id"]): item.value
-                  for item in cu.pairs_of(self.RUN, 0)}
+    def test_only_the_questions_of_later_sessions_count(self):
+        pairs = cu.pairs_of(self.USER, 0, {(0, 0): {"need": 3}, (0, 1): {"need": 2}})
 
-        self.assertEqual(values, {(GOAL_QUESTION, "goal"): 1.0, (GOAL_QUESTION, "dog"): 0.0,
-                                  (HOME_QUESTION, "goal"): 0.0,
-                                  (HOME_QUESTION, "home"): -1.0})
+        self.assertEqual(sorted((item.ratings["need"], item.served) for item in pairs),
+                         [(2, False), (3, True)])
 
-    def test_a_snapshot_scored_with_other_criteria_is_reported(self):
-        run = json.loads(json.dumps(self.RUN))
-        run["questions"][1]["fama"] = 1.0
+    def test_safety_and_points_never_judged_stay_out(self):
+        self.assertEqual(cu.pairs_of(self.USER, 0, {(0, 0): {"safety": True}, (0, 1): None}),
+                         [])
 
-        self.assertEqual(cu.changed_snapshots(self.RUN), 0)
-        self.assertEqual(cu.changed_snapshots(run), 1)
+    def test_the_old_point_still_serves_after_an_update(self):
+        updated = {**point("Rossi Mario ha due cani."), "is_update": "True",
+                   "original_memories": [DOG]}
+        history = user("u", session([point(DOG)]), session([updated]),
+                       session([], [question(DOG)]))
+
+        pairs = cu.pairs_of(history, 0, {(0, 0): {"need": 3}, (1, 0): {"need": 3}})
+
+        self.assertEqual(sorted(item.served for item in pairs), [False, True])
 
 
 class IsotonicTest(unittest.TestCase):
@@ -102,219 +94,235 @@ class IsotonicTest(unittest.TestCase):
 
 
 class ByLevelTest(unittest.TestCase):
-    """need and gain per level, pulled toward all the levels together and then monotone."""
+    """The fraction served per level, pulled toward all the levels together, then monotone."""
 
-    PAIRS = [pair(1.0, utility=5), pair(0.5, utility=5), pair(0.0, utility=5),
-             pair(0.0, utility=1), pair(0.0, utility=1), pair(1.0)]
+    def test_the_fraction_is_shrunk_toward_all_levels(self):
+        # All levels: 1 of 4 served. The pair without the rating does not count.
+        pairs = [pair(True, utility=5), pair(False, utility=5), pair(False, utility=1),
+                 pair(False, utility=1), pair(True)]
 
-    def test_need_and_gain_are_shrunk_toward_all_levels(self):
-        # All levels: 2 of 5 served, mean gain 0.75. The pair without a rating does not count.
-        levels = cu.by_level(self.PAIRS, "utility")
+        levels = cu.by_level(pairs, "utility")
 
-        self.assertEqual((levels.pairs, levels.served), ((2, 0, 0, 0, 3), (0, 0, 0, 0, 2)))
-        expected_need = ((0 + 2 * 0.4) / 4, 0.4, 0.4, 0.4, (2 + 2 * 0.4) / 5)
-        for got, want in zip(levels.need, expected_need):
+        self.assertEqual((levels.pairs, levels.served), ((2, 0, 0, 0, 2), (0, 0, 0, 0, 1)))
+        for got, want in zip(levels.rate, (0.5 / 4, 0.25, 0.25, 0.25, 1.5 / 4)):
             self.assertAlmostEqual(got, want)
-        for got in levels.gain:
-            self.assertAlmostEqual(got, 0.75)
 
     def test_a_level_against_the_order_is_pooled(self):
-        # Level 1 always serves, level 3 almost never: the estimate cannot go down going up.
-        pairs = [pair(1.0, need=1), pair(1.0, need=1)] + [pair(0.0, need=3)] * 3 + [
-            pair(1.0, need=3)]
+        # Level 1 always serves, level 3 rarely: the estimate cannot go down going up.
+        pairs = [pair(True, need=1)] * 2 + [pair(False, need=3)] * 3 + [pair(True, need=3)]
 
-        need = cu.by_level(pairs, "need").need
+        rate = cu.by_level(pairs, "need").rate
 
-        self.assertEqual(list(need), sorted(need))
-        for got in need:
+        for got in rate:
             self.assertAlmostEqual(got, 0.5)
 
-    def test_a_gain_against_the_order_is_pooled_too(self):
-        pairs = [pair(1.0, gain=1)] * 3 + [pair(0.2, gain=3)] * 3
-
-        gain = cu.by_level(pairs, "gain").gain
-
-        self.assertEqual(list(gain), sorted(gain))
-        self.assertAlmostEqual(gain[0], gain[2])
+    def test_without_a_served_pair_there_is_no_estimate(self):
+        with self.assertRaises(ValueError):
+            cu.by_level([pair(False, need=2)] * 3, "need")
 
 
 class TablesTest(unittest.TestCase):
-    PAIRS = ([pair(1.0, need=3, gain=3)] * 4 + [pair(0.5, need=3, gain=1)] * 2
-             + [pair(0.0, need=1, gain=3)] * 6 + [pair(0.25, need=2, gain=2)] * 2
-             + [pair(0.0, need=2, gain=1)] * 4)
+    PAIRS = ([pair(True, need=3, gain=3)] * 4 + [pair(False, need=3, gain=3)] * 4
+             + [pair(True, need=3, gain=1)] + [pair(False, need=3, gain=1)] * 5
+             + [pair(False, need=1, gain=3)] * 6
+             + [pair(True, need=2, gain=2)] + [pair(False, need=2, gain=2)] * 3
+             + [pair(False, need=2, gain=1)] * 4)
 
-    def test_the_utility_table_is_need_times_gain_over_the_highest(self):
-        pairs = [pair(1.0, utility=5)] * 2 + [pair(0.2, utility=3), pair(0.0, utility=3),
-                                              pair(0.0, utility=1), pair(0.0, utility=1)]
-        levels = cu.by_level(pairs, "utility")
-        values = [n * g for n, g in zip(levels.need, levels.gain)]
+    def test_the_utility_table_is_the_fraction_over_the_highest(self):
+        pairs = ([pair(True, utility=5)] * 2 + [pair(False, utility=5)]
+                 + [pair(True, utility=3)] + [pair(False, utility=3)] * 3
+                 + [pair(False, utility=1)] * 2)
+        rate = cu.by_level(pairs, "utility").rate
 
         table = cu.utility_table(pairs)
 
-        for got, want in zip(table, values):
-            self.assertAlmostEqual(got, want / max(values))
+        for got, want in zip(table, rate):
+            self.assertAlmostEqual(got, want / max(rate))
         self.assertTrue(is_valid_utility(table))
 
-    def test_the_product_table_is_need_of_the_row_times_gain_of_the_column(self):
-        need = cu.by_level(self.PAIRS, "need").need
-        gain = cu.by_level(self.PAIRS, "gain").gain
+    def test_the_product_is_the_row_times_the_column_over_all_the_pairs(self):
+        need = cu.by_level(self.PAIRS, "need").rate
+        gain = cu.by_level(self.PAIRS, "gain").rate
+        overall = sum(item.served for item in self.PAIRS) / len(self.PAIRS)
 
         table = cu.product_table(self.PAIRS)
 
         for i in range(3):
             for j in range(3):
-                self.assertAlmostEqual(table[i][j], need[i] * gain[j])
+                self.assertAlmostEqual(table[i][j], need[i] * gain[j] / overall)
 
     def test_the_free_table_is_monotone_even_when_the_data_are_not(self):
-        # need 1 and gain 1 is worth more than all the other cells.
-        pairs = self.PAIRS + [pair(1.0, need=1, gain=1)] * 20
+        # need 1 and gain 1 serves more than every other cell.
+        pairs = self.PAIRS + [pair(True, need=1, gain=1)] * 20
 
         table = cu.normalized(cu.free_table(pairs))
 
         for line in (*table, *zip(*table)):
             self.assertTrue(is_valid_utility(line), table)
 
-    def test_a_harmful_pair_counts_as_zero_in_the_free_table(self):
-        self.assertEqual(cu.free_table(self.PAIRS + [pair(-1.0, need=2, gain=2)] * 5),
-                         cu.free_table(self.PAIRS + [pair(0.0, need=2, gain=2)] * 5))
-
     def test_an_empty_cell_takes_the_value_of_the_product(self):
-        # No pair with need 2 and gain 3.
-        self.assertAlmostEqual(cu.free_table(self.PAIRS)[1][2],
-                               cu.product_table(self.PAIRS)[1][2])
+        # No pair with need 3 and gain 2, and its neighbours do not force the order on it.
+        self.assertAlmostEqual(cu.free_table(self.PAIRS)[2][1],
+                               cu.product_table(self.PAIRS)[2][1])
 
-    def test_a_cell_with_many_pairs_follows_its_own_mean(self):
-        # In the gain 3 column the pairs with need 1 are worth little: the product puts
-        # cell (3, 3) at half, its own data say 1.
-        pairs = (self.PAIRS + [pair(1.0, need=3, gain=3)] * 200
-                 + [pair(0.1, need=1, gain=3)] * 200)
+    def test_a_cell_with_many_pairs_follows_its_own_fraction(self):
+        # One high rating is enough to serve half the time, two add nothing: need and gain
+        # are not independent, and the product puts cell (3, 3) at two thirds.
+        half = [True] * 100 + [False] * 100
+        pairs = ([pair(False, need=1, gain=1)] * 200
+                 + [pair(served, need=need, gain=gain) for need, gain in ((1, 3), (3, 1), (3, 3))
+                    for served in half])
 
-        self.assertLess(cu.product_table(pairs)[2][2], 0.7)
-        self.assertAlmostEqual(cu.free_table(pairs)[2][2], 1.0, delta=0.02)
+        self.assertGreater(cu.product_table(pairs)[2][2], 0.6)
+        self.assertAlmostEqual(cu.free_table(pairs)[2][2], 0.5, delta=0.02)
 
-    def test_the_run_left_out_is_predicted_only_from_the_others(self):
-        # A model that predicts the mean of the pairs it is estimated on.
-        def mean_model(train):
-            mean = sum(item.realized for item in train) / len(train)
-            return ((mean,) * 3,) * 3
 
-        runs = ([pair(1.0, run=0, need=1, gain=1)] * 3
-                + [pair(0.0, run=1, need=1, gain=1)] * 3)
+class AucTest(unittest.TestCase):
+    def test_a_served_pair_above_one_not_served_counts_one_and_a_tie_a_half(self):
+        self.assertEqual(cu.auc([(0.9, True), (0.1, False)]), 1.0)
+        self.assertEqual(cu.auc([(0.1, True), (0.9, False)]), 0.0)
+        self.assertEqual(cu.auc([(0.5, True), (0.5, False), (0.5, False)]), 0.5)
 
-        self.assertEqual(cu.held_out_error(runs, mean_model), 1.0)
+    def test_without_both_kinds_of_pair_there_is_no_auc(self):
+        self.assertIsNone(cu.auc([(0.5, True)]))
+        self.assertIsNone(cu.auc([]))
+
+    def test_the_user_left_out_is_scored_only_by_the_others(self):
+        # A model that gives 1 to the need levels that served in the pairs it is estimated on.
+        def model(train):
+            served = {item.ratings["need"] for item in train if item.served}
+            return lambda item: float(item.ratings["need"] in served)
+
+        pairs = [pair(True, user=0, need=1), pair(False, user=0, need=2),
+                 pair(True, user=1, need=2), pair(False, user=1, need=1)]
+
+        self.assertEqual(cu.held_out_auc(pairs, model), (0.0, {0: 0.0, 1: 0.0}))
+
+    def test_with_a_single_user_nothing_is_predicted(self):
+        pairs = [pair(True, need=3, gain=3), pair(False, need=1, gain=1)]
+
+        self.assertEqual(cu.held_out_auc(pairs, cu.table_model(cu.product_table)), (None, {}))
 
 
 class MainTest(unittest.TestCase):
-    """From the traces to the tables to paste into eviction.py."""
-
-    def run_main(self, runs):
-        with tempfile.TemporaryDirectory() as folder:
-            path = os.path.join(folder, "trace.jsonl")
-            with open(path, "w", encoding="utf-8") as handle:
-                for run in runs:
-                    handle.write(json.dumps(run) + "\n")
-            output = io.StringIO()
-            with contextlib.redirect_stdout(output):
-                code = cu.main(["calibrate_utility.py", path])
-        return code, output.getvalue()
-
-    def test_only_the_runs_of_the_last_commit_count(self):
-        old = trace("single", {"goal": {"utility": 4}})
-        old["commit"] = "vecchio"
-
-        _, output = self.run_main([old, trace("need_gain", {"goal": {"need": 3, "gain": 3}})])
-
-        self.assertIn("single: no runs", output)
-
-
-class CalibrationRunsTest(unittest.TestCase):
-    """The series of long runs, with the two processes replaced."""
+    """From the ratings file to the tables to paste into eviction.py."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
-        self.work = os.path.join(folder.name, "work")
-        self.path = os.path.join(folder.name, "trace.jsonl")
-        self.results = os.path.join(folder.name, "operations.jsonl")
-        self.calls = []
-        self.lock = threading.Lock()
-        self.tracing = True
-        self.reset_code = 0
-        self.barrier = None
-        self.together = set()
+        self.root = folder.name
+        self.ratings = os.path.join(self.root, "ratings.jsonl")
+        os.makedirs(os.path.join(self.root, "data"))
+        with open(os.path.join(self.root, adapter.DATASET), "w", encoding="utf-8") as handle:
+            for uuid in ("u0", "u1"):
+                handle.write(json.dumps(user(uuid, session([point(DOG), point(JAZZ)]),
+                                             session([], [question(DOG)]))) + "\n")
 
-    def fake_run(self, command, env, **_):
-        script = "reset" if command[1] == calibration_runs.RESET_ARCHIVE else "test"
-        with self.lock:
-            self.calls.append((script, env["MEMORY_CHROMA_PATH"]))
-        if script == "reset":
-            return mock.Mock(returncode=self.reset_code)
-        if self.barrier:
-            self.together.add(env["MEMORY_LONGRUN_CHROMA_PATH"])
-            self.barrier.wait(timeout=5)
-        if self.tracing:
-            for variable in ("MEMORY_LONGRUN_CALIBRATION", "MEMORY_LONGRUN_RESULTS"):
-                with open(env[variable], "a", encoding="utf-8") as handle:
-                    handle.write("{}\n")
-        return mock.Mock(returncode=0)
+    def record(self, uuid, mode, commit="abc"):
+        judged = {"utility": (5, 1)} if mode == "single" else {"need": (3, 1), "gain": (3, 1)}
+        ratings = {str(index): {"safety": False, **{name: levels[index]
+                                                    for name, levels in judged.items()}}
+                   for index in (0, 1)}
+        return {"uuid": uuid, "session": 0, "mode": mode, "model": "qwen", "commit": commit,
+                "ratings": ratings}
 
-    def series(self, runs, workers=1, **environment):
-        environment = {"MEMORY_LONGRUN_CALIBRATION": self.path,
-                       "MEMORY_LONGRUN_RESULTS": self.results, **environment}
-        with mock.patch.object(calibration_runs.subprocess, "run", self.fake_run), \
-                contextlib.redirect_stdout(io.StringIO()):
-            return calibration_runs.run_series(runs, environment, workers, self.work)
+    def run_main(self, records):
+        with open(self.ratings, "w", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record) + "\n")
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = cu.main(["--halumem", self.root, "--ratings", self.ratings])
+        return code, output.getvalue()
 
-    def lines(self, path):
-        with open(path, encoding="utf-8") as handle:
-            return len(handle.readlines())
+    def test_only_the_ratings_of_the_last_commit_and_model_count(self):
+        old = self.record("u0", "single", commit="vecchio")
 
-    def test_every_run_starts_from_an_empty_archive(self):
-        saved = self.series(3)
+        code, output = self.run_main([old, self.record("u0", "need_gain"),
+                                      self.record("u1", "need_gain")])
 
-        self.assertEqual(saved, 3)
-        self.assertEqual([script for script, _ in self.calls], ["reset", "test"] * 3)
-        self.assertEqual((self.lines(self.path), self.lines(self.results)), (3, 3))
+        self.assertEqual(code, 0)
+        self.assertIn("single: no ratings", output)
+        self.assertIn("NEED_GAIN_TABLE = (", output)
 
-    def test_a_run_without_a_trace_does_not_stop_the_series(self):
-        self.tracing = False
+    def test_without_ratings_there_is_nothing_to_calibrate(self):
+        code, _ = self.run_main([])
 
-        saved = self.series(2)
+        self.assertEqual(code, 1)
 
-        self.assertEqual(saved, 0)
-        self.assertEqual([script for script, _ in self.calls], ["reset", "test"] * 2)
 
-    def test_a_failed_reset_stops_before_the_test(self):
-        self.reset_code = 1
+class RatingsTest(unittest.TestCase):
+    """The judgment of the calibration users' points, with the model replaced."""
 
-        self.assertIsNone(self.series(3))
-        self.assertEqual([script for script, _ in self.calls], ["reset"])
+    STAMP = {"mode": "need_gain", "model": "qwen", "commit": "abc"}
+    USER = user("u", session([point(DOG), point(CAT, "interference"), point(JAZZ)]))
 
-    def test_two_workers_run_at_the_same_time_on_two_archives(self):
-        self.barrier = threading.Barrier(2)
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = os.path.join(folder.name, "ratings.jsonl")
+        self.llm = ScriptedChatModel(tool_responses={})
+        self.llm.invocations = []
 
-        saved = self.series(2, workers=2)
+    def script(self, *facts):
+        self.llm.script({"JudgeFacts": {"facts": list(facts)}})
 
-        self.assertEqual(saved, 2)
-        self.assertEqual(len(self.together), 2)
-        self.assertEqual(self.lines(self.path), 2)
+    def rate(self, stamp=STAMP):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return cr.rate_users([self.USER], self.llm, stamp, self.path)
 
-    def test_the_production_archive_is_never_reset(self):
-        self.series(4, workers=2, MEMORY_CHROMA_PATH="servizio",
-                    MEMORY_LONGRUN_CHROMA_PATH="prove")
+    def ratings(self):
+        return [record["ratings"] for record in cu.load_ratings(self.path)]
 
-        archives = {archive for _, archive in self.calls}
-        self.assertEqual(archives, {os.path.join(self.work, "worker1"),
-                                    os.path.join(self.work, "worker2")})
+    def sent(self):
+        return " ".join(str(message.content) for invocation in self.llm.invocations
+                        for message in invocation["messages"])
 
-    def test_a_trace_left_by_a_stopped_series_is_not_merged(self):
-        os.makedirs(self.work)
-        with open(os.path.join(self.work, "run1.trace.jsonl"), "w", encoding="utf-8") as handle:
-            handle.write("{}\n")
+    def test_the_interference_points_are_left_out_and_the_person_is_the_user(self):
+        self.script({"number": 1, "safety": False, "need": 3, "gain": 3},
+                    {"number": 2, "safety": False, "need": 1, "gain": 2})
 
-        self.series(1)
+        self.rate()
 
-        self.assertEqual(self.lines(self.path), 1)
+        self.assertEqual(self.ratings(), [{"0": {"safety": False, "need": 3, "gain": 3},
+                                           "2": {"safety": False, "need": 1, "gain": 2}}])
+        self.assertNotIn("gatto", self.sent())
+        self.assertNotIn("Rossi", self.sent())
+
+    def test_a_fact_the_model_skipped_is_asked_again(self):
+        # Every time the model judges only the first fact it is given.
+        self.script({"number": 1, "safety": False, "need": 2, "gain": 2})
+
+        self.rate()
+
+        self.assertEqual(len(self.llm.invocations), 2)
+        self.assertEqual(self.ratings(), [{"0": {"safety": False, "need": 2, "gain": 2},
+                                           "2": {"safety": False, "need": 2, "gain": 2}}])
+
+    def test_a_fact_never_judged_is_kept_as_missing(self):
+        self.script()
+
+        self.rate()
+
+        self.assertEqual(len(self.llm.invocations), cr.ATTEMPTS)
+        self.assertEqual(self.ratings(), [{"0": None, "2": None}])
+
+    def test_a_safety_fact_keeps_no_rating_and_an_off_scale_one_is_not_given(self):
+        self.script({"number": 1, "safety": True, "need": 3, "gain": 3},
+                    {"number": 2, "safety": "false", "need": "2", "gain": 9})
+
+        self.rate()
+
+        self.assertEqual(self.ratings(), [{"0": {"safety": True, "need": None, "gain": None},
+                                           "2": {"safety": False, "need": 2, "gain": None}}])
+
+    def test_a_session_already_judged_with_the_same_stamp_is_skipped(self):
+        self.script({"number": 1, "safety": False, "need": 2, "gain": 2},
+                    {"number": 2, "safety": False, "need": 2, "gain": 2})
+
+        self.assertEqual((self.rate(), self.rate()), (1, 0))
+        self.assertEqual(self.rate({**self.STAMP, "mode": "single"}), 1)
+        self.assertEqual(len(self.ratings()), 2)
 
 
 if __name__ == "__main__":

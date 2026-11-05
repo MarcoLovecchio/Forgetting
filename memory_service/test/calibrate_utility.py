@@ -1,145 +1,144 @@
-"""Calibration of UTILITY_TABLE and NEED_GAIN_TABLE from the long test's traces.
+"""Calibration of UTILITY_TABLE and NEED_GAIN_TABLE on the calibration users of HaluMem.
 
-The two tables, in eviction.py, translate the classifier's ratings into the
-utility term of the score. Until they are calibrated they are rating / 5 and
-(need / 3) * (gain / 3): products of ordinal codes, with the ties that the
-literature on risk matrices objects to. This script derives them from what the
-memories really did.
+The two tables, in eviction.py, translate the classifier's ratings into the utility
+term of the score. Until they are calibrated they are rating / 5 and (need / 3) *
+(gain / 3): products of ordinal codes, with the ties that the literature on risk
+matrices objects to. This script derives them from what the memory points of the
+first CALIBRATION_USERS users of HaluMem-Medium did, as calibration_ratings.py had the
+model rate them. halumem_adapter.py never replays those users, so no user is both
+calibrated on and evaluated.
 
-The oracle: FAMA-memory without the memory
-------------------------------------------
-With MEMORY_LONGRUN_CALIBRATION the long test saves, for every FAMA question, the
-memories active at its snapshot, with the ratings. For every (memory, question)
-pair the script removes the memory and recomputes FAMA-memory:
-
-    value = FAMA with the memory - FAMA without
-
-A memory served the question if the value is positive, and the value is its
-gain. It is Mattar & Daw's need x gain measured after the fact: how likely it is
-to be needed, times how much it is worth when it is. No model call: FAMA-memory
-is deterministic.
-
-Every pair is an occasion to serve: a memory active at five questions counts
-five times, one written after the last question does not count. Memories with
-safety true stay out, as they do from eviction, and so do those without the
-rating to calibrate.
-
-A negative value means the memory does harm: usually a value that consolidation
-should have superseded or deleted. It is a classification error, not a measure
-of utility: it counts as not served, and the report says how many there are.
+The oracle: the evidence of the questions of later sessions
+-----------------------------------------------------------
+Every HaluMem question lists its evidence, the memory points an answer needs. A
+(point, question) pair is an occasion to serve: a point written in a session before
+the question's. The point served if it is among the evidence. A question of the same
+session is left out: it asks about what was just said, which recency keeps anyway,
+while eviction decides what is kept for long. An update does not end the point it
+updates: many HaluMem updates add to the old point or only rephrase it, and the
+questions keep citing it. Points with safety true stay out, as they do from eviction,
+and so do those without the rating to calibrate; the interference points are never
+rated, since a memory should never hold them.
 
 From the pairs to the tables
 ----------------------------
-For each level of a rating:
+A point either serves a question or it does not, so what it is worth when it serves
+is the same at every level: both ratings enter as how often the point served. For
+each level of a rating, the fraction of its pairs that served, pulled toward the
+fraction of all the levels together with the weight of PRIOR_WEIGHT pairs, so a level
+with little data invents nothing, and then made non-decreasing with the isotonic
+regression weighted on the pairs.
 
-    need   the fraction of served pairs
-    gain   the mean of the values of the served pairs
+    UTILITY_TABLE      the fraction of each utility level
+    NEED_GAIN_TABLE    fraction(need i) * fraction(gain j) / fraction(all): Mattar &
+                       Daw's product, with need and gain as two independent signs of
+                       serving, so each cell predicts the fraction of its own pairs
 
-both pulled toward the value of all the levels together with the weight of
-PRIOR_WEIGHT pairs, so a level with little data invents nothing, and then made
-non-decreasing with the isotonic regression weighted on the pairs.
+Both divided by the highest cell, so they lie in (0, 1] like the provisional ones and
+can be pasted into eviction.py as they are printed. Next to the product there is the
+free table: for each cell its own fraction, pulled toward the product's cell with the
+weight of PRIOR_WEIGHT pairs and made non-decreasing along rows and columns.
 
-    UTILITY_TABLE      need(u) * gain(u) for the five utility levels
-    NEED_GAIN_TABLE    need(i) * gain(j): Mattar & Daw's product, with need
-                       estimated on the need levels and gain on the gain ones
+Every table is then tried on each user left out, estimated on the others: the AUC is
+how often a pair that served scores higher than one that did not, ties counting a
+half, which is what eviction needs, since it removes the lowest scores. need alone
+and gain alone are tried too, to see what each rating adds.
 
-Both divided by the highest cell, so they lie in (0, 1] like the provisional
-ones and can be pasted into eviction.py as they are printed.
+    python memory_service/test/calibrate_utility.py --halumem PATH [--ratings FILE]
 
-Next to the product there is the free table: for each cell the mean of the
-values, with 0 for the pairs not served, pulled toward the product's cell with
-the weight of PRIOR_WEIGHT pairs and made non-decreasing along rows and columns.
-With at least two runs the report compares the two on each run left out: if the
-free one predicts better, the multiplicative hypothesis does not hold on our
-data.
-
-Limits
-------
-- The FAMA questions are 64, among recalls, tasks, updates, deletes and
-  events: many pairs, few served. More runs are needed, and the report says
-  how many pairs each level rests on.
-- Removing a memory measures a marginal value: if two memories say the same
-  thing, neither of them turns out served.
-- The calibration holds for the long test's conversation and its questions.
-
-    python memory_service/test/calibrate_utility.py [trace.jsonl]
-
-uses the runs of the last saved commit, like operation_matrix.py.
+uses the ratings of the last saved commit and model.
 """
 
+import argparse
+import json
 import os
 import sys
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-import fama
-from operation_matrix import load_runs
+import halumem_adapter as adapter
 
-DEFAULT_TRACES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "longrun_calibration.jsonl")
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_RATINGS = os.path.join(HERE, "calibration_work", "halumem_ratings.jsonl")
 
 LEVELS = {"utility": 5, "need": 3, "gain": 3}
+MODES = {"single": ("utility",), "need_gain": ("need", "gain")}
 PRIOR_WEIGHT = 2.0
+
+Point = Tuple[int, int]
 
 
 @dataclass(frozen=True)
 class Pair:
-    """A memory active at a question's snapshot, and how much it served it."""
+    """A point written before a question's session, and whether the question used it."""
 
-    run: int
-    question: int
-    memory: dict
-    value: float
-
-    @property
-    def served(self) -> bool:
-        """Removing it lowers FAMA-memory."""
-        return self.value > 0
-
-    @property
-    def realized(self) -> float:
-        """The value as the calibration counts it: 0 if it did not serve."""
-        return max(0.0, self.value)
+    user: int
+    ratings: Dict[str, Any]
+    served: bool
 
 
 @dataclass(frozen=True)
 class Levels:
-    """need and gain of each level of a rating, already monotone, and the pairs behind them."""
+    """The fraction served at each level of a rating, already monotone, and its pairs."""
 
     pairs: Tuple[int, ...]
     served: Tuple[int, ...]
-    need: Tuple[float, ...]
-    gain: Tuple[float, ...]
+    rate: Tuple[float, ...]
 
 
-def memory_text(memories: Sequence[dict]) -> str:
-    """The memories as FAMA-memory reads them in the long test: one per line."""
-    return "\n".join(memory["content"] for memory in memories)
+Scorer = Callable[[Pair], Optional[float]]
+Model = Callable[[Sequence[Pair]], Scorer]
 
 
-def pairs_of(run: dict, run_index: int) -> List[Pair]:
-    """The (memory, question) pairs of a run, removing one memory at a time."""
+def load_ratings(path: str) -> List[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def latest(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The sessions rated with the commit and the model of the last one saved."""
+    if not records:
+        return []
+    stamp = (records[-1].get("commit"), records[-1].get("model"))
+    return [record for record in records if (record.get("commit"), record.get("model")) == stamp]
+
+
+def rated_points(records: Sequence[Dict[str, Any]],
+                 mode: str) -> Dict[str, Dict[Point, Optional[Dict[str, Any]]]]:
+    """uuid -> (session, point) -> the judgment, None if never given, for `mode`."""
+    rated: Dict[str, Dict[Point, Optional[Dict[str, Any]]]] = {}
+    for record in records:
+        if record.get("mode") == mode:
+            points = rated.setdefault(record["uuid"], {})
+            for point, judgment in record["ratings"].items():
+                points[(record["session"], int(point))] = judgment
+    return rated
+
+
+def pairs_of(user: Dict[str, Any], index: int,
+             rated: Dict[Point, Optional[Dict[str, Any]]]) -> List[Pair]:
+    """The pairs of a user: each rated point with each question of a later session."""
+    where: Dict[str, List[Point]] = {}
+    for session_index, session in enumerate(user["sessions"]):
+        for point_index, point in enumerate(session["memory_points"]):
+            if point.get("memory_source") != "interference":
+                where.setdefault(point["memory_content"].strip(), []).append(
+                    (session_index, point_index))
+    usable = {point: judgment for point, judgment in rated.items()
+              if judgment is not None and not judgment.get("safety")}
+
     pairs = []
-    for snapshot in run["questions"]:
-        question = fama.QUESTIONS[snapshot["index"]]
-        memories = snapshot["memories"]
-        full = fama.score(question, memory_text(memories)).fama
-        for position, memory in enumerate(memories):
-            if memory.get("safety"):
-                continue
-            rest = memories[:position] + memories[position + 1:]
-            value = full - fama.score(question, memory_text(rest)).fama
-            pairs.append(Pair(run_index, snapshot["index"], memory, value))
+    for session_index, session in enumerate(user["sessions"]):
+        for question in session.get("questions", []):
+            cited = {point for evidence in question["evidence"]
+                     for point in where.get(evidence["memory_content"].strip(), [])}
+            pairs += [Pair(index, judgment, point in cited)
+                      for point, judgment in usable.items() if point[0] < session_index]
     return pairs
-
-
-def changed_snapshots(run: dict) -> int:
-    """The snapshots whose FAMA does not match: the criteria changed after the run."""
-    return sum(1 for snapshot in run["questions"]
-               if abs(fama.score(fama.QUESTIONS[snapshot["index"]],
-                                 memory_text(snapshot["memories"])).fama
-                      - snapshot["fama"]) > 1e-9)
 
 
 def isotonic(values: Sequence[float], weights: Sequence[float]) -> List[float]:
@@ -161,24 +160,20 @@ def shrunk(total: float, count: int, prior: float) -> float:
 
 
 def by_level(pairs: Sequence[Pair], rating: str) -> Levels:
-    """need and gain per level of `rating`, on the pairs that have that rating."""
-    rated = [pair for pair in pairs if pair.memory.get(rating) is not None]
-    gains = [pair.value for pair in rated if pair.served]
-    if not gains:
-        raise ValueError(f"no served pair with rating {rating}: more runs are needed")
-    need_prior, gain_prior = len(gains) / len(rated), sum(gains) / len(gains)
-
-    counts, served, need, gain = [], [], [], []
-    for level in range(1, LEVELS[rating] + 1):
-        here = [pair for pair in rated if pair.memory[rating] == level]
-        hits = [pair.value for pair in here if pair.served]
-        counts.append(len(here))
-        served.append(len(hits))
-        need.append(shrunk(len(hits), len(here), need_prior))
-        gain.append(shrunk(sum(hits), len(hits), gain_prior))
+    """The fraction served at each level of `rating`, on the pairs that have it."""
+    top = LEVELS[rating]
+    counts, served = [0] * top, [0] * top
+    for pair in pairs:
+        level = pair.ratings.get(rating)
+        if level is not None and 1 <= level <= top:
+            counts[level - 1] += 1
+            served[level - 1] += pair.served
+    if not sum(served):
+        raise ValueError(f"no served pair with rating {rating}: more users are needed")
+    prior = sum(served) / sum(counts)
+    rate = [shrunk(hit, count, prior) for hit, count in zip(served, counts)]
     return Levels(tuple(counts), tuple(served),
-                  tuple(isotonic(need, [count + PRIOR_WEIGHT for count in counts])),
-                  tuple(isotonic(gain, [hit + PRIOR_WEIGHT for hit in served])))
+                  tuple(isotonic(rate, [count + PRIOR_WEIGHT for count in counts])))
 
 
 def normalized(table):
@@ -191,19 +186,21 @@ def normalized(table):
 
 
 def utility_table(pairs: Sequence[Pair]) -> Tuple[float, ...]:
-    """UTILITY_TABLE: need * gain per utility level, normalized."""
-    levels = by_level(pairs, "utility")
-    return normalized(tuple(n * g for n, g in zip(levels.need, levels.gain)))
+    """UTILITY_TABLE: the fraction served per utility level, normalized."""
+    return normalized(by_level(pairs, "utility").rate)
 
 
 def product_table(pairs: Sequence[Pair]) -> Tuple[Tuple[float, ...], ...]:
-    """need(i) * gain(j), not normalized: it is also a prediction of the value."""
-    need, gain = by_level(pairs, "need").need, by_level(pairs, "gain").gain
-    return tuple(tuple(n * g for g in gain) for n in need)
+    """fraction(need i) * fraction(gain j) / fraction(all), the fraction each cell would
+    have if need and gain were independent signs of serving; not normalized."""
+    need, gain = by_level(pairs, "need").rate, by_level(pairs, "gain").rate
+    rated = [pair.served for pair in pairs if _cell(pair) is not None]
+    overall = sum(rated) / len(rated)
+    return tuple(tuple(n * g / overall for g in gain) for n in need)
 
 
 def _cell(pair: Pair) -> Optional[Tuple[int, int]]:
-    need, gain = pair.memory.get("need"), pair.memory.get("gain")
+    need, gain = pair.ratings.get("need"), pair.ratings.get("gain")
     return None if need is None or gain is None else (need - 1, gain - 1)
 
 
@@ -227,41 +224,80 @@ def monotone_table(table, weights, rounds: int = 1000):
 
 
 def free_table(pairs: Sequence[Pair]) -> Tuple[Tuple[float, ...], ...]:
-    """The mean of each cell, pulled toward the product and made monotone, not normalized."""
+    """The fraction of each cell, pulled toward the product and made monotone."""
     prior = product_table(pairs)
-    totals = [[0.0] * 3 for _ in range(3)]
+    served = [[0] * 3 for _ in range(3)]
     counts = [[0] * 3 for _ in range(3)]
     for pair in pairs:
         cell = _cell(pair)
         if cell is not None:
-            totals[cell[0]][cell[1]] += pair.realized
+            served[cell[0]][cell[1]] += pair.served
             counts[cell[0]][cell[1]] += 1
-    means = [[shrunk(totals[i][j], counts[i][j], prior[i][j]) for j in range(3)]
+    means = [[shrunk(served[i][j], counts[i][j], prior[i][j]) for j in range(3)]
              for i in range(3)]
     weights = [[counts[i][j] + PRIOR_WEIGHT for j in range(3)] for i in range(3)]
     return monotone_table(means, weights)
 
 
-def held_out_error(pairs: Sequence[Pair],
-                   model: Callable[[Sequence[Pair]], Tuple[Tuple[float, ...], ...]]
-                   ) -> Optional[float]:
-    """Mean squared error on the pairs of each run, with the table of the others.
+def level_model(rating: str) -> Model:
+    """A rating alone: the score of a pair is the fraction served at its level."""
+    def estimate(train: Sequence[Pair]) -> Scorer:
+        rate = by_level(train, rating).rate
+        return lambda pair: (None if pair.ratings.get(rating) is None
+                             else rate[pair.ratings[rating] - 1])
+    return estimate
 
-    None if no run left out can be predicted: with a single run the others are
-    not there, and the table is not estimated.
+
+def table_model(table: Callable[[Sequence[Pair]], Tuple[Tuple[float, ...], ...]]) -> Model:
+    """A need x gain table: the score of a pair is its cell."""
+    def estimate(train: Sequence[Pair]) -> Scorer:
+        values = table(train)
+
+        def score(pair: Pair) -> Optional[float]:
+            cell = _cell(pair)
+            return None if cell is None else values[cell[0]][cell[1]]
+        return score
+    return estimate
+
+
+MODELS: Dict[str, Tuple[Tuple[str, Model], ...]] = {
+    "single": (("utility", level_model("utility")),),
+    "need_gain": (("need", level_model("need")), ("gain", level_model("gain")),
+                  ("product", table_model(product_table)), ("free", table_model(free_table))),
+}
+
+
+def auc(scored: Sequence[Tuple[float, bool]]) -> Optional[float]:
+    """How often a served pair scores above one that did not serve, ties counting a half."""
+    positive = [score for score, served in scored if served]
+    negative = sorted(score for score, served in scored if not served)
+    if not positive or not negative:
+        return None
+    wins = 0.0
+    for score in positive:
+        below, up_to = bisect_left(negative, score), bisect_right(negative, score)
+        wins += below + 0.5 * (up_to - below)
+    return wins / (len(positive) * len(negative))
+
+
+def held_out_auc(pairs: Sequence[Pair],
+                 model: Model) -> Tuple[Optional[float], Dict[int, Optional[float]]]:
+    """The AUC on each user left out, scored by the table of the others, and on all of them.
+
+    Without a second user nothing can be predicted, and the AUC is None.
     """
-    runs = sorted({pair.run for pair in pairs})
-    errors = []
-    for run in runs:
+    pooled: List[Tuple[float, bool]] = []
+    by_user: Dict[int, Optional[float]] = {}
+    for user in sorted({pair.user for pair in pairs}):
         try:
-            table = model([pair for pair in pairs if pair.run != run])
+            score = model([pair for pair in pairs if pair.user != user])
         except ValueError:
             continue
-        for pair in pairs:
-            cell = _cell(pair)
-            if pair.run == run and cell is not None:
-                errors.append((table[cell[0]][cell[1]] - pair.realized) ** 2)
-    return sum(errors) / len(errors) if errors else None
+        scored = [(value, pair.served) for pair in pairs if pair.user == user
+                  for value in (score(pair),) if value is not None]
+        by_user[user] = auc(scored)
+        pooled += scored
+    return auc(pooled), by_user
 
 
 def literal(name: str, table) -> List[str]:
@@ -275,67 +311,89 @@ def literal(name: str, table) -> List[str]:
 
 
 def level_lines(levels: Levels, rating: str) -> List[str]:
-    """Pairs, served, need and gain per level."""
-    lines = [f"  {rating:<8}{'pairs':>8}{'served':>9}{'need':>8}{'gain':>8}"]
+    """Pairs, served, their fraction and the estimate per level."""
+    lines = [f"  {rating:<8}{'pairs':>9}{'served':>8}{'fraction':>10}{'estimate':>10}"]
     for level in range(LEVELS[rating]):
-        lines.append(f"  {level + 1:<8}{levels.pairs[level]:>8}{levels.served[level]:>9}"
-                     f"{levels.need[level]:>8.3f}{levels.gain[level]:>8.3f}")
+        count, hit = levels.pairs[level], levels.served[level]
+        fraction = f"{100 * hit / count:.3f}%" if count else "-"
+        lines.append(f"  {level + 1:<8}{count:>9}{hit:>8}{fraction:>10}"
+                     f"{100 * levels.rate[level]:>9.3f}%")
     return lines
 
 
-def report(mode: str, runs: Sequence[dict]) -> List[str]:
+def judged_line(rated: Dict[str, Dict[Point, Optional[Dict[str, Any]]]], mode: str) -> str:
+    """How many points were judged, about safety, without the mode's ratings, skipped."""
+    judgments = [judgment for points in rated.values() for judgment in points.values()]
+    skipped = sum(1 for judgment in judgments if judgment is None)
+    safety = sum(1 for judgment in judgments if judgment and judgment.get("safety"))
+    unrated = sum(1 for judgment in judgments if judgment and not judgment.get("safety")
+                  and any(judgment.get(name) is None for name in MODES[mode]))
+    return (f"  {len(judgments)} points: {safety} with safety true, {unrated} without the "
+            f"ratings, {skipped} never judged")
+
+
+def auc_lines(pairs: Sequence[Pair], mode: str) -> List[str]:
+    results = [(name, *held_out_auc(pairs, model)) for name, model in MODELS[mode]]
+    if all(pooled is None for _, pooled, _ in results):
+        return ["  With a single user there is no user to leave out."]
+    lines = ["  AUC on the user left out (0.5 is chance):"]
+    for name, pooled, by_user in results:
+        users = "  ".join("-" if value is None else f"{value:.3f}"
+                          for _, value in sorted(by_user.items()))
+        shown = "-" if pooled is None else f"{pooled:.3f}"
+        lines.append(f"    {name:<8} {shown}   by user: {users}")
+    return lines
+
+
+def report(mode: str, pairs: Sequence[Pair], users: int) -> List[str]:
     """The report of a consolidation_utility mode, with its table."""
-    pairs = [pair for index, run in enumerate(runs) for pair in pairs_of(run, index)]
-    harmful = sum(1 for pair in pairs if pair.value < 0)
-    lines = [f"{mode}: {len(runs)} runs, {len(pairs)} pairs, "
-             f"{sum(pair.served for pair in pairs)} served, {harmful} harmful"]
-    changed = sum(changed_snapshots(run) for run in runs)
-    if changed:
-        lines.append(f"  WARNING: {changed} snapshots have a FAMA different from the "
-                     f"recorded one: the criteria changed after the run")
+    names = MODES[mode]
+    usable = [pair for pair in pairs if all(pair.ratings.get(name) is not None for name in names)]
+    lines = [f"  {users} users, {len(usable)} pairs, {sum(pair.served for pair in usable)} served"]
     try:
+        for name in names:
+            lines += level_lines(by_level(usable, name), name)
         if mode == "single":
-            lines += level_lines(by_level(pairs, "utility"), "utility")
-            lines += [""] + literal("UTILITY_TABLE", utility_table(pairs))
+            lines += [""] + literal("UTILITY_TABLE", utility_table(usable))
         else:
-            lines += level_lines(by_level(pairs, "need"), "need")
-            lines += level_lines(by_level(pairs, "gain"), "gain")
-            lines += [""] + literal("NEED_GAIN_TABLE", normalized(product_table(pairs)))
+            lines += [""] + literal("NEED_GAIN_TABLE", normalized(product_table(usable)))
             lines += ["", "  Free table, for comparison:"]
-            lines += ["  " + line for line in literal("free", normalized(free_table(pairs)))]
-            product_error = held_out_error(pairs, product_table)
-            free_error = held_out_error(pairs, free_table)
-            if product_error is None or free_error is None:
-                lines.append("  With a single run there is no run to leave out.")
-            else:
-                lines.append(f"  Error on the run left out: product "
-                             f"{product_error:.5f}, free {free_error:.5f}")
+            lines += ["  " + line for line in literal("free", normalized(free_table(usable)))]
     except ValueError as error:
-        lines.append(f"  No table: {error}")
-    return lines
+        return lines + [f"  No table: {error}"]
+    return lines + [""] + auc_lines(usable, mode)
 
 
-def main(argv: Sequence[str]) -> int:
-    """Calibrate the tables on the runs of the last saved commit and print them."""
-    path = argv[1] if len(argv) > 1 else DEFAULT_TRACES
-    runs = load_runs(path)
-    if not runs:
-        print(f"No trace saved in {path}")
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Calibrate the tables on the ratings of the last saved commit and model and print them."""
+    parser = argparse.ArgumentParser(description="The utility tables from HaluMem's "
+                                                 "calibration users.")
+    parser.add_argument("--halumem", required=True, help="the folder of the HaluMem clone")
+    parser.add_argument("--ratings", default=DEFAULT_RATINGS,
+                        help="the file calibration_ratings.py writes")
+    arguments = parser.parse_args(argv)
+
+    records = load_ratings(arguments.ratings)
+    if not records:
+        print(f"No ratings saved in {arguments.ratings}")
         return 1
+    same = latest(records)
+    print(f"{len(same)} sessions rated with commit {same[-1].get('commit') or '(unknown)'} "
+          f"and model {same[-1].get('model') or '(unknown)'}, out of {len(records)} saved")
 
-    commit = runs[-1].get("commit") or ""
-    same = [run for run in runs if (run.get("commit") or "") == commit]
-    print(f"{len(same)} runs of commit {commit or '(unknown)'} out of {len(runs)} saved")
-    for mode in ("single", "need_gain"):
-        mine = [run for run in same if run.get("consolidation_utility") == mode]
-        print()
-        if not mine:
-            print(f"{mode}: no runs")
+    users = adapter.calibration_users(os.path.abspath(os.path.expanduser(arguments.halumem)))
+    for mode in MODES:
+        rated = rated_points(same, mode)
+        print(f"\n{mode}:" if rated else f"\n{mode}: no ratings")
+        if not rated:
             continue
-        for line in report(mode, mine):
+        print(judged_line(rated, mode))
+        pairs = [pair for index, user in enumerate(users)
+                 for pair in pairs_of(user, index, rated.get(user["uuid"], {}))]
+        for line in report(mode, pairs, sum(1 for user in users if user["uuid"] in rated)):
             print(line)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

@@ -89,9 +89,9 @@ retrieval) and prints the full state of the memory - core, messages, archive wit
 the metadata, retrieval, operation log. `test_memory_agent.py` holds instead the
 unit checks (limits, malformed tool calls, retrieve cache, tombstones never
 retrieved), `test_eviction.py` the removal from the archive and `test_config.py`
-the configuration. `test_fama.py`, `test_operation_matrix.py` and
-`test_calibrate_utility.py` check the long test's metrics and the calibration
-script, without any model.
+the configuration. `test_fama.py` and `test_operation_matrix.py`
+check the long test's metrics, `test_calibrate_utility.py` the calibration of the
+utility tables and `test_halumem_adapter.py` the benchmark adapter, without any model.
 
 The node tests (`test/test_memory_server.py`) build `MemoryServer` with a stub
 agent and invoke the callbacks with real requests/responses: they need rclpy and
@@ -190,49 +190,17 @@ MEMORY_LONGRUN_MESSAGES=20 pytest memory_service/test/test_long_term_interaction
 MEMORY_LONGRUN_DELAY=1 pytest memory_service/test/test_long_term_interaction.py -v -s
 ```
 
-**Calibration of the utility tables.** With `MEMORY_LONGRUN_CALIBRATION` the long
-test appends a trace of the run to that file: for every FAMA question the memories
-active at its snapshot, with the ratings. In that run eviction is off, because a
-memory removed before a question could never turn out served.
-`consolidation_utility` in `config.py` decides which table the run calibrates:
-`need_gain` or `single`.
-
-`test/calibrate_utility.py` reads the traces of the last commit and, for every
-(memory, question) pair, removes the memory and recomputes FAMA-memory: the memory
-served if the score drops, and how much it drops is its gain. From there need and
-gain per level, pulled toward the mean of all the levels when the data are few and
-made monotone, and the two tables already normalized, to paste into `eviction.py`.
-For `need_gain` it also prints the free table, cell by cell, and with at least two
-runs it compares the two on each run left out. No model call: FAMA-memory is
-deterministic.
-
-`test/calibration_runs.py` does the whole thing: five long runs (`--runs` changes how
-many), `reset_archive.py` before each one, and the tables at the end. Each run is a
-process of its own; `--workers N` runs N of them at the same time, each worker on an
-archive of its own in `test/calibration_work/` (`--work` to change it, ignored by
-git), so the production archive is never touched. With more than one worker the
-output of each run goes to `run<k>.log` in the same folder. A run that leaves no trace
-does not stop the series, an archive that cannot be cleaned does. The traces go to
-`MEMORY_LONGRUN_CALIBRATION`, by default `test/longrun_calibration.jsonl`, and the
-operations to `MEMORY_LONGRUN_RESULTS`: each run writes files of its own and the series
-appends them when the run ends.
-
-```bash
-python memory_service/test/calibration_runs.py --workers 5
-
-# one run by hand
-MEMORY_LONGRUN_CALIBRATION=memory_service/test/longrun_calibration.jsonl pytest memory_service/test/test_long_term_interaction.py -v -s
-python memory_service/test/calibrate_utility.py
-```
-
 **The HaluMem benchmark.** `test/halumem_adapter.py` replays HaluMem-Medium through
 the real agent and hands the result to HaluMem's `evaluation.py`. It needs a clone of
 [HaluMem](https://github.com/MemTensor/HaluMem) outside the ROS workspace, with
 `HaluMem-Medium.jsonl` in its `data/` folder. Do not install HaluMem's own dependencies:
 `evaluation.py` only uses packages already in `requirements.txt`.
 
-`run` replays one user per process, each with an archive of its own, exchange by
-exchange with the dataset's clock (`backends.set_clock`). It fixes what the experiments
+The first five users of the dataset (`CALIBRATION_USERS`) are kept for the calibration
+of the utility tables: `run` never replays them, so no user is both calibrated on and
+evaluated, and `--users N` takes the first N after them. `run` replays one user per
+process, each with an archive of its own, exchange by exchange with the dataset's clock
+(`backends.set_clock`). It fixes what the experiments
 fix whatever `config.py` says (`always`, the window of 2, the power law on `updated_at`,
 `count_candidate_search` off, `retrieve_k` 20 as HaluMem gives the other systems,
 `answer_with_dates`) and takes from the command line what they vary. It stops at
@@ -268,6 +236,39 @@ memories were active at its end. Every user keeps in `unrated` how many new and 
 facts came without the ratings of the mode, and in `ratings` how many times each level of
 each rating was given, counted as in the long test: the run prints both when the user
 finishes, and summed over the finished users at the end.
+
+**Calibration of the utility tables.** `test/calibration_ratings.py` has the model judge
+the memory points of the calibration users as consolidation judges a new fact: the same
+descriptions of safety and of the ratings of `--utility` (`single` or `need_gain`), the
+settings of the consolidation node, one call per session, the points it skipped asked
+again. The interference points stay out, since a memory should never hold them, and the
+person is "the user" as in the adapter. Every session leaves a line with the mode, the
+model and the commit in `test/calibration_work/halumem_ratings.jsonl` (`--ratings` to
+change it, ignored by git); launched again, the sessions already judged with the same
+mode, model and commit are skipped. `--workers N` judges N sessions at the same time,
+`--model` changes the Qwen model as in `run`.
+
+`test/calibrate_utility.py`, which `calibration_ratings.py` also runs at the end, reads
+the ratings of the last commit and model. A (point, question) pair is a point written in
+a session before the question's, and the point served if it is among the question's
+evidence: a question of the same session asks about what was just said, which recency
+keeps anyway. An update does not end the point it updates, since many HaluMem updates
+add to the old point or only rephrase it and the questions keep citing it; safety facts
+stay out, as they do from eviction. For each level, the fraction of its pairs that served,
+pulled toward the fraction of all the levels when the data are few and made monotone:
+`UTILITY_TABLE` is that fraction per utility level, `NEED_GAIN_TABLE` the fraction of the
+need level times that of the gain level, both normalized to paste into `eviction.py`. For
+`need_gain` it also prints the free table, cell by cell. Every table, and need and gain
+alone, is tried on each user left out: the AUC says how often a pair that served scores
+above one that did not.
+
+```bash
+python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need_gain --workers 5
+python3 memory_service/test/calibration_ratings.py --halumem PATH --utility single --workers 5
+
+# the tables again, from the ratings already saved
+python3 memory_service/test/calibrate_utility.py --halumem PATH
+```
 
 ## The models on the cluster
 

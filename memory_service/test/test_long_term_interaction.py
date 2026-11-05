@@ -60,8 +60,8 @@ The conversation ends with a block of events: things that happened once, with a
 detail that a later question asks for - a concert, a repair, a loan, a dinner, a
 lottery win, an exhibition - and two topical facts with an exact value, a
 favourite film and a shoe size. Everywhere else a fact that happened once is
-trivial and no question asks about it: without the block, such a fact would
-never serve a question, and the calibration would learn that it never can.
+trivial and no question asks about it: the block is what tests the one-off
+facts worth remembering.
 
 The report shows, for each question, what the assistant answered and whether
 the archive was consulted on that round. The answer is the service's one,
@@ -125,12 +125,6 @@ Useful variables:
     MEMORY_CORE_MEMORY_LIMIT     character limit of the core memory
     MEMORY_LONGRUN_RESULTS       the file to append the run's operations to, for
                                  operation_matrix.py
-    MEMORY_LONGRUN_CALIBRATION   if set, the file to append the trace to for
-                                 calibrate_utility.py: the active memories at
-                                 every question, with their ratings. The run
-                                 goes with eviction off, because a memory
-                                 removed before a question could never turn out
-                                 served
 """
 
 import ast
@@ -497,7 +491,6 @@ def _build_agent():
         core_memory_limit=int(os.getenv("MEMORY_CORE_MEMORY_LIMIT", "400")),
         collection_name=os.getenv("MEMORY_LONGRUN_COLLECTION", "longterm_test_archive"),
         **({"chroma_path": os.path.abspath(chroma_path)} if chroma_path else {}),
-        **({"eviction": False} if os.getenv("MEMORY_LONGRUN_CALIBRATION") else {}),
     )
 
     backends.reset()
@@ -527,13 +520,8 @@ def questions_in(messages) -> int:
 
 
 def _active_memories(state, vector_store):
-    """The memories active at this instant, core then archive, with the ratings.
-
-    Every rating not given is None, as in the fields of CoreMemoryItem.
-    """
-    judged = ("safety", "utility", "need", "gain")
-    memories = [{"id": item.id, "content": item.content,
-                 **{name: getattr(item, name) for name in judged}}
+    """The memories active at this instant, core then archive."""
+    memories = [{"id": item.id, "content": item.content}
                 for item in get_active_items(state["core_memory"])]
     try:
         stored = vector_store.get()
@@ -543,10 +531,8 @@ def _active_memories(state, vector_store):
     for doc_id, content, metadata in zip(stored.get("ids") or [],
                                          stored.get("documents") or [],
                                          stored.get("metadatas") or []):
-        metadata = metadata or {}
-        if metadata.get("status") == "active":
-            memories.append({"id": doc_id, "content": str(content),
-                             **{name: metadata.get(name) for name in judged}})
+        if (metadata or {}).get("status") == "active":
+            memories.append({"id": doc_id, "content": str(content)})
     return memories
 
 
@@ -566,12 +552,10 @@ def _active_memory_text(memories) -> str:
 
 
 def _score_memory(entries, state, vector_store):
-    """FAMA-memory for the questions that were waiting for this state, and the state itself."""
-    memories = _active_memories(state, vector_store)
-    memory = _active_memory_text(memories)
+    """FAMA-memory for the questions that were waiting for this state."""
+    memory = _active_memory_text(_active_memories(state, vector_store))
     for entry in entries:
         entry["on_memory"] = fama.score(fama.QUESTIONS[entry["index"]], memory)
-        entry["snapshot"] = memories
 
 
 def _message_limit():
@@ -945,31 +929,6 @@ def _save_run(config, records, elapsed):
         safe_print(f"Run operations not saved in {path}: {error}")
 
 
-def _save_calibration_trace(config, answers):
-    """Append the run's trace, if MEMORY_LONGRUN_CALIBRATION asks for it.
-
-    For each question the memories active at its snapshot: it is all that
-    calibrate_utility.py needs to remove one memory at a time.
-    """
-    path = os.getenv("MEMORY_LONGRUN_CALIBRATION")
-    if not path:
-        return
-    run = {
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "commit": _git_commit(),
-        "model": config.llm_config.get("model_name"),
-        "consolidation_utility": config.consolidation_utility,
-        "questions": [{"index": entry["index"], "fama": entry["on_memory"].fama,
-                       "memories": entry["snapshot"]}
-                      for entry in answers if entry.get("snapshot") is not None],
-    }
-    try:
-        operation_matrix.save_run(path, run)
-        safe_print(f"Calibration trace appended to {path}")
-    except OSError as error:
-        safe_print(f"Calibration trace not saved in {path}: {error}")
-
-
 def _print_final_report(state, vector_store, config, injected, failures, elapsed,
                        answers, inherited=0, operations=()):
     safe_print("\n" + SEPARATOR)
@@ -1135,7 +1094,6 @@ def test_long_term_interaction():
     _print_final_report(state, vector_store, config, len(messages), failures, elapsed,
                         answers, inherited, operations)
     _save_run(config, operations, elapsed)
-    _save_calibration_trace(config, answers)
 
     assert len(failures) < len(messages) / 2, (
         f"{len(failures)} messages out of {len(messages)} failed: "

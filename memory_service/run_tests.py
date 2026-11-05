@@ -32,7 +32,7 @@ TEST_MODULES = (
     "test_fama",  # the long test's metric, without the long test
     "test_eviction",
     "test_operation_matrix",
-    "test_calibrate_utility",  # the utility tables from the long test's traces
+    "test_calibrate_utility",  # the utility tables from HaluMem's calibration users
     "test_halumem_adapter",  # the benchmark adapter, on an invented user
     "test_memory_server",  # skipped when rclpy is not available
 )

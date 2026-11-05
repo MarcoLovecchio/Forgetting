@@ -367,6 +367,21 @@ class RunTest(unittest.TestCase):
                     contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 adapter.parse_arguments(["clean", "--halumem", "x", f"--version={version}"])
 
+    def test_the_calibration_users_are_never_replayed(self):
+        uuids = [f"u{index}" for index in range(adapter.CALIBRATION_USERS + 3)]
+        os.makedirs(os.path.join(self.run_dir, "data"))
+        with open(os.path.join(self.run_dir, adapter.DATASET), "w", encoding="utf-8") as handle:
+            for uuid in uuids:
+                handle.write(json.dumps({"uuid": uuid}) + "\n\n")
+
+        calibration = [user["uuid"] for user in adapter.calibration_users(self.run_dir)]
+        evaluated = [user["uuid"] for user in adapter.evaluated_users(self.run_dir)]
+        pilot = [user["uuid"] for user in adapter.evaluated_users(self.run_dir, 1)]
+
+        self.assertEqual(calibration + evaluated, uuids)
+        self.assertEqual(len(calibration), adapter.CALIBRATION_USERS)
+        self.assertEqual(pilot, [evaluated[0]])
+
     def test_launched_again_the_results_file_does_not_double(self):
         with open(adapter.result_path(self.run_dir, "a"), "w", encoding="utf-8") as handle:
             json.dump({"uuid": "a"}, handle)

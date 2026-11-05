@@ -5,6 +5,10 @@ Every user is replayed from an empty memory and leaves what HaluMem's evaluation
 reads: the memories extracted in each session, the memories found for every update,
 the answer to every question.
 
+The first CALIBRATION_USERS users of the dataset belong to calibration_ratings.py and
+calibrate_utility.py: run never replays them, so no user is both calibrated on and
+evaluated, and --users counts from the first user after them.
+
     run        replays the dialogues through the real agent, with the models on the
                cluster and an archive on disk for each user; it never calls the judge
     evaluate   runs HaluMem's evaluation.py on the result, with the judge of eval/.env,
@@ -82,6 +86,7 @@ from reset_archive import directory_size  # noqa: E402
 
 FRAME = "memory_service"
 DATASET = os.path.join("data", "HaluMem-Medium.jsonl")
+CALIBRATION_USERS = 5
 TIME_FORMAT = "%b %d, %Y, %H:%M:%S"
 EXTRACTING_OPERATIONS = ("create", "redundant", "update")
 UPDATE_SEARCH_K = 10
@@ -341,15 +346,29 @@ def process_user(user: Dict[str, Any], config: MemoryConfig, run_dir: str) -> Tu
         return uuid, "failed"
 
 
-def load_users(path: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+def load_users(path: str, limit: Optional[int] = None, skip: int = 0) -> List[Dict[str, Any]]:
     users = []
     with open(path, encoding="utf-8") as handle:
         for line in handle:
-            if line.strip():
-                users.append(json.loads(line))
+            if not line.strip():
+                continue
+            if skip:
+                skip -= 1
+                continue
+            users.append(json.loads(line))
             if limit and len(users) == limit:
                 break
     return users
+
+
+def calibration_users(root: str) -> List[Dict[str, Any]]:
+    """The users the utility tables are calibrated on, never replayed by run."""
+    return load_users(os.path.join(root, DATASET), CALIBRATION_USERS)
+
+
+def evaluated_users(root: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """The users the experiments replay: every one after the calibration users."""
+    return load_users(os.path.join(root, DATASET), limit, skip=CALIBRATION_USERS)
 
 
 def merge_results(users: Sequence[Dict[str, Any]], run_dir: str) -> int:
@@ -471,11 +490,12 @@ def run(arguments: argparse.Namespace) -> int:
     check_manifest(run_dir, config)
 
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
-    users = load_users(os.path.join(root, DATASET), arguments.users)
+    users = evaluated_users(root, arguments.users)
     pending = [user for user in users
                if not os.path.exists(result_path(run_dir, user["uuid"]))]
-    print(f"{len(users)} users, {len(users) - len(pending)} already done, "
-          f"{arguments.workers} at a time", flush=True)
+    print(f"{len(users)} users after the {CALIBRATION_USERS} of the calibration, "
+          f"{len(users) - len(pending)} already done, {arguments.workers} at a time",
+          flush=True)
 
     # Spawn: a forked process would inherit the parent's models and clients.
     context = multiprocessing.get_context("spawn")
@@ -543,7 +563,8 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="the name of this run")
 
     replay = steps.add_parser("run", parents=[common], help="replay the dataset")
-    replay.add_argument("--users", type=int, help="only the first users, for a pilot")
+    replay.add_argument("--users", type=int,
+                        help="only the first users after the calibration ones, for a pilot")
     replay.add_argument("--workers", type=int, default=1, help="users at the same time")
     replay.add_argument("--utility", choices=("none", "single", "need_gain"))
     replay.add_argument("--combination", choices=("weighted_sum", "product"))
