@@ -58,10 +58,12 @@ weights, and from there it also reaches the log.
                       eviction_time_decay_field, and only one is ever used.
                       When uses are counted, retrieved_at is the last use.
 
-    frequency_term    a count divided by the highest among the candidates, the
-                      active memories without safety: linear and relative to
-                      the archive, like LFU and N_visit
-                      of MemoryOS. The count is n_used when uses are counted
+    frequency_term    a count relative to the highest among the candidates, the
+                      active memories without safety, like LFU and N_visit of
+                      MemoryOS, but on a log scale: log(1 + count) /
+                      log(1 + highest). On a linear one the few memories
+                      retrieved by almost every search push all the others
+                      near 0. The count is n_used when uses are counted
                       (track_used, with generate_answer), n_retrieve otherwise:
                       as for the time decay, only one is ever used.
 
@@ -257,13 +259,13 @@ def frequency_field(config: MemoryConfig) -> str:
 
 
 def frequency_term(count: int, count_max: int) -> float:
-    """The count of a memory relative to the highest one: count / count_max.
+    """The count of a memory relative to the highest one, on a log scale.
 
     If the highest is 0, none has ever been counted: it is 0 for all of them.
     """
     if count_max == 0:
         return 0.0
-    return count / count_max
+    return math.log1p(count) / math.log1p(count_max)
 
 
 def utility_term(utility: int) -> float:

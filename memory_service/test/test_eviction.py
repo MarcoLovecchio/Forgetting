@@ -11,6 +11,7 @@ Run: python memory_service/run_tests.py -v
 
 import dataclasses
 import json
+import math
 import os
 import sys
 import unittest
@@ -66,6 +67,7 @@ EVICTION_CONFIG = MemoryConfig(
 )
 
 NOW = datetime(2026, 9, 17, 12, 0)
+TWO_OF_FOUR = math.log(3) / math.log(5)
 SCALE_HOURS = EVICTION_CONFIG.eviction_time_decay_scale_hours
 
 
@@ -274,7 +276,7 @@ class TimeDecayFieldTest(unittest.TestCase):
 
 
 class FrequencyTermTest(EvictionTestCase):
-    """The frequency term: a count relative to the highest, on n_retrieve or n_used."""
+    """The frequency term: a count relative to the highest on a log scale, on n_retrieve or n_used."""
 
     USES_COUNTED = dataclasses.replace(EVICTION_CONFIG, track_used=True, generate_answer=True)
     METADATA = {"updated_at": (NOW - timedelta(days=3)).isoformat(),
@@ -287,8 +289,9 @@ class FrequencyTermTest(EvictionTestCase):
         archive_items([item])
         return item.id
 
-    def test_the_count_over_the_highest(self):
-        for count, expected in ((6, 1.0), (3, 0.5), (1, 1 / 6), (0, 0.0)):
+    def test_the_count_over_the_highest_on_a_log_scale(self):
+        for count, expected in ((6, 1.0), (3, math.log(4) / math.log(7)),
+                                (1, math.log(2) / math.log(7)), (0, 0.0)):
             with self.subTest(count=count):
                 self.assertAlmostEqual(frequency_term(count, 6), expected)
 
@@ -300,7 +303,8 @@ class FrequencyTermTest(EvictionTestCase):
         for field, config in (("n_retrieve", EVICTION_CONFIG), ("n_used", self.USES_COUNTED)):
             with self.subTest(field=field):
                 self.assertEqual(eviction_terms(self.METADATA, config, NOW, frequency_max=6),
-                                 {"time_decay": decay, "frequency": self.METADATA[field] / 6})
+                                 {"time_decay": decay,
+                                  "frequency": frequency_term(self.METADATA[field], 6)})
 
     def test_in_the_prune_the_value_is_relative_to_the_highest(self):
         ids = {n: self.archive_counts(f"fatto {n}", n_retrieve=n, n_used=0) for n in (4, 2, 3)}
@@ -308,7 +312,8 @@ class FrequencyTermTest(EvictionTestCase):
         removed = prune_archive(self.log, EVICTION_CONFIG, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
-        self.assertEqual(self.log[0].score_terms["frequency"], 0.5, "2 out of a maximum of 4")
+        self.assertAlmostEqual(self.log[0].score_terms["frequency"], TWO_OF_FOUR,
+                               msg="2 out of a maximum of 4")
 
     def test_the_highest_is_taken_on_the_chosen_count(self):
         # All retrieved 9 times: the maximum of retrievals has nothing to do with uses.
@@ -317,7 +322,8 @@ class FrequencyTermTest(EvictionTestCase):
         removed = prune_archive(self.log, self.USES_COUNTED, now=NOW)
 
         self.assertEqual(removed, [ids[2]])
-        self.assertEqual(self.log[0].score_terms["frequency"], 0.5, "2 uses, the maximum is 4")
+        self.assertAlmostEqual(self.log[0].score_terms["frequency"], TWO_OF_FOUR,
+                               msg="2 uses, the maximum is 4")
 
     def retrieved_and_used(self):
         """Retrieved often but never used, used often but never retrieved, and one in between."""
@@ -469,7 +475,8 @@ class SafetyTest(EvictionTestCase):
         prune_archive(self.log, EVICTION_CONFIG, now=NOW)
 
         self.assertEqual(self.log[0].content, "ha un cane")
-        self.assertEqual(self.log[0].score_terms["frequency"], 0.5, "2 out of a maximum of 4")
+        self.assertAlmostEqual(self.log[0].score_terms["frequency"], TWO_OF_FOUR,
+                               msg="2 out of a maximum of 4")
 
 
 class WiredIntoTheAgentTest(EvictionTestCase):
