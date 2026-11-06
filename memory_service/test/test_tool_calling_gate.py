@@ -11,8 +11,7 @@ What it checks, in order of increasing difficulty for the model:
     2. choice between two tools      retrieve_memory or NoSearchNeeded
     3. InsertCoreMemories            list of nested objects, 5-value enum
     4. id transcription              copying an id from the prompt to the tool call
-    5. SplitCoreAndArchivalMemory    one decision for each given memory
-    6. embedding                     the second model answers, and with what
+    5. embedding                     the second model answers, and with what
                                      dimensionality
 
 Points 3 and 4 are the ones that decide the migration. A small model can very
@@ -50,7 +49,6 @@ from langchain_core.prompts import ChatPromptTemplate  # noqa: E402
 from memory_service import backends  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
     InsertCoreMemories,
-    SplitCoreAndArchivalMemory,
     new_item_id,
     normalize_operation,
 )
@@ -245,36 +243,6 @@ class ToolCallingGateTest(ModelGateTestCase):
 
         self.assertRate("id transcription", attempt)
 
-    def test_5_split_decisions(self):
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "Decidi cosa resta in core memory e cosa passa all'archivio. "
-                       "Il limite di 60 caratteri e' vincolante."),
-            ("human", "Memorie correnti:\n\n{memories}\n\n"
-                      "Totale: 95 caratteri, limite: 60. Restituisci una decisione "
-                      "per ogni memoria, riferendoti al suo id."),
-        ])
-        chain = prompt | self.llm.bind_tools(
-            [SplitCoreAndArchivalMemory], tool_choice="required")
-
-        def attempt():
-            call = _tool_call(chain.invoke({"memories": _memories_for_prompt()}),
-                              "SplitCoreAndArchivalMemory")
-            if call is None:
-                return "no tool call"
-            decisions = call["args"].get("decisions")
-            if not isinstance(decisions, list) or not decisions:
-                return f"decisions is not a non-empty list: {call['args']}"
-            for decision in decisions:
-                if not isinstance(decision, dict):
-                    return f"decision is not an object: {decision!r}"
-                if decision.get("item_id") not in KNOWN_MEMORIES:
-                    return f"nonexistent id: {decision.get('item_id')!r}"
-                if decision.get("destination") not in ("core", "archive"):
-                    return f"unknown destination: {decision.get('destination')!r}"
-            return None
-
-        self.assertRate("SplitCoreAndArchivalMemory", attempt)
-
     def _consolidation_chain(self):
         """Prompt of the same shape as summarize_memories_node."""
         prompt = ChatPromptTemplate.from_messages([
@@ -294,7 +262,7 @@ class ToolCallingGateTest(ModelGateTestCase):
 class EmbeddingGateTest(unittest.TestCase):
     """The second model: it answers, and with what dimensionality."""
 
-    def test_6_embeddings_answer(self):
+    def test_5_embeddings_answer(self):
         try:
             # The model directly: the gate checks the embedding, not Chroma.
             embeddings = backends._build_embeddings(backends.get_config())

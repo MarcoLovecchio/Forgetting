@@ -68,8 +68,6 @@ NODE_SAMPLING: Dict[str, Dict[str, Any]] = {
     "generate_answer": {"enable_thinking": False,
                         "temperature": 0.7, "top_p": 0.8,},
     "consolidation": {},
-    "core_split": {"enable_thinking": False,
-                    "temperature": 0.7, "top_p": 0.8,},
 }
 
 

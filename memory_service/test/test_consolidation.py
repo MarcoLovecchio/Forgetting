@@ -212,18 +212,10 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         survivor = find_item(items, "pesce")
         moved = find_item(items, "2200 calorie")
 
-        print_turn_header(6, "archive", "core memory over the limit: an item moves to the archive")
-        # force the split on the next round
-        self.agent.config = dataclasses.replace(self.agent.config, core_memory_limit=40)
-        self.llm.script({
-            "InsertCoreMemories": {"memories": []},
-            "SplitCoreAndArchivalMemory": {
-                "decisions": [
-                    {"item_id": moved.id, "destination": "archive"},
-                    {"item_id": survivor.id, "destination": "core"},
-                ]
-            },
-        })
+        print_turn_header(6, "archive", "core memory over the limit: the least recent item moves")
+        # the calorie update (turn 3) is older than the fish (turn 4), which fits in 50 alone
+        self.agent.config = dataclasses.replace(self.agent.config, core_memory_limit=50)
+        self.llm.script({"InsertCoreMemories": {"memories": []}})
         self.agent.append_message("Parliamo d'altro.", "user")
         self.agent.append_message("Certo.", "assistant")
 

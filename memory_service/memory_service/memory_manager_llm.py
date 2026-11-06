@@ -14,9 +14,7 @@ from memory_service.consolidation import (
     CONSOLIDATION_TOOLS,
     CoreMemoryItem,
     OperationLogEntry,
-    SplitCoreAndArchivalMemory,
     apply_memory_operations,
-    apply_split_decisions,
     build_candidate_memories,
     core_memory_length,
     get_active_items,
@@ -25,6 +23,7 @@ from memory_service.consolidation import (
     retrieve_active_archival_memories,
     serialize_core_memory_for_prompt,
     serialize_core_memory_with_dates,
+    split_core_by_recency,
 )
 from memory_service.eviction import archive_over_limit, evict_archived_tombstones, prune_archive
 
@@ -242,15 +241,6 @@ def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
             print(f"Invoking InsertCoreMemories with args: {tool_args}")
             state["core_memory"], result = apply_memory_operations(
                 tool_args.get("memories", []), state["core_memory"], state["operation_log"])
-        elif tool_name == "SplitCoreAndArchivalMemory":
-            print(f"Invoking SplitCoreAndArchivalMemory with args: {tool_args}")
-            state["core_memory"], result = apply_split_decisions(
-                tool_args.get("decisions", []), state["core_memory"], state["operation_log"])
-            remaining = core_memory_length(state["core_memory"])
-            limit = runtime.context.core_memory_limit
-            if remaining > limit:
-                print(f"\tWARNING: core memory still over the limit after the split "
-                      f"({remaining}/{limit} characters)")
         else:
             result = "Unknown tool"
 
@@ -544,55 +534,15 @@ def summarize_memories_node(state: AgentState, runtime: Runtime[MemoryConfig]):
     print(f"\tSummarization result: {_describe_tool_response(response)}")
     return {"tool_calls": state["tool_calls"] + [response], "messages": state["messages"][-keep:]}  # Keep only the last N messages
 
-def summarize_core_memories_node(state: AgentState, runtime: Runtime[MemoryConfig]):
-
-    active_items = get_active_items(state["core_memory"])
-    core_memory_display = "\n".join(
-        f"{item.id}: {item.content} ({len(item.content)} characters)" for item in active_items)
-    used = core_memory_length(state["core_memory"])
+def split_core_node(state: AgentState, runtime: Runtime[MemoryConfig]):
+    """Over its character limit, the core gives its least recent memories to the archive."""
     limit = runtime.context.core_memory_limit
-    to_free = max(0, used - limit)
-    print(f"\tSummarizing {len(active_items)} core memories for the core/archival split "
-          f"({used}/{limit} characters, {to_free} to free)")
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a tool that decides what stays in core memory and what moves to
-        archival memory. The memories are given to you as `id: content (N characters)` and you
-        must refer to them by id.
-
-        The core memory limit is a HARD constraint: after your decision, the memories you keep
-        in core MUST total {core_memory_limit} characters or less. It is not a target to
-        approach, it is a ceiling that must always hold. Keeping everything in core is never a
-        valid answer when the limit is exceeded.
-
-        Archiving is not deleting: an archived memory keeps its content, stays searchable and
-        comes back whenever it is relevant again. It only gives up its seat in the always-on
-        context. When you hesitate about a memory, archive it: archiving something still useful
-        costs far less than breaking the limit.
-
-        Keep in core the facts that are most important and most likely to be needed in the next
-        few interactions - identity, constraints, active preferences. Move everything else.
-
-        Before answering, add up the lengths of the memories you decided to keep and verify the
-        total is within the limit."""),
-        ("human", """Current core memories:
-
-{core_memory}
-
-Total: {core_memory_length} characters. Limit: {core_memory_limit} characters.
-You must move to the archive at least {to_free} characters worth of memories.
-Return one decision for every memory listed above.""")])
-
-    summarizer_llm = get_llm("core_split").bind_tools(
-        [SplitCoreAndArchivalMemory], tool_choice=REQUIRED)
-    chain = prompt | summarizer_llm
-    response = _timed("core_split", lambda: chain.invoke(
-        {"core_memory": core_memory_display,
-         "core_memory_length": used,
-         "core_memory_limit": limit,
-         "to_free": to_free}))
-    print(f"\tCore memory summarization result: {_describe_tool_response(response)}")
-    return {"tool_calls": state["tool_calls"] + [response]}
+    print(f"\tCore memory over its limit ({core_memory_length(state['core_memory'])}/{limit} "
+          f"characters): the least recent memories move to the archive")
+    state["core_memory"], result = split_core_by_recency(
+        state["core_memory"], limit, state["operation_log"])
+    print(f"\t{result}")
+    return {"core_memory": state["core_memory"], "operation_log": state["operation_log"]}
 
 
 def eviction_node(state: AgentState, runtime: Runtime[MemoryConfig]):
@@ -630,20 +580,18 @@ graph.add_edge("generate_answer", END)
 # Insertion nodes
 graph.add_node("insert_memories", empty_node)
 graph.add_node("summarize_memories", summarize_memories_node)
-graph.add_node("summarize_core_memories", summarize_core_memories_node)
+graph.add_node("split_core", split_core_node)
 graph.add_node("execute_insertion_tool", tool_node)
-graph.add_node("execute_core_split_tool", tool_node)
 graph.add_node("evict_archive", eviction_node)
 graph.add_node("prune_archive", prune_node)
 graph.add_edge("summarize_memories",  "execute_insertion_tool")
-graph.add_edge("summarize_core_memories",  "execute_core_split_tool")
-graph.add_edge("execute_core_split_tool", "evict_archive")
+graph.add_edge("split_core", "evict_archive")
 graph.add_edge("prune_archive", END)
 
 graph.add_conditional_edges(START, interaction_type_node, {'insert': "insert_memories", 'retrieve': "retrieve"})
 
 graph.add_conditional_edges('insert_memories', exceed_memory_limit, {True: "summarize_memories", False: "evict_archive"})
-graph.add_conditional_edges('execute_insertion_tool', exceed_core_memory_limit, {True: "summarize_core_memories", False: "evict_archive"})
+graph.add_conditional_edges('execute_insertion_tool', exceed_core_memory_limit, {True: "split_core", False: "evict_archive"})
 graph.add_conditional_edges('evict_archive', exceed_archive_limit, {True: "prune_archive", False: END})
 
 # Compile the graph

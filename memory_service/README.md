@@ -108,8 +108,8 @@ colcon test --packages-select memory_service
 
 `test/test_tool_calling_gate.py` is the **gate to pass before everything
 else**: it checks that the configured model produces valid tool calls for the
-real schemas (`InsertCoreMemories`, `SplitCoreAndArchivalMemory`,
-`retrieve_memory` / `NoSearchNeeded`) and that it copies the ids exactly. They are
+real schemas (`InsertCoreMemories`, `retrieve_memory` / `NoSearchNeeded`) and that it
+copies the ids exactly. They are
 two different failures and it measures them separately, because they lead to
 different remedies: the wrong structure is cured with constrained structured
 output, the wrong ids with prompt aliasing. Every check is repeated several times,
@@ -302,7 +302,7 @@ A few things worth knowing, checked against the sources:
   sampling parameters right below it — which must be changed **together** with
   it, because the two presets are different (on `1.0 / 0.95 / 20`, off
   `0.7 / 0.8 / 20`). `NODE_SAMPLING` in `config.py` overrides it node by node
-  (`retrieval`, `generate_answer`, `consolidation`, `core_split`): whatever an
+  (`retrieval`, `generate_answer`, `consolidation`): whatever an
   override does not mention is inherited, and `None` leaves a parameter to the
   server. Qwen switches reasoning through the chat template, not with a sampling
   parameter, so `backends.py` sends it as `chat_template_kwargs` inside
@@ -313,7 +313,7 @@ A few things worth knowing, checked against the sources:
   instead of emitting the call — measured by the gate: 9 times out of 10, not 10.
   Where a tool call is the only sensible outcome that tenth time is **silent data
   loss**: the node saves nothing and the messages are cut anyway. That is why
-  `InsertCoreMemories` and `SplitCoreAndArchivalMemory` are bound with
+  `InsertCoreMemories` is bound with
   `tool_choice="required"`. No flexibility is lost: the model can always return an
   empty list. On the retrieval branch `retrieve_memory` and `NoSearchNeeded` are
   bound together, also with `required`: not searching stays possible, but it is
@@ -328,24 +328,17 @@ A few things worth knowing, checked against the sources:
 
 ## The core memory limit
 
-The limit in characters is **asked of the model, not imposed by the code**: there
-is no deterministic eviction behind it. When the core memory overflows, the
-`summarize_core_memories` node passes the split everything needed to respect it:
+The limit in characters is **imposed by the code**, with no model call. When the core
+memory overflows, the `split_core` node moves the least recent memories to the archive,
+one at a time, until the rest fits (`consolidation.split_core_by_recency`). Recent is
+`updated_at`, the last write or confirmation, so a `redundant` keeps a memory in core;
+a single memory longer than the limit leaves too. Archiving is not deleting: the memory
+stays searchable, and only its seat in the always-on context is lost.
 
-- every memory with its own length (`id: content (N characters)`)
-- the current total, the limit, and **how many characters must be freed**
-- the explicit statement that the constraint is hard and that keeping everything
-  in core is not a valid answer
-- the fact that archiving is not deleting: the archive stays searchable, so when
-  in doubt it is better to archive
-
-If the model still decides not to archive enough, **its decision is respected**
-and the core memory stays over the limit. It does not go unnoticed though: a
-warning appears in the logs.
-
-```
-WARNING: core memory still over the limit after the split (500/100 characters)
-```
+Recency, and not a judgment of importance, because the model's split kept the newest
+memories anyway: on a HaluMem user, in four splits out of five every memory it kept was
+newer than every memory it archived, the ratings and `safety` made no difference, and it
+freed about twice what was needed, leaving the core half empty.
 
 ## Who is a source of facts
 

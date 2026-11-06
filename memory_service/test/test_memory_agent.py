@@ -9,9 +9,7 @@ test_consolidation.py; this file keeps the unit level checks.
     pytest memory_service
 """
 
-import contextlib
 import dataclasses
-import io
 import os
 import sys
 import unittest
@@ -146,34 +144,38 @@ class InsertInteractionTest(MemoryServiceTestCase):
 
 
 class SplitLimitTest(MemoryServiceTestCase):
-    """The split starts only over the core limit, and there is no forced cut behind it."""
+    """Over the core limit the least recent memories leave, with no model call for it."""
 
-    def test_within_the_limit_the_split_is_not_attempted(self):
-        self.agent.state["core_memory"] = [CoreMemoryItem(content="x" * 100)]
+    def insert_with_core(self, *items):
+        self.agent.state["core_memory"] = list(items)
         self.agent.state["messages"] = self.conversation(9)
         self.llm.script({"InsertCoreMemories": {"memories": []}})
+        return self.agent.run_memory_agent("insert")
 
-        self.agent.run_memory_agent("insert")
+    def test_within_the_limit_nothing_leaves(self):
+        state = self.insert_with_core(CoreMemoryItem(content="x" * 100))
 
-        self.assertNotIn("SplitCoreAndArchivalMemory", self.llm.bound_tool_names())
+        self.assertNotIn("archive", [entry.op_type for entry in state["operation_log"]])
 
-    def test_ignoring_the_limit_is_reported_but_not_forced(self):
-        # The model decides to archive nothing: the choice is respected,
-        # but it must not go unnoticed.
-        item = CoreMemoryItem(content="x" * 200)
-        self.agent.state["core_memory"] = [item]
-        self.agent.state["messages"] = self.conversation(9)
-        self.llm.script({
-            "InsertCoreMemories": {"memories": []},
-            "SplitCoreAndArchivalMemory": {"decisions": []},
-        })
+    def test_over_the_limit_the_least_recent_leave_until_the_core_fits(self):
+        now = datetime.now()
+        oldest = CoreMemoryItem(content="a" * 60, updated_at=now - timedelta(hours=3))
+        confirmed = CoreMemoryItem(content="b" * 60, updated_at=now)
+        middle = CoreMemoryItem(content="c" * 60, updated_at=now - timedelta(hours=2))
+        calls = len(self.llm.invocations)
 
-        with contextlib.redirect_stdout(io.StringIO()) as captured:
-            state = self.agent.run_memory_agent("insert")
+        state = self.insert_with_core(oldest, confirmed, middle)
 
-        self.assertEqual([i.id for i in state["core_memory"]], [item.id],
-                         "the model's decision is respected, not corrected")
-        self.assertIn("still over the limit", captured.getvalue())
+        self.assertEqual([item.id for item in state["core_memory"]], [confirmed.id, middle.id])
+        self.assertEqual([(entry.op_type, entry.item_id) for entry in state["operation_log"]],
+                         [("archive", oldest.id)], "only as much as the limit needs")
+        self.assertEqual(self.vector_store.status_of(oldest.id), "active")
+        self.assertEqual(len(self.llm.invocations), calls + 1, "the consolidation only")
+
+    def test_the_limit_holds_even_against_a_single_memory(self):
+        state = self.insert_with_core(CoreMemoryItem(content="x" * 200))
+
+        self.assertEqual(state["core_memory"], [])
 
 
 class RetrieveInteractionTest(MemoryServiceTestCase):
@@ -544,7 +546,6 @@ class NodeSamplingWiringTest(MemoryServiceTestCase):
     tool_responses = {
         "retrieve_memory": {"k": 2},
         "InsertCoreMemories": {"memories": []},
-        "SplitCoreAndArchivalMemory": {"decisions": []},
     }
 
     def setUp(self):
@@ -560,9 +561,6 @@ class NodeSamplingWiringTest(MemoryServiceTestCase):
         self.addCleanup(setattr, backends, "get_llm", original)
 
     def test_every_node_asks_for_a_name_that_exists(self):
-        # A core memory over the limit also triggers the split,
-        # which is the fourth and the easiest to forget.
-        self.agent.state["core_memory"] = [CoreMemoryItem(content="x" * 200)]
         self.agent.run_memory_agent("retrieve", query="cosa bevo?")
 
         self.agent.state["messages"] = self.conversation(8)

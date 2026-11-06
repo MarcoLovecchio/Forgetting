@@ -37,9 +37,8 @@ exception is MemoryConfig.eviction: when it is on, the tombstones leave the
 archive at the end of every insert, and so do the active memories with the
 lowest score when the archive is over its limit (see eviction.py).
 
-Deciding what moves out of core memory when the character budget is exceeded is
-the core split's job, in memory_manager_llm.py: this module only applies its
-decisions (apply_split_decisions).
+When the character budget of core memory is exceeded, split_core_by_recency moves
+the least recently written or confirmed memories to the archive: no model decides it.
 """
 
 import uuid
@@ -284,34 +283,6 @@ CONSOLIDATION_TOOLS = {
     "single": InsertCoreMemoriesWithUtility,
     "need_gain": InsertCoreMemoriesWithNeedGain,
 }
-
-
-class MemorySplitDecision(BaseModel):
-    """Where a single core memory should live from now on."""
-
-    item_id: str
-    destination: Literal["core", "archive"]
-
-
-class SplitCoreAndArchivalMemory(BaseModel):
-    """This tool decides, for each active core memory, whether it stays in core memory or
-    moves to archival (long term, less frequently accessed) memory.
-
-    The core memory character limit is a HARD constraint, not a suggestion: after your
-    decision, the memories you keep in core MUST fit within it. Exceeding it is never an
-    acceptable answer, and neither is keeping everything in core.
-
-    Archiving is not deleting. An archived memory keeps all its content and stays
-    searchable: it is retrieved and brought back into the conversation whenever it becomes
-    relevant again. The only thing it loses is the seat in the always-on context. So when
-    you are unsure about a memory, archive it - the cost of archiving something useful is
-    far lower than the cost of breaking the limit.
-
-    Every memory you are given comes as `id: content (N characters)`. Add up the lengths of
-    the ones you decide to keep in core and check the total against the limit BEFORE
-    answering. Return one decision for every memory in the list, referring to it by id."""
-
-    decisions: List[MemorySplitDecision]
 
 
 _OPERATION_ALIASES = {
@@ -1005,41 +976,29 @@ def apply_memory_operations(
     return [item for item in items if item.status == "active"], result
 
 
-def apply_split_decisions(
-    decisions: Iterable[Any],
+def split_core_by_recency(
     core_memory: Iterable[CoreMemoryItem],
+    limit: int,
     log: List[OperationLogEntry],
 ) -> Tuple[List[CoreMemoryItem], str]:
-    """Move to the archive the items the LLM decided not to keep in core memory.
+    """Move the least recent core memories to the archive, one at a time, until the core
+    fits within `limit` characters.
 
-    The whole item is archived - status, lineage and timestamps included - so
+    Recent is updated_at, the last write or confirmation: a redundant keeps a memory in
+    core. The whole item is archived - status, lineage and timestamps included - so
     nothing is lost in the transition.
     """
-    items = list(core_memory)
-    items_by_id = {item.id: item for item in items}
+    remaining = get_active_items(core_memory)
     to_archive: List[CoreMemoryItem] = []
-
-    for raw_decision in decisions or []:
-        if not isinstance(raw_decision, dict):
-            print(f"\tSkipping malformed split decision: {raw_decision!r}")
-            continue
-        item = items_by_id.get(raw_decision.get("item_id"))
-        if item is None:
-            print(f"\tSkipping split decision with unknown item_id: {raw_decision!r}")
-            continue
-        if raw_decision.get("destination") == "archive" and item not in to_archive:
-            to_archive.append(item)
+    for item in sorted(remaining, key=lambda item: item.updated_at):
+        if core_memory_length(remaining) <= limit:
+            break
+        remaining = [kept for kept in remaining if kept is not item]
+        to_archive.append(item)
 
     if not to_archive:
-        return [item for item in items if item.status == "active"], "No items archived."
-
+        return remaining, "No items archived."
     result = archive_items(to_archive)
-    archived_ids = {item.id for item in to_archive}
     for item in to_archive:
         log.append(OperationLogEntry(op_type="archive", item_id=item.id, content=item.content))
-
-    remaining = [
-        item for item in items
-        if item.status == "active" and item.id not in archived_ids
-    ]
     return remaining, result
