@@ -109,7 +109,7 @@ class MemoryConfig:
     node_name: str = "memory_agent"
     maximum_historical_messages: int = 2
     core_memory_limit: int = 400
-    archive_memory_limit: int = 50
+    archive_memory_limit: int = 100
     # Code only: from_environment does not read these, on purpose.
     eviction: bool = True
     eviction_time_decay_field: Literal["updated_at", "retrieved_at"] = "updated_at"
