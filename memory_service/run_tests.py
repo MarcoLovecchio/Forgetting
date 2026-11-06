@@ -34,6 +34,7 @@ TEST_MODULES = (
     "test_operation_matrix",
     "test_calibrate_utility",  # the utility tables from HaluMem's calibration users
     "test_halumem_adapter",  # the benchmark adapter, on an invented user
+    "test_eviction_replay",  # the eviction rules replayed on invented traces
     "test_memory_server",  # skipped when rclpy is not available
 )
 

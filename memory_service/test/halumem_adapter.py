@@ -151,8 +151,11 @@ def flush_window(agent: MemoryAgent) -> None:
     agent.state["messages"] = []
 
 
-def logged(entries: Sequence[OperationLogEntry], exchange: int) -> List[Dict[str, Any]]:
-    return [{"exchange": exchange, **entry.model_dump(mode="json")} for entry in entries]
+def logged(entries: Sequence[OperationLogEntry], exchange: int,
+           insert_index: int) -> List[Dict[str, Any]]:
+    """`insert` numbers the inserts of the session: the flush shares the last exchange."""
+    return [{"exchange": exchange, "insert": insert_index, **entry.model_dump(mode="json")}
+            for entry in entries]
 
 
 def extracted_memories(operations: Sequence[Dict[str, Any]], name: str) -> List[str]:
@@ -208,10 +211,10 @@ def replay_session(agent: MemoryAgent, session: Dict[str, Any], name: str) -> Di
         agent.append_message(said["content"], "user")
         agent.append_message(replied["content"], "assistant")
         insert(agent)
-        operations += logged(agent.last_operations(), exchange)
+        operations += logged(agent.last_operations(), exchange, exchange)
     backends.set_clock(dataset_time(session["end_time"]))
     flush_window(agent)
-    operations += logged(agent.last_operations(), exchange)
+    operations += logged(agent.last_operations(), exchange, len(dialogue) // 2)
     elapsed = (time.time() - started) * 1000
 
     points = copy.deepcopy(session["memory_points"])

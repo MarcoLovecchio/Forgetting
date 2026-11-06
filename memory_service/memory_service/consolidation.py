@@ -976,17 +976,15 @@ def apply_memory_operations(
     return [item for item in items if item.status == "active"], result
 
 
-def split_core_by_recency(
+def choose_core_split(
     core_memory: Iterable[CoreMemoryItem],
     limit: int,
-    log: List[OperationLogEntry],
-) -> Tuple[List[CoreMemoryItem], str]:
-    """Move the least recent core memories to the archive, one at a time, until the core
-    fits within `limit` characters.
+) -> Tuple[List[CoreMemoryItem], List[CoreMemoryItem]]:
+    """(what stays, what leaves) when the least recent leave one at a time until the core
+    fits within `limit` characters. It moves nothing: test/eviction_replay.py calls it too.
 
     Recent is updated_at, the last write or confirmation: a redundant keeps a memory in
-    core. The whole item is archived - status, lineage and timestamps included - so
-    nothing is lost in the transition.
+    core.
     """
     remaining = get_active_items(core_memory)
     to_archive: List[CoreMemoryItem] = []
@@ -995,7 +993,20 @@ def split_core_by_recency(
             break
         remaining = [kept for kept in remaining if kept is not item]
         to_archive.append(item)
+    return remaining, to_archive
 
+
+def split_core_by_recency(
+    core_memory: Iterable[CoreMemoryItem],
+    limit: int,
+    log: List[OperationLogEntry],
+) -> Tuple[List[CoreMemoryItem], str]:
+    """Move the memories choose_core_split picks to the archive.
+
+    The whole item is archived - status, lineage and timestamps included - so nothing is
+    lost in the transition.
+    """
+    remaining, to_archive = choose_core_split(core_memory, limit)
     if not to_archive:
         return remaining, "No items archived."
     result = archive_items(to_archive)

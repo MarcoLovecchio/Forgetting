@@ -133,6 +133,8 @@ class ReplayTest(unittest.TestCase):
 
         self.assertEqual(replayed["extracted_memories"], ["Rossi Mario has a dog named Argo"])
         self.assertEqual([entry["exchange"] for entry in replayed["operations"]], [1, 1])
+        self.assertEqual([entry["insert"] for entry in replayed["operations"]], [1, 2],
+                         "the flush is an insert of its own")
         self.assertGreater(replayed["add_dialogue_duration_ms"], 0)
         self.assertEqual(replayed["active_core"], 2)
         self.assertNotIn("questions", replayed)

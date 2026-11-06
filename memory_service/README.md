@@ -91,7 +91,8 @@ unit checks (limits, malformed tool calls, retrieve cache, tombstones never
 retrieved), `test_eviction.py` the removal from the archive and `test_config.py`
 the configuration. `test_fama.py` and `test_operation_matrix.py`
 check the long test's metrics, `test_calibrate_utility.py` the calibration of the
-utility tables and `test_halumem_adapter.py` the benchmark adapter, without any model.
+utility tables, `test_halumem_adapter.py` the benchmark adapter and
+`test_eviction_replay.py` the eviction replay, without any model.
 
 The node tests (`test/test_memory_server.py`) build `MemoryServer` with a stub
 agent and invoke the callbacks with real requests/responses: they need rclpy and
@@ -231,8 +232,8 @@ Everything lands in `PATH/eval/results/memory_service-NAME/`: `run.json` with th
 configuration and the commit, `memory_service_eval_results.jsonl` for the evaluation,
 `memory_service_eval_stat_result.json` with its scores, `logs/` with the agent's output
 for each user and `archives/` with the Chroma folders. Next to what HaluMem reads, every
-session also keeps its operations, each with the exchange it belongs to, and how many
-memories were active at its end. Every user keeps in `unrated` how many new and updated
+session also keeps its operations, each with the exchange and the insert it belongs to (the
+flush is an insert of its own), and how many memories were active at its end. Every user keeps in `unrated` how many new and updated
 facts came without the ratings of the mode, and in `ratings` how many times each level of
 each rating was given, counted as in the long test: the run prints both when the user
 finishes, and summed over the finished users at the end.
@@ -268,6 +269,40 @@ python3 memory_service/test/calibration_ratings.py --halumem PATH --utility sing
 
 # the tables again, from the ratings already saved
 python3 memory_service/test/calibrate_utility.py --halumem PATH
+```
+
+**The eviction replay.** `test/eviction_replay.py` compares eviction rules on the same
+memories. Its input is a trace: a `run` whose archive never reaches the limit
+(`--archive-limit 100000`). The replay walks the trace's operations again, insert by
+insert, with a limit and a rule and no model: the core split is `choose_core_split`, the
+service's rule is `choose_prune_targets`, the search of every question is computed again
+on the smaller archive from the vectors of the trace. Next to the service's score, with
+utility `none` or the trace's, both combinations and three prune fractions, it replays
+FIFO, LRU, LFU, utility alone, random and an oracle that knows the questions to come, at
+the limits 25, 50, 100, 150 and 200. When an operation targets a memory the rule already
+removed, the real system would have gone another way: the replay counts it (divergence)
+and does what the system would do, an update keeps its new memory, a redundant stores its
+fact again, a delete finds nothing.
+
+`embed` computes the vectors with the service's embedding model, also of the evidence
+sentences, `label` asks HaluMem's judge (`eval/.env`, as `evaluate`) which memories each
+question needs, among the core, the 40 archived memories closest to the question and the
+10 closest to each sentence of its evidence: a question is worded unlike the fact it asks
+about, its evidence is not. It prints where the needed memories were in the question's
+ranking: many beyond the 40th would mean the question alone misses them. `simulate`
+replays and prints, for every rule and limit,
+the share of needed memories still kept and still found, where it lies between random and
+the oracle, by question type and by age, the divergence and the prunes; and the AUC of
+need × gain against being needed by a later session. Before the rules it checks the replay
+with no limit against the trace: the split must archive the same memories at the same
+insert, the search must find what the questions found. Everything lands in the run's
+`replay/` folder, and `label` and `embed` skip what they already did.
+
+```bash
+python3 memory_service/test/halumem_adapter.py run --halumem PATH --version trace --archive-limit 100000
+python3 memory_service/test/eviction_replay.py embed --halumem PATH --version trace
+python3 memory_service/test/eviction_replay.py label --halumem PATH --version trace
+python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4
 ```
 
 ## The models on the cluster

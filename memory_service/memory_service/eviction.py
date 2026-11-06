@@ -322,6 +322,26 @@ def prune_count(active: int, fraction: float) -> int:
     return math.ceil(active * fraction)
 
 
+def choose_prune_targets(active: List[Tuple[str, str, dict]], config: MemoryConfig,
+                         now: datetime) -> List[Tuple[float, str, str, Dict[str, float]]]:
+    """(score, id, content, terms) of what leaves, lowest score first.
+
+    `active` holds (id, content, metadata) of every active memory, the protected ones
+    included: they count in the share but are never candidates. It removes nothing:
+    test/eviction_replay.py calls it too.
+    """
+    candidates = [(doc_id, content, metadata) for doc_id, content, metadata in active
+                  if not metadata.get("safety")]
+    frequency_max = max((metadata[frequency_field(config)] for _, _, metadata in candidates),
+                        default=0)
+    scored = []
+    for doc_id, content, metadata in candidates:
+        terms = eviction_terms(metadata, config, now, frequency_max)
+        scored.append((combine_terms(terms, config.eviction_combination), doc_id, content, terms))
+    leaving = prune_count(len(active), config.prune_fraction)
+    return sorted(scored, key=lambda target: target[:2])[:leaving]
+
+
 def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
                   now: Optional[datetime] = None) -> List[str]:
     """Remove the active memories with the lowest score.
@@ -347,19 +367,8 @@ def prune_archive(log: List[OperationLogEntry], config: MemoryConfig,
     ids = result.get("ids") or []
     documents = result.get("documents") or [""] * len(ids)
     metadatas = result.get("metadatas") or [{}] * len(ids)
-    candidates = [(doc_id, content, metadata)
-                  for doc_id, content, metadata in zip(ids, documents, metadatas)
-                  if not metadata.get("safety")]
-    frequency_max = max((metadata[frequency_field(config)] for _, _, metadata in candidates),
-                        default=0)
-    now = now or backends.now()
-
-    scored = []
-    for doc_id, content, metadata in candidates:
-        terms = eviction_terms(metadata, config, now, frequency_max)
-        scored.append((combine_terms(terms, config.eviction_combination), doc_id, content, terms))
-    leaving = prune_count(len(ids), config.prune_fraction)
-    targets = sorted(scored, key=lambda target: target[:2])[:leaving]
+    targets = choose_prune_targets(list(zip(ids, documents, metadatas)), config,
+                                   now or backends.now())
     if not targets:
         return []
 
