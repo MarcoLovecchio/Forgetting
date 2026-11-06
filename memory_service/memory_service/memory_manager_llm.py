@@ -155,11 +155,12 @@ def empty_node(state: AgentState) -> AgentState:
 @tool
 def retrieve_memory(query: str, k: int = 20,
                     stamp_retrieved_at: Annotated[bool, InjectedToolArg] = True,
-                    dated: Annotated[bool, InjectedToolArg] = False) -> str:
+                    dated: Annotated[bool, InjectedToolArg] = False,
+                    user_query: Annotated[str, InjectedToolArg] = "") -> str:
     """Retrieve relevant memories from the archival vector store based on a query.
     Returns up to k relevant memories.
     Think about the best value of k based on the complexity of the query."""
-    results = retrieve_active_archival_memories(query, k, stamp_retrieved_at, dated)
+    results = retrieve_active_archival_memories(query, k, stamp_retrieved_at, dated, user_query)
     print(results)
     return results
 
@@ -254,7 +255,8 @@ def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
             # When uses are counted, generate_answer updates retrieved_at.
             result = retrieve_memory.invoke(
                 {**tool_args, "stamp_retrieved_at": not runtime.context.counts_used,
-                 "dated": runtime.context.answer_with_dates})
+                 "dated": runtime.context.answer_with_dates,
+                 "user_query": query_and_history(state)[0]})
         elif tool_name == "NoSearchNeeded":
             print(f"\tNo archive search: {tool_args.get('reason', '')}")
             result = NO_SEARCH_NEEDED

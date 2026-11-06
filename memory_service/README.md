@@ -447,8 +447,11 @@ choice:
 - `decide` (default): the model chooses between `retrieve_memory` and `NoSearchNeeded`;
 - `always`: it always searches, the model writes only the query and `k`.
 
-In both a retrieval increments `n_retrieve` of the returned memories. The long test
-prints and saves the run's mode.
+In both the archive is searched twice, with the model's query and with the user's own
+words, and the `k` memories closest to either are returned: the keywords the model
+writes can miss what the question finds. When the two texts are the same it is one
+search. A retrieval increments `n_retrieve` of the returned memories only. The long
+test prints and saves the run's mode.
 
 `count_candidate_search` (on or off, also only in `config.py`) makes the archive search
 that consolidation runs for the classifier's candidates count as a retrieval too: no

@@ -222,12 +222,25 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
 
         state = self.agent.run_memory_agent("retrieve")
 
-        self.assertEqual(len(self.vector_store.searches), 1)
+        self.assertEqual([search["query"] for search in self.vector_store.searches],
+                         ["afternoon drink", "What can I drink in the afternoon?"],
+                         "the model's query, then the user's words")
         # The string "2" reached the store as an int: the fake refuses anything
         # else. The filter travels with it, so no widening is needed.
-        self.assertEqual(self.vector_store.searches[0]["k"], 2)
-        self.assertEqual(self.vector_store.searches[0]["filter"], {"status": "active"})
+        for search in self.vector_store.searches:
+            self.assertEqual(search["k"], 2)
+            self.assertEqual(search["filter"], {"status": "active"})
         self.assertIn("black tea", state["retrieved_memory"])
+
+    def test_what_only_the_user_words_find_can_take_a_place(self):
+        self.archive({"memory_a": "User likes black tea in the afternoon",
+                      "memory_b": "User walks the dog at dawn"})
+        self.llm.script({"retrieve_memory": {"query": "afternoon drink", "k": 1}})
+
+        state = self.agent.run_memory_agent("retrieve", query="where is the dog")
+
+        self.assertIn("walks the dog", state["retrieved_memory"])
+        self.assertNotIn("black tea", state["retrieved_memory"], "k is the size of the merge")
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
 
 
@@ -735,7 +748,7 @@ class BenchmarkAnswerTest(MemoryServiceTestCase):
         self.run_retrieve()
         self.run_retrieve(retrieve_k=20)
 
-        self.assertEqual([search["k"] for search in self.vector_store.searches], [2, 20])
+        self.assertEqual([search["k"] for search in self.vector_store.searches], [2, 2, 20, 20])
 
     def test_with_dates_the_answer_reads_the_day_of_every_memory(self):
         state, answer = self.run_retrieve(answer_with_dates=True)

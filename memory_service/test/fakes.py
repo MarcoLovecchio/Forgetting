@@ -126,7 +126,8 @@ class FakeVectorStore:
     """In-memory stand-in for the Chroma archival store.
 
     Mirrors the slice of the langchain Chroma API the service uses: ``add_texts``
-    (which upserts by id), ``get``, ``delete`` and ``similarity_search``. Metadata
+    (which upserts by id), ``get``, ``delete``, ``similarity_search`` and its
+    ``_with_score``. Metadata
     is stored and returned, because consolidation reads the item status from there.
     """
 
@@ -218,6 +219,16 @@ class FakeVectorStore:
             Document(id=doc_id, page_content=text, metadata=self.metadatas.get(doc_id, {}))
             for doc_id, text in ranked[:k]
         ]
+
+    def similarity_search_with_score(self, query, k=3, filter=None, **kwargs):
+        """similarity_search with a distance, smaller when closer, as Chroma's."""
+        words = {word.lower() for word in str(query).split()}
+
+        def distance(text):
+            return 1.0 / (1 + len(words & {word.lower() for word in text.split()}))
+
+        return [(doc, distance(doc.page_content))
+                for doc in self.similarity_search(query, k=k, filter=filter, **kwargs)]
 
     # -- helpers used by the tests --------------------------------------------
     def status_of(self, doc_id: str) -> Optional[str]:

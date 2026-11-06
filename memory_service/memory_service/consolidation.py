@@ -548,19 +548,45 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     return archived
 
 
+def _search_k(k: Any) -> int:
+    try:
+        return max(1, int(k))
+    except (TypeError, ValueError):
+        return ARCHIVE_CANDIDATES_K
+
+
 def _search_active(query: str, k: int) -> List[Any]:
     """The k active archival memories closest to a text, as documents with their metadata."""
     try:
-        k = max(1, int(k))
-    except (TypeError, ValueError):
-        k = ARCHIVE_CANDIDATES_K
-
-    try:
         return backends.get_vector_store().similarity_search(
-            query, k=k, filter={"status": "active"})
+            query, k=_search_k(k), filter={"status": "active"})
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
+
+
+def _search_active_merged(texts: Iterable[str], k: int) -> List[Any]:
+    """The k active archival memories closest to any of the texts.
+
+    Each text gets a search of its own; a memory found by more than one keeps its
+    smallest distance, and on equal distance the first text found it first.
+    """
+    k = _search_k(k)
+    best: Dict[str, Tuple[float, int, Any]] = {}
+    for text in dict.fromkeys(str(text or "").strip() for text in texts):
+        if not text:
+            continue
+        try:
+            scored = backends.get_vector_store().similarity_search_with_score(
+                text, k=k, filter={"status": "active"})
+        except Exception as error:
+            print(f"\tArchive search failed: {error}")
+            continue
+        for doc, distance in scored:
+            order = best[doc.id][1] if doc.id in best else len(best)
+            if doc.id not in best or distance < best[doc.id][0]:
+                best[doc.id] = (distance, order, doc)
+    return [doc for _, _, doc in sorted(best.values(), key=lambda entry: entry[:2])[:k]]
 
 
 def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str]]:
@@ -634,14 +660,18 @@ def record_uses(item_ids: Iterable[str], core_memory: Iterable[CoreMemoryItem]) 
 
 
 def retrieve_active_archival_memories(query: str, k: int = 5, stamp: bool = True,
-                                      dated: bool = False) -> str:
+                                      dated: bool = False, user_query: str = "") -> str:
     """Archive lookup for the retrieval path, tombstones excluded.
 
     The search that counts as a retrieval: the candidates the classifier sees during
     consolidation go through search_archive, recorded only with count_candidate_search.
+    With `user_query`, the user's own words, the archive is searched with them too and
+    the k memories closest to either text are returned: the keywords the model writes
+    can miss what the question finds, and a question in another language than the
+    archive lands further, so it rarely takes a place.
     With `dated` every memory also carries the day it was last written.
     """
-    found = _search_active(query, k)
+    found = _search_active_merged([query, user_query], k)
     if not found:
         return NO_ARCHIVAL_RESULTS
     record_retrievals((doc.id for doc in found), stamp)

@@ -485,6 +485,26 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertEqual(self.counters(far), (0, self.store.metadatas[far]["updated_at"]),
                          "not returned, it does not count")
 
+    def test_with_the_user_words_the_closest_k_to_either_search_are_returned(self):
+        cat, dog, bike = self.archive("il gatto Milo dorme sul divano", "il cane Argo ama correre",
+                                      "la bici rossa")
+
+        retrieved = retrieve_active_archival_memories("gatto divano", k=2,
+                                                      user_query="come sta il cane Argo")
+
+        self.assertIn("il cane Argo", retrieved)
+        self.assertIn("il gatto Milo", retrieved)
+        self.assertNotIn("la bici rossa", retrieved)
+        self.assertEqual([self.store.metadatas[item]["n_retrieve"] for item in (cat, dog, bike)],
+                         [1, 1, 0], "found by both searches, counted once; cut, not counted")
+
+    def test_user_words_equal_to_the_query_are_one_search(self):
+        self.archive("il gatto Milo")
+
+        retrieve_active_archival_memories("gatto", k=1, user_query=" gatto ")
+
+        self.assertEqual(len(self.store.searches), 1)
+
     def test_the_candidate_search_counts_only_when_asked(self):
         cat, far = self.archive("il gatto Milo", "corre la mattina")
 
