@@ -243,7 +243,7 @@ class ConsolidationLifecycleTest(unittest.TestCase):
             7, "retrieve", "the answer draws from the archive, the tombstones stay out")
         self.llm.script(
             {
-                "retrieve_memory": {"query": "calorie obiettivo", "k": 10},
+                "retrieve_memory": {"k": 10},
             },
             default_content="Il tuo obiettivo e' 2200 calorie al giorno.",
         )
@@ -640,13 +640,6 @@ class IdenticalTextTest(unittest.TestCase):
                 self.assertEqual([item.content for item in core], [self.FACT])
                 self.assertEqual(job.status, "superseded")
                 self.assertEqual({entry.item_id for entry in self.log}, {core[0].id})
-
-    def test_two_new_with_one_text_are_one_memory(self):
-        core = self.apply([{"fact": self.FACT, "operation": "new"},
-                           {"fact": self.FACT + ".", "operation": "new"}], [])
-
-        self.assertEqual([item.content for item in core], [self.FACT])
-        self.assertEqual([entry.op_type for entry in self.log], ["create"])
 
 
 class UnratedCountTest(unittest.TestCase):

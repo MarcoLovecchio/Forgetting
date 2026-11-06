@@ -146,20 +146,22 @@ class MemoryConfig:
     @classmethod
     def from_environment(cls, node_name: Optional[str] = None) -> "MemoryConfig":
         load_environment()
-        node_name = node_name or os.getenv("MEMORY_LLM_NODE", "memory_agent")
+        node_name = node_name or os.getenv("MEMORY_LLM_NODE", cls.node_name)
+        # Without the variable, the field's default: a value lives in one place only.
         return cls(
             node_name=node_name,
-            maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES", 2),
-            core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", 400),
-            archive_memory_limit=_env_int("MEMORY_ARCHIVE_LIMIT", 50),
-            generate_answer=_env_bool("MEMORY_GENERATE_ANSWER", True),
-            chroma_path=os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", "./chroma_db")),
-            collection_name=os.getenv("MEMORY_COLLECTION_NAME", "memory_archive"),
+            maximum_historical_messages=_env_int("MEMORY_MAX_HISTORICAL_MESSAGES",
+                                                 cls.maximum_historical_messages),
+            core_memory_limit=_env_int("MEMORY_CORE_MEMORY_LIMIT", cls.core_memory_limit),
+            archive_memory_limit=_env_int("MEMORY_ARCHIVE_LIMIT", cls.archive_memory_limit),
+            generate_answer=_env_bool("MEMORY_GENERATE_ANSWER", cls.generate_answer),
+            chroma_path=os.path.abspath(os.getenv("MEMORY_CHROMA_PATH", cls.chroma_path)),
+            collection_name=os.getenv("MEMORY_COLLECTION_NAME", cls.collection_name),
             llm_config=_read_model_config("LLM_CONFIG", node_name),
-            api_key_env=os.getenv("MEMORY_API_KEY_ENV", ""),
-            base_url=os.getenv("MEMORY_LLM_BASE_URL") or None,
+            api_key_env=os.getenv("MEMORY_API_KEY_ENV", cls.api_key_env),
+            base_url=os.getenv("MEMORY_LLM_BASE_URL") or cls.base_url,
             embedding_config=_read_model_config("EMBEDDING_CONFIG", node_name),
-            embedding_base_url=os.getenv("MEMORY_EMBEDDING_BASE_URL") or None,
+            embedding_base_url=os.getenv("MEMORY_EMBEDDING_BASE_URL") or cls.embedding_base_url,
         )
 
 

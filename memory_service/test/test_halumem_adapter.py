@@ -104,7 +104,7 @@ class ReplayTest(unittest.TestCase):
     def script(self, fact):
         self.llm.script({
             "InsertCoreMemories": {"memories": [{"fact": fact, "operation": "new"}]},
-            "retrieve_memory": {"query": "dog", "k": 3},
+            "retrieve_memory": {"k": 3},
         })
 
     def consolidations(self):

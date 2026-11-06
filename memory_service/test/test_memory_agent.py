@@ -298,7 +298,7 @@ class StaleRetrievalTest(MemoryServiceTestCase):
     its own.
     """
 
-    tool_responses = {"retrieve_memory": {"query": "te", "k": 2}}
+    tool_responses = {"retrieve_memory": {"k": 2}}
 
     def test_a_turn_that_does_not_search_starts_from_nothing(self):
         self.archive({"memory_a": "All'utente piace il te nero"})
@@ -339,7 +339,7 @@ class UsedMemoriesTest(MemoryServiceTestCase):
             CoreMemoryItem(id=item_id, content=content, updated_at=self.long_ago)
             for item_id, content in (("core_name", "User is called Bianca"),
                                      ("core_diet", "User is vegetarian"))]
-        self.llm.script({"retrieve_memory": {"query": "tea afternoon", "k": 2},
+        self.llm.script({"retrieve_memory": {"k": 2},
                          "AnswerWithUsedMemories": {"answer": self.ANSWER,
                                                     "used_memory_ids": used_ids}})
         return agent.run_memory_agent("retrieve", query="Cosa bevo il pomeriggio?")
@@ -413,7 +413,7 @@ class CurrentQueryTest(MemoryServiceTestCase):
     """
 
     tool_responses = {
-        "retrieve_memory": {"query": "irrilevante", "k": 3},
+        "retrieve_memory": {"k": 3},
     }
     default_content = "risposta"
 
@@ -542,7 +542,7 @@ class NodeSamplingWiringTest(MemoryServiceTestCase):
     """
 
     tool_responses = {
-        "retrieve_memory": {"query": "q", "k": 2},
+        "retrieve_memory": {"k": 2},
         "InsertCoreMemories": {"memories": []},
         "SplitCoreAndArchivalMemory": {"decisions": []},
     }
@@ -585,7 +585,7 @@ class NodeStatsTest(MemoryServiceTestCase):
     """
 
     tool_responses = {
-        "retrieve_memory": {"query": "q", "k": 2},
+        "retrieve_memory": {"k": 2},
         "InsertCoreMemories": {"memories": []},
     }
 
@@ -674,7 +674,7 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
     through NoSearchNeeded, which is visible.
     """
 
-    tool_responses = {"retrieve_memory": {"query": "te nero", "k": 2}}
+    tool_responses = {"retrieve_memory": {"k": 2}}
     default_content = "Bevi te nero il pomeriggio."
 
     def test_both_ways_out_are_bound_and_one_of_them_is_mandatory(self):
@@ -692,7 +692,7 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
 class RetrievalModeTest(MemoryServiceTestCase):
     """With retrieval_mode "always" the search always happens, and no model is asked for it."""
 
-    tool_responses = {"retrieve_memory": {"query": "black tea", "k": 2}}
+    tool_responses = {"retrieve_memory": {"k": 2}}
     default_content = "Bevi te nero il pomeriggio."
 
     def run_retrieve(self, mode, **switches):
@@ -718,7 +718,7 @@ class RetrievalModeTest(MemoryServiceTestCase):
 class BenchmarkAnswerTest(MemoryServiceTestCase):
     """retrieve_k and answer_with_dates: how many memories the search returns, and their day."""
 
-    tool_responses = {"retrieve_memory": {"query": "black tea", "k": 2}}
+    tool_responses = {"retrieve_memory": {"k": 2}}
     written = datetime(2033, 12, 8, 10, 30)
 
     def run_retrieve(self, **switches):
@@ -753,7 +753,7 @@ class BenchmarkAnswerTest(MemoryServiceTestCase):
         self.assertNotIn("2033-12-08", answer)
 
     def test_with_uses_counted_the_core_keeps_its_id_before_the_day(self):
-        self.llm.script({"retrieve_memory": {"query": "black tea", "k": 2},
+        self.llm.script({"retrieve_memory": {"k": 2},
                          "AnswerWithUsedMemories": {"answer": "Te nero.", "used_memory_ids": []}})
 
         _, answer = self.run_retrieve(answer_with_dates=True, track_used=True)
