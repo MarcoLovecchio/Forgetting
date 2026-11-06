@@ -222,25 +222,14 @@ class RetrieveWithArchiveTest(MemoryServiceTestCase):
 
         state = self.agent.run_memory_agent("retrieve")
 
-        self.assertEqual([search["query"] for search in self.vector_store.searches],
-                         ["afternoon drink", "What can I drink in the afternoon?"],
-                         "the model's query, then the user's words")
+        self.assertEqual(len(self.vector_store.searches), 1)
+        self.assertEqual(self.vector_store.searches[0]["query"],
+                         "What can I drink in the afternoon?", "the user's words, not the model's")
         # The string "2" reached the store as an int: the fake refuses anything
         # else. The filter travels with it, so no widening is needed.
-        for search in self.vector_store.searches:
-            self.assertEqual(search["k"], 2)
-            self.assertEqual(search["filter"], {"status": "active"})
+        self.assertEqual(self.vector_store.searches[0]["k"], 2)
+        self.assertEqual(self.vector_store.searches[0]["filter"], {"status": "active"})
         self.assertIn("black tea", state["retrieved_memory"])
-
-    def test_what_only_the_user_words_find_can_take_a_place(self):
-        self.archive({"memory_a": "User likes black tea in the afternoon",
-                      "memory_b": "User walks the dog at dawn"})
-        self.llm.script({"retrieve_memory": {"query": "afternoon drink", "k": 1}})
-
-        state = self.agent.run_memory_agent("retrieve", query="where is the dog")
-
-        self.assertIn("walks the dog", state["retrieved_memory"])
-        self.assertNotIn("black tea", state["retrieved_memory"], "k is the size of the merge")
         self.assertEqual(state["messages"][-1].content, "You like black tea in the afternoon.")
 
 
@@ -701,28 +690,28 @@ class RetrieveToolChoiceTest(MemoryServiceTestCase):
 
 
 class RetrievalModeTest(MemoryServiceTestCase):
-    """With retrieval_mode "always" the search always happens: the model writes only the query."""
+    """With retrieval_mode "always" the search always happens, and no model is asked for it."""
 
     tool_responses = {"retrieve_memory": {"query": "black tea", "k": 2}}
     default_content = "Bevi te nero il pomeriggio."
 
-    def run_retrieve(self, mode):
-        config = dataclasses.replace(TEST_CONFIG, retrieval_mode=mode)
+    def run_retrieve(self, mode, **switches):
+        config = dataclasses.replace(TEST_CONFIG, retrieval_mode=mode, **switches)
         backends.configure(config=config)
         MemoryAgent.reset_instance()
         agent = MemoryAgent(config=config)
         self.archive({"memory_a": "User likes black tea in the afternoon"})
         return agent.run_memory_agent("retrieve", query="cosa bevo il pomeriggio?")
 
-    def test_with_the_model_query_searching_is_the_only_way_out(self):
+    def test_always_searches_the_question_without_a_model_call(self):
         spy = ToolChoiceSpy(self, self.llm)
 
-        state = self.run_retrieve("always")
+        state = self.run_retrieve("always", retrieve_k=3)
 
-        self.assertEqual(spy.calls, {"retrieve_memory": "required"}, "NoSearchNeeded is not there")
-        self.assertEqual(self.vector_store.searches[0]["query"], "black tea",
-                         "the model writes the query")
-        self.assertEqual(self.vector_store.searches[0]["k"], 2)
+        self.assertEqual(spy.calls, {}, "nothing bound: the only model call is the answer")
+        self.assertEqual(len(self.llm.invocations), 1)
+        self.assertEqual(self.vector_store.searches, [
+            {"query": "cosa bevo il pomeriggio?", "k": 3, "filter": {"status": "active"}}])
         self.assertIn("black tea", state["retrieved_memory"])
 
 
@@ -748,7 +737,7 @@ class BenchmarkAnswerTest(MemoryServiceTestCase):
         self.run_retrieve()
         self.run_retrieve(retrieve_k=20)
 
-        self.assertEqual([search["k"] for search in self.vector_store.searches], [2, 2, 20, 20])
+        self.assertEqual([search["k"] for search in self.vector_store.searches], [2, 20])
 
     def test_with_dates_the_answer_reads_the_day_of_every_memory(self):
         state, answer = self.run_retrieve(answer_with_dates=True)

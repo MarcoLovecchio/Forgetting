@@ -444,14 +444,16 @@ The values are read from environment variables (from `.env` / `.config`):
 It decides whether the archive search of the `retrieve` branch is the model's
 choice:
 
-- `decide` (default): the model chooses between `retrieve_memory` and `NoSearchNeeded`;
-- `always`: it always searches, the model writes only the query and `k`.
+- `decide` (default): the model chooses between `retrieve_memory` and `NoSearchNeeded`,
+  and writes only `k`;
+- `always`: it always searches, with no model call.
 
-In both the archive is searched twice, with the model's query and with the user's own
-words, and the `k` memories closest to either are returned: the keywords the model
-writes can miss what the question finds. When the two texts are the same it is one
-search. A retrieval increments `n_retrieve` of the returned memories only. The long
-test prints and saves the run's mode.
+In both the archive is searched with the user's own words (the `user_input` of the
+request, or else the user's last message), never with a text the model writes: on
+HaluMem the model's keyword queries missed more of the memories a question needed than
+the question itself, even with the question in Italian and the facts in English. A
+retrieval increments `n_retrieve` of the returned memories. The long test prints and
+saves the run's mode.
 
 `count_candidate_search` (on or off, also only in `config.py`) makes the archive search
 that consolidation runs for the classifier's candidates count as a retrieval too: no
@@ -459,7 +461,7 @@ model call, and `n_retrieve` grows on every consolidated message. The benchmark 
 turns it off: there only the questions count.
 
 `retrieve_k` (also only in `config.py`) is `None` or a number: with `None` the model
-writes `k` in every search of the `retrieve` branch, a number replaces it, whatever the
+writes `k` in `decide` and `always` returns 20, a number replaces both, whatever the
 model wrote. `answer_with_dates` (on or off, also only in `config.py`) puts in front of every
 fact and memory the answer reads the day of its `updated_at`, that is of its last write
 or confirmation, and tells the model what that day means. The benchmark adapter sets
@@ -508,6 +510,15 @@ the closing punctuation. Only a single match is taken: when memories with differ
 texts match, none is chosen, since a guess could change the wrong one; the same text
 stored twice counts as one memory, and the core copy wins. A `redundant` or an `update`
 without a target is stored as a new memory, a `delete` without a target is ignored.
+
+The classifier is asked one question of the memory about the same thing: does what the
+user said make any part of it false? Only then it is an `update`; telling more is a
+`new`, even on the same topic, and nothing more is a `redundant`. Two rules in the code
+hold whatever the model writes, comparing texts as the content match does: an `update`
+whose text is the one of its target is a `redundant`, with the ratings it had; and one
+text is one memory per call. A second `new` with a text the call already wrote is
+dropped, and a second `update` with it supersedes its target with that same memory,
+which keeps the higher counts and ratings of its parts, and `safety` if any has it.
 
 In eviction the judgment enters the score as the utility term, high meaning keep
 as for the other terms: with `single` the rating's entry in `UTILITY_TABLE`, with

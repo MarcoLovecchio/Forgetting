@@ -40,6 +40,7 @@ from memory_service.config import MemoryConfig  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
     NO_ARCHIVAL_RESULTS,
     CoreMemoryItem,
+    apply_memory_operations,
     archive_items,
     build_candidate_memories,
     count_ratings,
@@ -485,26 +486,6 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertEqual(self.counters(far), (0, self.store.metadatas[far]["updated_at"]),
                          "not returned, it does not count")
 
-    def test_with_the_user_words_the_closest_k_to_either_search_are_returned(self):
-        cat, dog, bike = self.archive("il gatto Milo dorme sul divano", "il cane Argo ama correre",
-                                      "la bici rossa")
-
-        retrieved = retrieve_active_archival_memories("gatto divano", k=2,
-                                                      user_query="come sta il cane Argo")
-
-        self.assertIn("il cane Argo", retrieved)
-        self.assertIn("il gatto Milo", retrieved)
-        self.assertNotIn("la bici rossa", retrieved)
-        self.assertEqual([self.store.metadatas[item]["n_retrieve"] for item in (cat, dog, bike)],
-                         [1, 1, 0], "found by both searches, counted once; cut, not counted")
-
-    def test_user_words_equal_to_the_query_are_one_search(self):
-        self.archive("il gatto Milo")
-
-        retrieve_active_archival_memories("gatto", k=1, user_query=" gatto ")
-
-        self.assertEqual(len(self.store.searches), 1)
-
     def test_the_candidate_search_counts_only_when_asked(self):
         cat, far = self.archive("il gatto Milo", "corre la mattina")
 
@@ -568,6 +549,104 @@ class RetrievalCountTest(unittest.TestCase):
         self.archive("il gatto Milo")
 
         self.assertIn("il gatto Milo", retrieve_active_archival_memories("gatto", k=1))
+
+
+class IdenticalTextTest(unittest.TestCase):
+    """An update that changes nothing, and one text written by several operations of a call."""
+
+    FACT = "L'utente cerca un nuovo lavoro nel non profit"
+
+    def setUp(self):
+        self.store = FakeVectorStore()
+        backends.reset()
+        backends.configure(llm=ScriptedChatModel(tool_responses={}),
+                           vector_store=self.store, config=LIFECYCLE_CONFIG)
+        self.log = []
+
+    def tearDown(self):
+        backends.reset()
+
+    def apply(self, operations, core):
+        core, _ = apply_memory_operations(operations, core, self.log)
+        return core
+
+    def test_an_update_that_keeps_the_text_of_a_core_memory_is_a_redundant(self):
+        cat = CoreMemoryItem(content="L'utente ha un gatto di nome Milo", need=2, gain=2)
+
+        core = self.apply([{"fact": "l'utente ha un gatto di nome Milo.", "operation": "update",
+                            "target_item_id": cat.id, "need": 3, "gain": 3}], [cat])
+
+        self.assertEqual([item.id for item in core], [cat.id])
+        self.assertEqual([entry.op_type for entry in self.log], ["redundant"])
+        self.assertEqual((cat.need, cat.gain), (2, 2), "a redundant keeps the ratings it had")
+
+    def test_an_update_that_keeps_the_text_of_an_archived_memory_is_a_redundant(self):
+        cat = CoreMemoryItem(content="L'utente ha un gatto di nome Milo")
+        archive_items([cat])
+
+        core = self.apply([{"fact": "L'utente ha un gatto di nome Milo", "operation": "update",
+                            "target_item_id": cat.id}], [])
+
+        self.assertEqual(core, [])
+        self.assertEqual(self.store.status_of(cat.id), "active")
+        self.assertEqual([entry.op_type for entry in self.log], ["redundant"])
+
+    def test_updates_writing_one_text_are_one_memory_that_supersedes_every_target(self):
+        job = CoreMemoryItem(content="L'utente vuole cambiare lavoro", n_retrieve=1)
+        role = CoreMemoryItem(content="L'utente cerca un ruolo nel non profit", n_retrieve=4)
+        archive_items([role])
+
+        core = self.apply([
+            {"fact": self.FACT, "operation": "update", "target_item_id": job.id,
+             "need": 2, "gain": 2},
+            {"fact": self.FACT, "operation": "update", "target_item_id": role.id,
+             "need": 3, "gain": 1},
+        ], [job])
+
+        merged, = core
+        self.assertEqual(merged.content, self.FACT)
+        self.assertEqual((job.status, self.store.status_of(role.id)), ("superseded", "superseded"))
+        self.assertEqual((merged.need, merged.gain, merged.n_retrieve), (3, 2, 4),
+                         "the higher of each rating and of the counts")
+        self.assertEqual([(entry.op_type, entry.item_id, entry.related_item_id, entry.ratings)
+                          for entry in self.log],
+                         [("update", merged.id, job.id, {"need": 3, "gain": 2}),
+                          ("update", merged.id, role.id, {"need": 3, "gain": 2})])
+
+    def test_a_safety_part_makes_the_merged_memory_safety(self):
+        diet = CoreMemoryItem(content="L'utente non mangia glutine")
+        doctor = CoreMemoryItem(content="L'utente e' seguito da un medico")
+        fact = "L'utente e' celiaco ed e' seguito da un medico"
+
+        merged, = self.apply([
+            {"fact": fact, "operation": "update", "target_item_id": diet.id, "safety": True},
+            {"fact": fact, "operation": "update", "target_item_id": doctor.id,
+             "need": 3, "gain": 3},
+        ], [diet, doctor])
+
+        self.assertEqual((merged.safety, merged.need, merged.gain), (True, None, None))
+
+    def test_a_new_and_an_update_with_one_text_are_one_memory(self):
+        for order in ("new first", "update first"):
+            with self.subTest(order=order):
+                self.log = []
+                job = CoreMemoryItem(content="L'utente vuole cambiare lavoro")
+                new = {"fact": self.FACT, "operation": "new"}
+                update = {"fact": self.FACT, "operation": "update", "target_item_id": job.id}
+                operations = [new, update] if order == "new first" else [update, new]
+
+                core = self.apply(operations, [job])
+
+                self.assertEqual([item.content for item in core], [self.FACT])
+                self.assertEqual(job.status, "superseded")
+                self.assertEqual({entry.item_id for entry in self.log}, {core[0].id})
+
+    def test_two_new_with_one_text_are_one_memory(self):
+        core = self.apply([{"fact": self.FACT, "operation": "new"},
+                           {"fact": self.FACT + ".", "operation": "new"}], [])
+
+        self.assertEqual([item.content for item in core], [self.FACT])
+        self.assertEqual([entry.op_type for entry in self.log], ["create"])
 
 
 class UnratedCountTest(unittest.TestCase):

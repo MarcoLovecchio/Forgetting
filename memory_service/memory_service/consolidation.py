@@ -11,11 +11,12 @@ archival ones - and the classification decides what happens:
 ===========  =============================================  =======================
 operation    meaning                                        effect
 ===========  =============================================  =======================
-new          nothing similar is in memory                   a new item is created
+new          nothing in memory says it, even on the same    a new item is created
+             topic
 redundant    the same information is already stored         the existing item is
                                                             reinforced (updated_at)
-update       it changes a fact already stored: more         the old item becomes
-             detail, a new value, or it was wrong           "superseded", a new item
+update       it makes part of a stored fact false: it       the old item becomes
+             changed, ended, or was wrong                   "superseded", a new item
                                                             takes its place, and the
                                                             operation log links them
 delete       the user explicitly asked to forget a fact     the item becomes
@@ -118,11 +119,10 @@ class MemoryOperation(BaseModel):
         "The fact itself, in English whatever language the user spoke. Write it about the "
         "user, in the third person, and call them \"the user\", never by name: the name is a "
         "fact of its own. Never write it as a copy of the sentence the user wrote. State "
-        "what is true now, not what changed. For an update, write the whole memory again, "
-        "with what the user said put into it: replace each part their words contradict "
-        "(what they say has changed, ended or is no longer true) and keep every other "
-        "part, even if they did not mention it. The change goes in this fact, not in a "
-        "separate new one; if the text would stay as it was, it is a redundant."))
+        "what is true now, not what changed. For an update, write the whole memory again: "
+        "replace the part the user's words make false (it changed, ended or was wrong) "
+        "and keep every other part, even if they did not mention it. The change goes in "
+        "this fact, not in a separate new one."))
     operation: MemoryOperationType
     target_item_id: Optional[str] = Field(
         default=None,
@@ -137,14 +137,15 @@ class InsertCoreMemories(BaseModel):
     interaction, so only important facts belong here.
 
     For each fact you find in the messages, classify it against the memories you are given
-    as `id: content` pairs:
-    - new: a genuinely new fact, unrelated to any memory you were given (no target_item_id).
-    - redundant: the stored memory already says everything the user said: its text would not
-      change (target_item_id required).
-    - update: the stored memory has to change to include what the user said - a new value, a
-      correction, or one more detail (target_item_id required). The fact REPLACES that memory,
-      so write it complete: what the user contradicts is replaced, the rest is kept, and the
-      change never goes to a separate new fact.
+    as `id: content` pairs. Of the memory about the same thing, ask: does what the user said
+    make any part of it false - it changed, ended, or was wrong?
+    - update: yes (target_item_id required). The fact REPLACES that memory, so write it
+      complete: the part that became false is replaced, the rest is kept, and the change
+      never goes to a separate new fact.
+    - redundant: no, and the memory already says everything the user said (target_item_id
+      required).
+    - new: no, and the user said something no memory says, even on the same topic as one:
+      telling more is a new memory, never a rewrite of an old one (no target_item_id).
     - delete: use ONLY when the user explicitly asks to delete, forget, remove or stop storing
       a specific fact (target_item_id required). Write as fact the text of the memory being
       deleted, not the request.
@@ -548,45 +549,19 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     return archived
 
 
-def _search_k(k: Any) -> int:
-    try:
-        return max(1, int(k))
-    except (TypeError, ValueError):
-        return ARCHIVE_CANDIDATES_K
-
-
 def _search_active(query: str, k: int) -> List[Any]:
     """The k active archival memories closest to a text, as documents with their metadata."""
     try:
+        k = max(1, int(k))
+    except (TypeError, ValueError):
+        k = ARCHIVE_CANDIDATES_K
+
+    try:
         return backends.get_vector_store().similarity_search(
-            query, k=_search_k(k), filter={"status": "active"})
+            query, k=k, filter={"status": "active"})
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
-
-
-def _search_active_merged(texts: Iterable[str], k: int) -> List[Any]:
-    """The k active archival memories closest to any of the texts.
-
-    Each text gets a search of its own; a memory found by more than one keeps its
-    smallest distance, and on equal distance the first text found it first.
-    """
-    k = _search_k(k)
-    best: Dict[str, Tuple[float, int, Any]] = {}
-    for text in dict.fromkeys(str(text or "").strip() for text in texts):
-        if not text:
-            continue
-        try:
-            scored = backends.get_vector_store().similarity_search_with_score(
-                text, k=k, filter={"status": "active"})
-        except Exception as error:
-            print(f"\tArchive search failed: {error}")
-            continue
-        for doc, distance in scored:
-            order = best[doc.id][1] if doc.id in best else len(best)
-            if doc.id not in best or distance < best[doc.id][0]:
-                best[doc.id] = (distance, order, doc)
-    return [doc for _, _, doc in sorted(best.values(), key=lambda entry: entry[:2])[:k]]
 
 
 def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str]]:
@@ -660,18 +635,14 @@ def record_uses(item_ids: Iterable[str], core_memory: Iterable[CoreMemoryItem]) 
 
 
 def retrieve_active_archival_memories(query: str, k: int = 5, stamp: bool = True,
-                                      dated: bool = False, user_query: str = "") -> str:
+                                      dated: bool = False) -> str:
     """Archive lookup for the retrieval path, tombstones excluded.
 
     The search that counts as a retrieval: the candidates the classifier sees during
     consolidation go through search_archive, recorded only with count_candidate_search.
-    With `user_query`, the user's own words, the archive is searched with them too and
-    the k memories closest to either text are returned: the keywords the model writes
-    can miss what the question finds, and a question in another language than the
-    archive lands further, so it rarely takes a place.
     With `dated` every memory also carries the day it was last written.
     """
-    found = _search_active_merged([query, user_query], k)
+    found = _search_active(query, k)
     if not found:
         return NO_ARCHIVAL_RESULTS
     record_retrievals((doc.id for doc in found), stamp)
@@ -878,6 +849,48 @@ def _target_judgment(target_item: Optional[CoreMemoryItem],
     return {name: archived_target["metadata"].get(name) for name in names}
 
 
+def _strongest_judgment(item: CoreMemoryItem, ratings: Dict[str, Any]) -> None:
+    """Safety if either judgment has it, otherwise the higher of each rating."""
+    if item.safety or ratings.get("safety"):
+        item.safety = True
+        for name in RATING_SCALES:
+            setattr(item, name, None)
+        return
+    for name in RATING_SCALES:
+        values = [value for value in (getattr(item, name), ratings.get(name)) if value is not None]
+        setattr(item, name, max(values) if values else None)
+
+
+def _merge_into(item: CoreMemoryItem, target_item: Optional[CoreMemoryItem],
+                target_id: str, archived_target: Optional[dict], ratings: Dict[str, Any],
+                log: List[OperationLogEntry]) -> bool:
+    """A second update written with the text of a memory this call already wrote.
+
+    Its target is superseded by that memory, which keeps the higher counts and the
+    strongest judgment, so it leaves no sooner than any of its parts. False when the
+    target is no longer active and there is nothing to merge.
+    """
+    if target_item is not None:
+        counts = (target_item.n_retrieve, target_item.n_used)
+        _retire_item(target_item, "superseded")
+    elif archived_target is not None and archived_target["metadata"].get("status") == "active":
+        if _rewrite_archive_metadata(target_id, status="superseded") is None:
+            return False
+        counts = (archived_target["metadata"]["n_retrieve"], archived_target["metadata"]["n_used"])
+    else:
+        return False
+    item.n_retrieve, item.n_used = max(item.n_retrieve, counts[0]), max(item.n_used, counts[1])
+    _strongest_judgment(item, ratings)
+    for entry in log:
+        if entry.item_id == item.id and entry.op_type in ("create", "update"):
+            entry.ratings = logged_ratings(item)
+    log.append(OperationLogEntry(
+        op_type="update", item_id=item.id, related_item_id=target_id, content=item.content,
+        ratings=logged_ratings(item)))
+    print(f"\t[update] same text as {item.id}: {target_id} merged into it")
+    return True
+
+
 def apply_memory_operations(
     operations: Iterable[Any],
     core_memory: Iterable[CoreMemoryItem],
@@ -890,6 +903,7 @@ def apply_memory_operations(
     """
     items = list(core_memory)
     counters = {"new": 0, "redundant": 0, "update": 0, "delete": 0}
+    written: Dict[str, CoreMemoryItem] = {}  # by _comparable text, what this call wrote
 
     for raw_operation in operations or []:
         if not isinstance(raw_operation, dict):
@@ -931,6 +945,12 @@ def apply_memory_operations(
             print(f"\tNo target for '{operation}', storing {fact!r} as a new memory")
             operation = "new"
 
+        if operation == "update":
+            stored = target_item.content if target_item is not None else archived_target["content"]
+            if _comparable(fact) == _comparable(stored):
+                print(f"\t[update] same text as {target_id}: redundant")
+                operation = "redundant"
+
         # Only new and update are judged: a redundant keeps the ratings it had.
         ratings = read_ratings(raw_operation)
         if operation == "update" and all(value is None for value in ratings.values()):
@@ -940,8 +960,19 @@ def apply_memory_operations(
                 print(f"\t[update] no judgment given, inherited from {target_id}")
                 ratings = inherited
 
+        twin = written.get(_comparable(fact)) if operation in ("new", "update") else None
+        if twin is not None:
+            if operation == "update":
+                if _merge_into(twin, target_item, target_id, archived_target, ratings, log):
+                    counters["update"] += 1
+            else:
+                print(f"\t[new] same text as {twin.id}, written in this call: skipped")
+            continue
+
         if operation == "new":
-            items.append(create_item(fact, log, ratings))
+            item = create_item(fact, log, ratings)
+            items.append(item)
+            written[_comparable(fact)] = item
             counters["new"] += 1
 
         elif target_item is not None:
@@ -951,7 +982,9 @@ def apply_memory_operations(
             elif operation == "delete":
                 delete_item(target_item, log)
             else:  # update
-                items.append(supersede_item(target_item, fact, log, ratings))
+                item = supersede_item(target_item, fact, log, ratings)
+                items.append(item)
+                written[_comparable(fact)] = item
             counters[operation] += 1
 
         else:
@@ -964,6 +997,7 @@ def apply_memory_operations(
                 new_item = supersede_archived_item(target_id, fact, log, ratings)
                 if new_item is not None:
                     items.append(new_item)
+                    written[_comparable(fact)] = new_item
             counters[operation] += 1
 
     summary = ", ".join(f"{count} {name}" for name, count in counters.items() if count)

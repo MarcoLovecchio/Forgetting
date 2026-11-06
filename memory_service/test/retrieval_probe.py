@@ -6,7 +6,8 @@ rebuilt. Its memories are embedded again with the service's embedding model and 
 by exact cosine for five queries: the question, the query the model wrote (from the
 user's log), that query without dates, that query with Qwen3-Embedding's instruction,
 and the question in Italian, as the robot's users ask it while the facts are in English;
-and for the merge of each question with the model's query, as the service now searches.
+and for the merge of each question with the model's query (max cosine). On runs where the
+service already searched with the user's words the model query is the question.
 The Italian questions are translated once by the service's model and kept in --italian.
 It prints:
 
@@ -153,7 +154,7 @@ def probe_questions(embeddings: Any, content: Dict[str, str], asked: List[Tuple]
             continue
         matrix = np.array([memory[content[item]] for item in archived])
         similarity = {name: matrix @ vectors[name][number] for name in variants}
-        # The service's search: the closest to either text is the top of the larger cosine.
+        # A merged search: the closest to either text is the top of the larger cosine.
         for name, source in MERGED.items():
             similarity[name] = np.maximum(similarity[source], similarity["model query"])
         ranked, top = {}, {}

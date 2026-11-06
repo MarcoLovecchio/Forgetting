@@ -151,16 +151,19 @@ def interaction_type_node(state: AgentState) -> str:
 def empty_node(state: AgentState) -> AgentState:
     return state
 
+# k when nobody chooses it: retrieval_mode "always" without retrieve_k.
+RETRIEVE_K = 20
+
+
 # Tool to retrieve memories from the archive
 @tool
-def retrieve_memory(query: str, k: int = 20,
+def retrieve_memory(k: int = RETRIEVE_K,
+                    query: Annotated[str, InjectedToolArg] = "",
                     stamp_retrieved_at: Annotated[bool, InjectedToolArg] = True,
-                    dated: Annotated[bool, InjectedToolArg] = False,
-                    user_query: Annotated[str, InjectedToolArg] = "") -> str:
-    """Retrieve relevant memories from the archival vector store based on a query.
-    Returns up to k relevant memories.
-    Think about the best value of k based on the complexity of the query."""
-    results = retrieve_active_archival_memories(query, k, stamp_retrieved_at, dated, user_query)
+                    dated: Annotated[bool, InjectedToolArg] = False) -> str:
+    """Search the archive for what the user asked. Returns up to k memories.
+    Think about the best value of k based on the complexity of the question."""
+    results = retrieve_active_archival_memories(query, k, stamp_retrieved_at, dated)
     print(results)
     return results
 
@@ -180,12 +183,7 @@ DECIDE_PROMPT = ChatPromptTemplate.from_messages([
          retrieve_memory searches: calling it is what opens the archive, so calling it is
          not a failure. Replying "I don't know" is not an answer, it is a lookup that was
          not made. Call NoSearchNeeded only when the facts above already contain what the
-         query asks for.
-
-         Write the search query in the same language as the facts listed above: the
-         archive is written in that same language, which is not necessarily the one the
-         user is speaking right now. A query in the wrong language lands further from the
-         memory it should find."""),
+         query asks for."""),
     ("human", """{input}
 
 Do the facts kept at hand already contain what this asks for? If they do, call
@@ -193,41 +191,19 @@ NoSearchNeeded. If they do not, or you are not sure, call retrieve_memory: the a
 be in the archive, and not looking is how it gets missed."""),
 ])
 
-# retrieval_mode "always": the search always happens, the model writes query and k.
-SEARCH_ONLY_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You search the assistant's archival memory.
-
-         Facts kept at hand: {core_memory}
-
-         Your previous interactions:
-
-         {previous_messages}
-
-         Those facts are only the memories kept always at hand. Everything older or less
-         frequently used lives in an ARCHIVE that is not listed above and that
-         retrieve_memory searches.
-
-         Write the search query in the same language as the facts listed above: the
-         archive is written in that same language, which is not necessarily the one the
-         user is speaking right now. A query in the wrong language lands further from the
-         memory it should find."""),
-    ("human", """{input}
-
-Call retrieve_memory to search the archive for what this asks for."""),
-])
-
 
 # Define the retrieval node
 def retrieval_node(state: AgentState, runtime: Runtime[MemoryConfig]):
     print("\tRetrieval node activated")
-    user_query, history = query_and_history(state)
-
     if runtime.context.retrieval_mode == "always":
-        prompt, tools = SEARCH_ONLY_PROMPT, [retrieve_memory]
-    else:
-        prompt, tools = DECIDE_PROMPT, [retrieve_memory, NoSearchNeeded]
+        # Nothing for the model to decide or write: the search is the user's words.
+        search = AIMessage(content="", tool_calls=[
+            {"name": "retrieve_memory", "args": {"k": RETRIEVE_K}, "id": "always"}])
+        return {"tool_calls": state["tool_calls"] + [search]}
 
-    chain = prompt | get_llm("retrieval").bind_tools(tools, tool_choice=REQUIRED)
+    user_query, history = query_and_history(state)
+    chain = DECIDE_PROMPT | get_llm("retrieval").bind_tools(
+        [retrieve_memory, NoSearchNeeded], tool_choice=REQUIRED)
     response = _timed("retrieval", lambda: chain.invoke(
         {"input": user_query,
          "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
@@ -249,14 +225,16 @@ def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
         tool_args = tool_call["args"]
 
         if tool_name == "retrieve_memory":
+            # A query the model still writes is dropped: the user's words find more.
+            tool_args = {"query": query_and_history(state)[0],
+                         "k": tool_args.get("k") or RETRIEVE_K}
             if runtime.context.retrieve_k is not None:
-                tool_args = {**tool_args, "k": runtime.context.retrieve_k}
+                tool_args["k"] = runtime.context.retrieve_k
             print(f"Invoking retrieve_memory with args: {tool_args}")
             # When uses are counted, generate_answer updates retrieved_at.
             result = retrieve_memory.invoke(
                 {**tool_args, "stamp_retrieved_at": not runtime.context.counts_used,
-                 "dated": runtime.context.answer_with_dates,
-                 "user_query": query_and_history(state)[0]})
+                 "dated": runtime.context.answer_with_dates})
         elif tool_name == "NoSearchNeeded":
             print(f"\tNo archive search: {tool_args.get('reason', '')}")
             result = NO_SEARCH_NEEDED
@@ -465,13 +443,16 @@ CONSOLIDATION_SYSTEM = """You are a tool that extracts facts about the user and 
            - It tells something about the user: go on with step 2.
 
         2. For each piece of information, look among the known memories for one about the
-           same fact. Two facts that can change independently are two memories, even on the
-           same topic.
-           - None: new.
-           - One exists and its text already says everything the user said: redundant.
-           - One exists but its text would have to change to include what the user said - a
-             new value, a correction, or one more detail: update, written as the complete new
-             memory.
+           same thing, and ask: does what the user said make any part of it false - it
+           changed, ended, or was wrong?
+           - Yes: update, written as the complete memory with only the false part replaced.
+           - No, and its text already says everything the user said: redundant.
+           - No, and the user said something it does not say: new, even on the same topic.
+             Telling more about something is a new memory; it never rewrites an old one.
+           - No memory is about it: new.
+           A change told as an event still makes the old memory false: "I moved to Rome"
+           updates the memory with the city, "I sold my car" the one saying the user owns
+           it. Two facts that can change independently are two memories.
 
         Facts come only from what the USER said: the assistant's replies are context, and a
         fact that appears only there gets no operation - not even a redundant.
