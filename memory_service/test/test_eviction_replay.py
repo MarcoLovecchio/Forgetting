@@ -27,6 +27,7 @@ CONFIG = MemoryConfig(
     eviction_combination="weighted_sum",
     eviction_time_decay_field="updated_at",
     eviction_time_decay_function="power",
+    eviction_frequency_function="log",
     prune_fraction=0.10,
     track_used=False,
     generate_answer=False,
@@ -162,7 +163,7 @@ class OverTheLimitTest(unittest.TestCase):
         replay = replayed(self.events(), limit=1, rule=rule)
 
         self.assertEqual(sorted(replay.items), ["b"], "the oldest decays the most")
-        self.assertEqual(rule.name, "score none weighted_sum 0.10")
+        self.assertEqual(rule.name, "score none weighted_sum log 0.10")
 
 
 class DivergenceTest(unittest.TestCase):
@@ -210,6 +211,22 @@ class TwinUpdateTest(unittest.TestCase):
 
         self.assertEqual(sorted(replay.items), ["c"])
         self.assertEqual(replay.items["c"].n_retrieve, 1, "b's retrieval, not a's zero")
+        self.assertEqual(replay.items["c"].n_search, 1, "b's search, not a's zero")
+
+
+class SearchCountTest(unittest.TestCase):
+
+    def test_a_question_is_a_chance_for_every_archived_memory_and_an_update_keeps_it(self):
+        config = dataclasses.replace(CONFIG, core_memory_limit=15)
+        events = [Insert(0, at(0), [operation("create", "a", 0, "x" * 10)]),
+                  Insert(0, at(1), [operation("create", "b", 1, "y" * 10)]),
+                  asked("0:0", 2), asked("0:1", 3),
+                  Insert(0, at(4), [operation("update", "a2", 4, "w" * 10, related="a")])]
+
+        replay = replayed(events, config=config)
+
+        self.assertEqual(replay.items["b"].n_search, 0, "in the core, nothing searches it")
+        self.assertEqual(replay.items["a2"].n_search, 2)
 
 
 class IndicatorsTest(unittest.TestCase):

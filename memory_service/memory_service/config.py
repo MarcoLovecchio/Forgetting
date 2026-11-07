@@ -113,6 +113,7 @@ class MemoryConfig:
     eviction_time_decay_field: Literal["updated_at", "retrieved_at"] = "updated_at"
     eviction_time_decay_function: Literal["weibull", "power"] = "power"
     eviction_time_decay_scale_hours: float = 24 * 91  # tau, about 3 months
+    eviction_frequency_function: Literal["log", "rate"] = "rate"
     prune_fraction: float = 0.10
     count_candidate_search: bool = False
     retrieve_k: Optional[int] = 20

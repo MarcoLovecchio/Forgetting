@@ -25,7 +25,8 @@ What the replay does with the trace:
     delete          the target leaves
     end of insert   choose_core_split with the trace's core limit, then, over the archive
                     limit, choose_prune_targets or the reference rule
-    question        the QUESTION_K archived memories closest to it get n_retrieve + 1
+    question        the QUESTION_K archived memories closest to it get n_retrieve + 1,
+                    every archived memory n_search + 1
 
 The archive, evict and prune entries of the trace are left out: the replay decides
 them. When an operation targets a memory the rule already removed, the real system
@@ -33,9 +34,9 @@ would have gone another way. Each case is counted, and handled as the system wou
 update keeps its new memory, which starts from zero counts, a redundant stores its fact
 again as a new memory, a delete finds nothing.
 
-The rules: the service's score, with utility none or the trace's, every combination and
-PRUNE_FRACTIONS; FIFO, LRU, LFU, utility alone and random (RANDOM_SEEDS) as references,
-with the trace's prune fraction; the oracle, which knows the questions to come and
+The rules: the service's score, with utility none or the trace's, every combination, both
+frequency functions and PRUNE_FRACTIONS; FIFO, LRU, LFU, utility alone and random
+(RANDOM_SEEDS) as references, with the trace's prune fraction; the oracle, which knows the questions to come and
 removes first what no question will need, then what is needed latest.
 
 The indicators, summed over the users:
@@ -103,6 +104,7 @@ from memory_service.eviction import (  # noqa: E402
 
 LIMITS = (25, 50, 100, 150, 200)
 COMBINATIONS = ("weighted_sum", "product", "expected_gain")
+FREQUENCY_FUNCTIONS = ("log", "rate")
 PRUNE_FRACTIONS = (0.05, 0.10, 0.20)
 RANDOM_SEEDS = 20
 QUESTION_K = adapter.QUESTION_K
@@ -206,7 +208,8 @@ class ScoreRule(Rule):
     def __init__(self, config: MemoryConfig, **changes: Any):
         self.config = replace(config, **changes)
         self.name = (f"score {self.config.consolidation_utility} "
-                     f"{self.config.eviction_combination} {self.config.prune_fraction:.2f}")
+                     f"{self.config.eviction_combination} "
+                     f"{self.config.eviction_frequency_function} {self.config.prune_fraction:.2f}")
 
     def choose(self, replay: "Replay", now: datetime) -> List[str]:
         active = [(item_id, replay.items[item_id].content,
@@ -260,13 +263,15 @@ def random_rule(seed: int, fraction: float) -> Rule:
 
 
 def score_rules(config: MemoryConfig) -> List[Rule]:
-    """Utility none or the trace's, every combination and fraction, the trace's included."""
+    """Utility none or the trace's, every combination, frequency and fraction: the trace's too."""
     utilities = dict.fromkeys(("none", config.consolidation_utility))
     combinations = dict.fromkeys(COMBINATIONS + (config.eviction_combination,))
+    frequencies = dict.fromkeys(FREQUENCY_FUNCTIONS + (config.eviction_frequency_function,))
     fractions = dict.fromkeys(PRUNE_FRACTIONS + (config.prune_fraction,))
     return [ScoreRule(config, consolidation_utility=utility, eviction_combination=combination,
-                      prune_fraction=fraction)
-            for utility in utilities for combination in combinations for fraction in fractions]
+                      eviction_frequency_function=frequency, prune_fraction=fraction)
+            for utility in utilities for combination in combinations
+            for frequency in frequencies for fraction in fractions]
 
 
 # --------------------------------------------------------------------------- #
@@ -339,11 +344,11 @@ class Replay:
         return moments[position] if position < len(moments) else None
 
     def _add(self, item_id: str, content: str, time: datetime, ratings: Optional[Dict[str, Any]],
-             counts: Tuple[int, int] = (0, 0)) -> None:
+             counts: Tuple[int, int, int] = (0, 0, 0)) -> None:
         fields = {name: value for name, value in (ratings or {}).items() if name in RATING_FIELDS}
         self.items[item_id] = CoreMemoryItem(id=item_id, content=content, updated_at=time,
                                              retrieved_at=time, n_retrieve=counts[0],
-                                             n_used=counts[1], **fields)
+                                             n_used=counts[1], n_search=counts[2], **fields)
         self.core.add(item_id)
         self.created[item_id] = time
         self.born.setdefault(item_id, self.session)
@@ -400,14 +405,15 @@ class Replay:
                 gone = self._drop(old)
                 merged.n_retrieve = max(merged.n_retrieve, gone.n_retrieve)
                 merged.n_used = max(merged.n_used, gone.n_used)
+                merged.n_search = max(merged.n_search, gone.n_search)
             for name, value in (operation.get("ratings") or {}).items():
                 if name in RATING_FIELDS:
                     setattr(merged, name, value)
             return
-        counts = (0, 0)
+        counts = (0, 0, 0)
         if old in self.items:
             gone = self._drop(old)
-            counts = (gone.n_retrieve, gone.n_used)
+            counts = (gone.n_retrieve, gone.n_used, gone.n_search)
         self._add(new, operation["content"], time, operation.get("ratings"), counts)
 
     def _redundant(self, operation: Dict[str, Any], time: datetime) -> None:
@@ -427,6 +433,8 @@ class Replay:
         ranked = self.rank(event.key, [(item_id, self.items[item_id].content)
                                        for item_id in self.archive])
         found = ranked[:QUESTION_K]
+        for item_id in self.archive if found else ():
+            self.items[item_id].n_search += 1
         for item_id in found:
             self.items[item_id].n_retrieve += 1
             self.items[item_id].retrieved_at = event.time

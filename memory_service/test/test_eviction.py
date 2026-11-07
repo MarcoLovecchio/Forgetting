@@ -45,6 +45,7 @@ from memory_service.eviction import (  # noqa: E402
     power_decay_term,
     prune_archive,
     prune_count,
+    rate_term,
     utility_term,
     weibull_decay_term,
 )
@@ -60,6 +61,7 @@ EVICTION_CONFIG = MemoryConfig(
     core_memory_limit=2000,
     eviction_time_decay_field="updated_at",
     eviction_time_decay_function="weibull",
+    eviction_frequency_function="log",
     eviction_combination="weighted_sum",
     consolidation_utility="none",
     track_used=False,
@@ -386,6 +388,33 @@ class UtilityTermTest(unittest.TestCase):
         for combination in ("weighted_sum", "product", "expected_gain"):
             with self.subTest(combination=combination):
                 self.assertAlmostEqual(combine_terms(terms, combination), 0.3)
+
+
+class RateTermTest(EvictionTestCase):
+    """The frequency as a rate: the count per search run while the memory was archived."""
+
+    RATE = dataclasses.replace(EVICTION_CONFIG, eviction_frequency_function="rate")
+
+    def test_laplace_rule_and_never_above_one(self):
+        self.assertEqual(rate_term(0, 0), 0.5)
+        self.assertAlmostEqual(rate_term(3, 10), 4 / 12)
+        self.assertAlmostEqual(rate_term(5, 2), 6 / 7, msg="uses also counted in the core")
+
+    def test_the_rate_reads_n_search_and_needs_no_highest(self):
+        metadata = {"updated_at": NOW.isoformat(), "n_retrieve": 3, "n_used": 0, "n_search": 10}
+
+        for frequency_max in (3, 50):
+            with self.subTest(frequency_max=frequency_max):
+                self.assertAlmostEqual(
+                    eviction_terms(metadata, self.RATE, NOW, frequency_max)["frequency"], 4 / 12)
+
+    def test_never_found_in_many_searches_leaves_before_never_searched(self):
+        searched = CoreMemoryItem(content="corre la mattina", n_search=10, updated_at=NOW)
+        fresh = CoreMemoryItem(content="ha un gatto di nome Milo", updated_at=NOW)
+        archive_items([searched, fresh])
+
+        self.assertEqual(prune_archive(self.log, self.RATE, now=NOW), [searched.id])
+        self.assertEqual(self.log[0].score_terms["frequency"], 1 / 12)
 
 
 class ExpectedGainTest(EvictionTestCase):

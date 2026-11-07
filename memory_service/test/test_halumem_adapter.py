@@ -270,13 +270,14 @@ class RunTest(unittest.TestCase):
         with mock.patch.object(adapter.MemoryConfig, "from_environment",
                                return_value=environment):
             config = adapter.run_config(self.arguments(
-                "--utility", "single", "--combination", "product", "--core-limit", "300",
-                "--archive-limit", "20", "--prune-fraction", "0.25", "--model", "grande"))
+                "--utility", "single", "--combination", "product", "--frequency", "rate",
+                "--core-limit", "300", "--archive-limit", "20", "--prune-fraction", "0.25",
+                "--model", "grande"))
 
         self.assertEqual((config.consolidation_utility, config.eviction_combination,
-                          config.core_memory_limit, config.archive_memory_limit,
-                          config.prune_fraction),
-                         ("single", "product", 300, 20, 0.25))
+                          config.eviction_frequency_function, config.core_memory_limit,
+                          config.archive_memory_limit, config.prune_fraction),
+                         ("single", "product", "rate", 300, 20, 0.25))
         self.assertEqual(config.llm_config, {"model_name": "grande", "temperature": 1.0})
 
     def test_a_run_is_not_mixed_with_a_different_one(self):

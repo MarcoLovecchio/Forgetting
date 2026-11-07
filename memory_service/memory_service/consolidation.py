@@ -74,6 +74,8 @@ class CoreMemoryItem(BaseModel):
     n_retrieve: int = 0
     retrieved_at: datetime = Field(default_factory=backends.now)
     n_used: int = 0
+    # Searches run while it was in the archive: the chances it had to be found.
+    n_search: int = 0
 
     # None when not given: consolidation_utility off, or a safety fact.
     safety: Optional[bool] = None
@@ -454,6 +456,7 @@ def archive_metadata(item: CoreMemoryItem) -> dict:
         "updated_at": item.updated_at.isoformat(),
         "n_retrieve": item.n_retrieve,
         "n_used": item.n_used,
+        "n_search": item.n_search,
         "retrieved_at": item.retrieved_at.isoformat(),
     }
     for name in ("safety", *RATING_SCALES):
@@ -581,12 +584,37 @@ def count_archived(item_ids: Iterable[str], counter: str, stamp: bool) -> None:
 
 
 def record_retrievals(item_ids: Iterable[str], stamp: bool = True) -> None:
-    """Count a retrieval on archived memories: n_retrieve + 1, retrieved_at now.
+    """Count a search: n_search + 1 on every active archived memory, and on the ones
+    it found n_retrieve + 1 and retrieved_at now.
 
     Without `stamp` retrieved_at is left to record_uses: when uses are counted
-    (track_used, with generate_answer) it is the time of the last use.
+    (track_used, with generate_answer) it is the time of the last use. A search that
+    found nothing counts nothing: the archive was empty or the store failed. Metadata
+    only, and it never raises, as count_archived.
     """
-    count_archived(item_ids, "n_retrieve", stamp)
+    found = set(item_ids)
+    if not found:
+        return
+    try:
+        store = backends.get_vector_store()
+        result = store.get(where={"status": "active"}) or {}
+        ids = result.get("ids") or []
+        metadatas = result.get("metadatas") or [{}] * len(ids)
+        now = backends.now().isoformat()
+        updated = []
+        for doc_id, metadata in zip(ids, metadatas):
+            metadata = dict(metadata)
+            # Archives written before n_search existed lack it.
+            metadata["n_search"] = metadata.get("n_search", 0) + 1
+            if doc_id in found:
+                metadata["n_retrieve"] += 1
+                if stamp:
+                    metadata["retrieved_at"] = now
+            updated.append(metadata)
+        if ids:
+            store._collection.update(ids=ids, metadatas=updated)
+    except Exception as error:
+        print(f"\tRetrieval not recorded: {error}")
 
 
 def record_uses(item_ids: Iterable[str], core_memory: Iterable[CoreMemoryItem]) -> None:
@@ -698,12 +726,14 @@ def supersede_item(
 ) -> CoreMemoryItem:
     """Replace a core item with a newer version that points back at it.
 
-    The newer version inherits n_retrieve and n_used: it is the same fact, evolved.
-    The ratings are not inherited: an update is judged again (see _target_judgment).
+    The newer version inherits n_retrieve, n_used and n_search: it is the same fact,
+    evolved. The ratings are not inherited: an update is judged again (see
+    _target_judgment).
     """
     _retire_item(old_item, "superseded")
     new_item = CoreMemoryItem(content=new_content, n_retrieve=old_item.n_retrieve,
-                              n_used=old_item.n_used, **(ratings or {}))
+                              n_used=old_item.n_used, n_search=old_item.n_search,
+                              **(ratings or {}))
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
         related_item_id=old_item.id, content=new_content, ratings=logged_ratings(new_item)))
@@ -747,15 +777,17 @@ def supersede_archived_item(
 ) -> Optional[CoreMemoryItem]:
     """Flag an archived memory as superseded; the newer version starts in core memory.
 
-    The newer version inherits n_retrieve and n_used and is judged again, as in
-    supersede_item.
+    The newer version inherits n_retrieve, n_used and n_search and is judged again,
+    as in supersede_item.
     """
     archived = _rewrite_archive_metadata(item_id, status="superseded")
     if archived is None:
         return None
     new_item = CoreMemoryItem(content=new_content,
                               n_retrieve=archived["metadata"]["n_retrieve"],
-                              n_used=archived["metadata"]["n_used"], **(ratings or {}))
+                              n_used=archived["metadata"]["n_used"],
+                              n_search=archived["metadata"].get("n_search", 0),
+                              **(ratings or {}))
     log.append(OperationLogEntry(
         op_type="update", item_id=new_item.id,
         related_item_id=item_id, content=new_content, ratings=logged_ratings(new_item)))
@@ -837,20 +869,23 @@ def _merge_into(item: CoreMemoryItem, target_item: Optional[CoreMemoryItem],
                 log: List[OperationLogEntry]) -> bool:
     """A second update written with the text of a memory this call already wrote.
 
-    Its target is superseded by that memory, which keeps the higher counts and the
-    strongest judgment, so it leaves no sooner than any of its parts. False when the
-    target is no longer active and there is nothing to merge.
+    Its target is superseded by that memory, which keeps the higher counts, n_search
+    included as an update would inherit it, and the strongest judgment: on the log
+    frequency it leaves no sooner than any of its parts. False when the target is no
+    longer active and there is nothing to merge.
     """
     if target_item is not None:
-        counts = (target_item.n_retrieve, target_item.n_used)
+        counts = (target_item.n_retrieve, target_item.n_used, target_item.n_search)
         _retire_item(target_item, "superseded")
     elif archived_target is not None and archived_target["metadata"].get("status") == "active":
         if _rewrite_archive_metadata(target_id, status="superseded") is None:
             return False
-        counts = (archived_target["metadata"]["n_retrieve"], archived_target["metadata"]["n_used"])
+        metadata = archived_target["metadata"]
+        counts = (metadata["n_retrieve"], metadata["n_used"], metadata.get("n_search", 0))
     else:
         return False
     item.n_retrieve, item.n_used = max(item.n_retrieve, counts[0]), max(item.n_used, counts[1])
+    item.n_search = max(item.n_search, counts[2])
     _strongest_judgment(item, ratings)
     for entry in log:
         if entry.item_id == item.id and entry.op_type in ("create", "update"):

@@ -20,13 +20,13 @@ A session goes like this:
 
 - exchange by exchange, as in production: both messages, then an insert. The clock is
   set to the timestamp of the exchange, so the ages the eviction sees are the dataset's;
-- count_candidate_search is off: n_retrieve grows only with the questions;
+- count_candidate_search is off: n_retrieve and n_search grow only with the questions;
 - at the end the last exchange is still in the window: flush_window consolidates it,
   so it is scored in its own session, and the next session starts with no messages;
 - the questions go through the retrieve branch: the answer is the service's. The search
   returns 20 memories, as HaluMem gives every other system, and the answer reads the day
   of each memory. They leave `messages` right after, so they are never consolidated,
-  but like any search they count in n_retrieve.
+  but like any search they count in n_retrieve and n_search.
 
 The dataset calls people by name and the service calls them "the user": neutral rewrites
 what goes to the service, personalized what goes to the judge.
@@ -266,6 +266,7 @@ def run_config(arguments: argparse.Namespace) -> MemoryConfig:
     varying = {name: value for name, value in (
         ("consolidation_utility", arguments.utility),
         ("eviction_combination", arguments.combination),
+        ("eviction_frequency_function", arguments.frequency),
         ("core_memory_limit", arguments.core_limit),
         ("archive_memory_limit", arguments.archive_limit),
         ("prune_fraction", arguments.prune_fraction),
@@ -571,6 +572,7 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     replay.add_argument("--workers", type=int, default=1, help="users at the same time")
     replay.add_argument("--utility", choices=("none", "single", "need_gain"))
     replay.add_argument("--combination", choices=("weighted_sum", "product", "expected_gain"))
+    replay.add_argument("--frequency", choices=("log", "rate"))
     replay.add_argument("--core-limit", type=int, dest="core_limit")
     replay.add_argument("--archive-limit", type=int, dest="archive_limit")
     replay.add_argument("--prune-fraction", type=float, dest="prune_fraction")

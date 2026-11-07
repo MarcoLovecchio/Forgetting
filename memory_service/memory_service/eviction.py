@@ -74,6 +74,12 @@ weights, and from there it also reaches the log.
                       near 0. The count is n_used when uses are counted
                       (track_used, with generate_answer), n_retrieve otherwise:
                       as for the time decay, only one is ever used.
+    rate_term         in its place with eviction_frequency_function `rate`: the
+                      same count per search run while the memory was in the
+                      archive, n_search, with Laplace's rule: (count + 1) /
+                      (n_search + 2). A memory never searched is at 0.5 instead
+                      of 0, and one searched often and never found falls toward
+                      0; it needs no highest among the candidates.
 
 combine_terms follows eviction_combination:
 
@@ -285,6 +291,12 @@ def frequency_term(count: int, count_max: int) -> float:
     return math.log1p(count) / math.log1p(count_max)
 
 
+def rate_term(count: int, searches: int) -> float:
+    """The count per search with Laplace's rule: (count + 1) / (searches + 2)."""
+    # n_used also grows in the core, where nothing is searched: never above 1.
+    return (count + 1) / (max(searches, count) + 2)
+
+
 def utility_term(utility: int) -> float:
     """The entry of UTILITY_TABLE for the classifier's 1-5 rating."""
     return UTILITY_TABLE[utility - 1]
@@ -326,7 +338,11 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
     terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now,
                                 config.eviction_time_decay_scale_hours)
-    terms["frequency"] = frequency_term(metadata[frequency_field(config)], frequency_max)
+    count = metadata[frequency_field(config)]
+    if config.eviction_frequency_function == "rate":
+        terms["frequency"] = rate_term(count, metadata.get("n_search", 0))
+    else:
+        terms["frequency"] = frequency_term(count, frequency_max)
     return terms
 
 
