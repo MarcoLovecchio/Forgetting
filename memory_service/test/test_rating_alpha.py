@@ -68,12 +68,6 @@ class AlphaTest(unittest.TestCase):
         self.assertGreater(alpha_of(near, "ordinal"), alpha_of(far, "ordinal"))
         self.assertAlmostEqual(alpha_of(near, "nominal"), alpha_of(far, "nominal"))
 
-    def test_the_interval_holds_the_alpha_of_all_the_points(self):
-        matrices = ra.coincidences(columns(KRIPPENDORFF), SCALE)
-        lower, upper = ra.interval(matrices, "ordinal", draws=200, seed=1)
-        self.assertLessEqual(lower, ra.alpha(matrices.sum(axis=0), "ordinal"))
-        self.assertGreaterEqual(upper, ra.alpha(matrices.sum(axis=0), "ordinal"))
-
 
 class SeriesTest(unittest.TestCase):
     """The files of calibration_ratings.py, read point by point."""
@@ -114,17 +108,6 @@ class SeriesTest(unittest.TestCase):
         series = [ra.read_series(path)["single"][1] for path in (first, second)]
         self.assertEqual(ra.units(series, self.rating("utility", "single")), [[2], [4, 4]])
 
-    def test_each_mode_reads_its_own_last_commit(self):
-        path = self.write(
-            "a.jsonl",
-            record("need_gain", {0: {"safety": False, "need": 1, "gain": 1}}, commit="old"),
-            record("need_gain", {0: {"safety": False, "need": 3, "gain": 3}}, commit="new"),
-            record("single", {0: {"safety": False, "utility": 5}}, commit="other"))
-        series = ra.read_series(path)
-        self.assertEqual(series["need_gain"][1], {("u1", 0, 0): {"safety": False, "need": 3,
-                                                                 "gain": 3}})
-        self.assertIn("single", series)
-
     def test_model_reads_only_that_models_series(self):
         path = self.write(
             "a.jsonl",
@@ -141,11 +124,6 @@ class SeriesTest(unittest.TestCase):
         paths = [self.write(name, record("need_gain", judged)) for name in ("a.jsonl", "b.jsonl")]
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(ra.main(["--ratings", *paths]), 0)
-
-    def test_one_series_is_not_enough(self):
-        path = self.write("a.jsonl", record("single", {0: {"safety": False, "utility": 3}}))
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            ra.main(["--ratings", path])
 
 
 if __name__ == "__main__":

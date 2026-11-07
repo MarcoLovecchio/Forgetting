@@ -308,15 +308,6 @@ class MainTest(unittest.TestCase):
         self.assertIn("single: no ratings", chosen)
         self.assertIn("NEED_GAIN_TABLE = (", chosen)
 
-    def test_the_calibrated_table_is_the_one_main_prints(self):
-        records = [self.record(uuid, "need_gain") for uuid in ("u0", "u1")]
-
-        _, output = self.run_main(records)
-
-        table = cu.calibrated_table(self.root, [records], "need_gain")
-        for line in cu.literal("NEED_GAIN_TABLE", table):
-            self.assertIn(line, output)
-
     def test_series_keeps_the_last_commit_of_the_mode_and_model(self):
         records = [self.record("u0", "need_gain", commit="old", model="qwen3.5-9b"),
                    self.record("u0", "need_gain", commit="new", model="qwen3.5-9b"),

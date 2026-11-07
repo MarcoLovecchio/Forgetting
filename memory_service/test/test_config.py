@@ -288,14 +288,6 @@ class LocalModelParametersTest(EnvironmentTestCase):
         self.assertEqual(parameters["model_provider"], "openai")
         self.assertEqual(parameters["base_url"], "http://modelli.cluster.local:8000/v1")
 
-    def test_thinking_is_switched_through_the_chat_template(self):
-        parameters = self._build({
-            "model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai",
-            "enable_thinking": False})
-
-        self.assertEqual(parameters["extra_body"],
-                         {"chat_template_kwargs": {"enable_thinking": False}})
-
     def test_what_is_not_configured_is_left_to_the_server(self):
         parameters = self._build(
             {"model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai"})

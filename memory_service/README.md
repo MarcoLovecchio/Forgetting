@@ -198,8 +198,11 @@ the real agent and hands the result to HaluMem's `evaluation.py`. It needs a clo
 `evaluation.py` only uses packages already in `requirements.txt`.
 
 The first five users of the dataset (`CALIBRATION_USERS`) are kept for the calibration
-of the utility tables: `run` never replays them, so no user is both calibrated on and
-evaluated, and `--users N` takes the first N after them. `run` replays one user per
+of the utility tables: `run` replays them only with `--calibration-users`, which replays
+nothing else, in a version of its own (`run.json` records which set it holds, and a
+version never mixes the two). So no user is both calibrated on and evaluated, and
+`--users N` takes the first N of the set, for the evaluated ones the first N after the
+calibration users. `run` replays one user per
 process, each with an archive of its own, exchange by exchange with the dataset's clock
 (`backends.set_clock`). It fixes what the experiments
 fix whatever `config.py` says (`always`, the window of 2, the power law on `updated_at`,
@@ -310,12 +313,13 @@ insert, with a limit and a rule and no model: the core split is `choose_core_spl
 service's rule is `choose_prune_targets`, the search of every question is computed again
 on the smaller archive from the vectors of the trace. Next to the service's score, with
 utility `none` or the trace's, the three combinations, three prune fractions and the
-trace's frequency function, it replays the calibrated rules: the trace's utility with the
-table `calibrate_utility.py` derives from the series of the trace's model, their pairs
-together (`--ratings` with one file or more, the calibration file by default), in place
-of the provisional one, for `weighted_sum` and
-`product`, since `expected_gain` reads no table. Without ratings of that model and mode
-they are left out, and `simulate` says so. As references it replays FIFO, LRU, LFU,
+trace's frequency function, it replays the calibrated rules: the trace's utility with a
+calibrated table in place of the provisional one, for `weighted_sum` and `product`, since
+`expected_gain` reads no table. With `--calibration-trace` the table comes from the
+ratings given in context (below); otherwise from the context-free series of the trace's
+model, their pairs together (`--ratings` with one file or more, the calibration file by
+default). Without a calibration of that model and mode they are left out, and `simulate`
+says so. As references it replays FIFO, LRU, LFU,
 utility alone, with the calibrated table too, random and an oracle that knows the
 questions to come, at the limits 25, 50, 100, 150 and 200. Two rules that would choose
 the same are replayed once: with `none` the combination does not count, with `single`
@@ -333,7 +337,11 @@ about, its evidence is not. It prints where the needed memories were in the ques
 ranking: many beyond the 40th would mean the question alone misses them. `simulate`
 replays and prints, for every rule and limit,
 the share of needed memories still kept and still found, where it lies between random and
-the oracle, by question type and by age, the divergence and the prunes; and the AUC of
+the oracle, by question type and by age, the divergence and the prunes, with how many a
+later question needed (HPR) and the NPS, (HPR of random − HPR) / (HPR of random − HPR of
+the oracle). For the rules at the trace's prune fraction it prints who leaves: the share
+of prunes on memories written in the same session, their mean age in sessions, and the
+share by rating level of the trace, each with how many a later question needed. And the AUC of
 the utility term (need × gain, or utility in `single`) against being needed by a later
 session, with the calibrated table too. Before the rules it checks the replay
 with no limit against the trace: the split must archive the same memories at the same
@@ -345,6 +353,41 @@ python3 memory_service/test/halumem_adapter.py run --halumem PATH --version trac
 python3 memory_service/test/eviction_replay.py embed --halumem PATH --version trace
 python3 memory_service/test/eviction_replay.py label --halumem PATH --version trace
 python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --ratings A.jsonl B.jsonl C.jsonl
+```
+
+**Calibration in context.** The series of `calibration_ratings.py` judge each session's
+points alone, while in a run the ratings are given in the middle of consolidation, with
+the core, the candidates and the dialogue, on the facts the model wrote. To calibrate
+the ratings eviction really uses, the calibration users are replayed as a trace
+(`run --calibration-users --archive-limit 100000`, same mode, model and sampling as the
+traces to replay), labelled by the judge, and `calibrate` derives the tables from it: a
+pair is a rated memory, safety apart, still active when a question of a later session
+comes, and it served when the judge chose it for that question. It prints the same
+tables and AUCs as `calibrate_utility.py`, the provisional table included, and saves the
+counts in `replay/calibration.json`. `simulate --calibration-trace CAL ...` then takes
+the table of those traces together; a calibration of another mode, model or sampling is
+left out, and one that shares a user with the trace replayed stops it. The context-free
+series stay for the stability of the ratings, which only identical texts can measure.
+
+```bash
+python3 memory_service/test/halumem_adapter.py run --halumem PATH --version cal --calibration-users --archive-limit 100000 --utility need_gain
+python3 memory_service/test/eviction_replay.py embed --halumem PATH --version cal
+python3 memory_service/test/eviction_replay.py label --halumem PATH --version cal
+python3 memory_service/test/eviction_replay.py calibrate --halumem PATH --version cal
+python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --calibration-trace cal
+```
+
+**What a limit costs the robot.** After `simulate`, `test/resource_frontier.py` reads the
+trace and its replay report. From `archive_bytes` and `vector_search_ms` it fits the
+bytes and the search milliseconds of one more memory, with the empty folder and the size
+of a vector alone. It then gives every limit of the replay in MB and ms and prints the
+retention and of oracle of every rule at every limit. A point is on the frontier when no
+rule keeps more with an archive no larger; the oracle is shown but is never on it. The
+same table, one row per rule and limit, with the NPS and the share of prunes in the
+same session, goes to `replay/frontier.csv` for the plots.
+
+```bash
+python3 memory_service/test/resource_frontier.py --halumem PATH --version trace
 ```
 
 ## The models on the cluster

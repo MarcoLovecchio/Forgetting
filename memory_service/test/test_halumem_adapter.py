@@ -313,11 +313,18 @@ class RunTest(unittest.TestCase):
 
     def test_a_run_is_not_mixed_with_a_different_one(self):
         with mock.patch.object(adapter, "git_commit", return_value="abc"):
-            adapter.check_manifest(self.run_dir, CONFIG)
-            adapter.check_manifest(self.run_dir, CONFIG)
+            adapter.check_manifest(self.run_dir, CONFIG, "evaluated")
+            adapter.check_manifest(self.run_dir, CONFIG, "evaluated")
             with self.assertRaises(SystemExit):
                 adapter.check_manifest(self.run_dir,
-                                       dataclasses.replace(CONFIG, prune_fraction=0.5))
+                                       dataclasses.replace(CONFIG, prune_fraction=0.5),
+                                       "evaluated")
+
+    def test_the_calibration_users_never_share_a_run_with_the_evaluated_ones(self):
+        with mock.patch.object(adapter, "git_commit", return_value="abc"):
+            adapter.check_manifest(self.run_dir, CONFIG, "calibration")
+            with self.assertRaises(SystemExit):
+                adapter.check_manifest(self.run_dir, CONFIG, "evaluated")
 
     def test_the_results_file_keeps_the_order_and_only_who_finished(self):
         for uuid in ("b", "a"):
@@ -401,20 +408,23 @@ class RunTest(unittest.TestCase):
                     contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 adapter.parse_arguments(["clean", "--halumem", "x", f"--version={version}"])
 
-    def test_the_calibration_users_are_never_replayed(self):
+    def test_the_calibration_users_are_replayed_only_when_asked_and_only_them(self):
         uuids = [f"u{index}" for index in range(adapter.CALIBRATION_USERS + 3)]
         os.makedirs(os.path.join(self.run_dir, "data"))
         with open(os.path.join(self.run_dir, adapter.DATASET), "w", encoding="utf-8") as handle:
             for uuid in uuids:
                 handle.write(json.dumps({"uuid": uuid}) + "\n\n")
 
-        calibration = [user["uuid"] for user in adapter.calibration_users(self.run_dir)]
-        evaluated = [user["uuid"] for user in adapter.evaluated_users(self.run_dir)]
-        pilot = [user["uuid"] for user in adapter.evaluated_users(self.run_dir, 1)]
+        def replayed(*extra):
+            arguments = adapter.parse_arguments(["run", "--halumem", self.run_dir,
+                                                 "--version", "v", *extra])
+            return [user["uuid"] for user in adapter.replayed_users(self.run_dir, arguments)]
 
-        self.assertEqual(calibration + evaluated, uuids)
-        self.assertEqual(len(calibration), adapter.CALIBRATION_USERS)
-        self.assertEqual(pilot, [evaluated[0]])
+        self.assertEqual(replayed(), uuids[adapter.CALIBRATION_USERS:])
+        self.assertEqual(replayed("--users", "1"), [uuids[adapter.CALIBRATION_USERS]],
+                         "the pilot is the first user after the calibration ones")
+        self.assertEqual(replayed("--calibration-users"), uuids[:adapter.CALIBRATION_USERS])
+        self.assertEqual(replayed("--calibration-users", "--users", "2"), uuids[:2])
 
     def test_launched_again_the_results_file_does_not_double(self):
         with open(adapter.result_path(self.run_dir, "a"), "w", encoding="utf-8") as handle:

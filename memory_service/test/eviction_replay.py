@@ -15,6 +15,12 @@ sees the same memories, so a difference between two rules comes from the rules o
               question and the EVIDENCE_CANDIDATES closest to each sentence of its
               evidence; it prints where the chosen ones were in the question's ranking,
               to tell whether LABEL_CANDIDATES is enough
+    calibrate on a trace of the calibration users (halumem_adapter.py run
+              --calibration-users), the utility tables of calibrate_utility.py from the
+              ratings given in context: a pair is a rated memory still active at a
+              question of a later session, served when the judge chose it. It prints the
+              tables and the AUC on the user left out, and saves the counts in
+              CALIBRATION_FILE for simulate --calibration-trace
     simulate  every rule at every limit of LIMITS, and the indicators
 
 What the replay does with the trace:
@@ -40,10 +46,12 @@ The rules, each once: two that would choose the same are one.
                     combination and PRUNE_FRACTIONS, and the trace's frequency function;
                     with none the combination does not count, with single expected_gain
                     is weighted_sum
-    calibrated      the trace's utility with the table calibrate_utility.py derives from
-                    the --ratings series of the trace's model, their pairs together, in
-                    place of the provisional one,
-                    for weighted_sum and product: expected_gain reads no table
+    calibrated      the trace's utility with a calibrated table in place of the
+                    provisional one, for weighted_sum and product (expected_gain reads no
+                    table): with --calibration-trace, from the ratings in context of
+                    those traces together, of the same mode, model and sampling and with
+                    no user of this trace; otherwise from the --ratings series of the
+                    trace's model, their pairs together
     references      FIFO, LRU, LFU, utility alone, with the calibrated table too unless it
                     ranks the levels as the provisional one, random (RANDOM_SEEDS), with
                     the trace's prune fraction; the oracle, which knows the questions to
@@ -58,7 +66,12 @@ The indicators, summed over the users:
     by type, by age the retention per question type and per sessions since the memory
                     was written
     divergence      updates and redundants on a memory the rule had removed
-    prunes          per session, and how many of them a later question needed
+    prunes          per session, and how many of them a later question needed (HPR)
+    NPS             (HPR of random - HPR) / (HPR of random - HPR of the oracle), at the
+                    same limit: 1 prunes as well as the oracle, 0 as random
+    victims         who leaves: the share written in the session of the prune, the mean
+                    age in sessions, by age, and by rating level of the trace, each with
+                    how often a later question needed it
     rating AUC      how often a memory a later session needs has a higher utility term
                     (need x gain, or utility) than one no later session needs, on the
                     trace alone: a question of the same session is kept by recency
@@ -74,7 +87,9 @@ replayed.
 
     python3 memory_service/test/eviction_replay.py embed --halumem PATH --version NAME
     python3 memory_service/test/eviction_replay.py label --halumem PATH --version NAME
+    python3 memory_service/test/eviction_replay.py calibrate --halumem PATH --version CAL
     python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version NAME
+                                                   [--calibration-trace CAL ...]
                                                    [--ratings FILE ...]
 
 Everything lands in PATH/eval/results/memory_service-NAME/replay/.
@@ -130,8 +145,11 @@ AGE_BUCKETS = ((0, 0, "0"), (1, 1, "1"), (2, 5, "2-5"), (6, 20, "6-20"), (21, No
 BOOTSTRAP_SAMPLES = 1000
 EMBED_BATCH = 64
 FOLDER = "replay"
+CALIBRATION_FILE = "calibration.json"
 RULE_WIDTH = 47
 RATING_FIELDS = ("safety", "utility", "need", "gain")
+LEVEL_KEY = "victims level "
+LEVEL_ORDER = ("low", "2/2", "3", "high", "unrated")
 CONTEXT_ID = re.compile(r"ID: (\w+),")
 
 
@@ -189,9 +207,13 @@ def trace_events(result: Dict[str, Any], user: Dict[str, Any]) -> List[Any]:
     return events
 
 
-def trace_config(run_dir: str) -> MemoryConfig:
+def trace_manifest(run_dir: str) -> Dict[str, Any]:
     with open(os.path.join(run_dir, "run.json"), encoding="utf-8") as handle:
-        return MemoryConfig(**json.load(handle)["config"])
+        return json.load(handle)
+
+
+def trace_config(run_dir: str) -> MemoryConfig:
+    return MemoryConfig(**trace_manifest(run_dir)["config"])
 
 
 def trace_results(run_dir: str) -> List[Dict[str, Any]]:
@@ -430,10 +452,21 @@ class Replay:
             self.split_archived.append((event.session, event.index, item.id))
         if self.limit is not None and len(self.archive) > self.limit:
             for item_id in self.rule.choose(self, now):
+                later = self.next_need(item_id, now) is not None
+                self.count_victim(self.items[item_id],
+                                  self.session - self.born.get(item_id, self.session), later)
                 self.removed[item_id] = self._drop(item_id)
                 self.counts["prunes"] += 1
-                if self.next_need(item_id, now) is not None:
-                    self.counts["prunes needed later"] += 1
+                self.counts["prunes needed later"] += later
+
+    def count_victim(self, item: CoreMemoryItem, age: int, later: bool) -> None:
+        """The age in sessions and the rating level of what leaves, and if it was needed later."""
+        self.counts[f"victims age {age_bucket(age)}"] += 1
+        self.counts["victims age sum"] += age
+        level = victim_level(ratings_of(item), self.config.consolidation_utility)
+        if level:
+            self.counts[f"victims level {level}"] += 1
+            self.counts[f"victims level {level} later"] += later
 
     def apply(self, operation: Dict[str, Any]) -> None:
         kind = operation["op_type"]
@@ -583,6 +616,16 @@ def auc(scored: Sequence[Tuple[float, bool]]) -> Optional[float]:
     return (rank_sum - positives * (positives + 1) / 2) / (positives * negatives)
 
 
+def victim_level(ratings: Dict[str, Any], mode: str) -> Optional[str]:
+    """The rating level of the trace's mode, unrated without its ratings; None in none."""
+    names = calibrate_utility.MODES.get(mode)
+    if not names:
+        return None
+    if ratings.get("safety") or any(ratings.get(name) is None for name in names):
+        return "unrated"
+    return rating_level(ratings, mode)
+
+
 def rating_level(ratings: Dict[str, Any], mode: str) -> str:
     """The middle rating, 2/2 or 3, above it or below it."""
     if mode == "single":
@@ -709,7 +752,7 @@ def embed(arguments: argparse.Namespace) -> int:
     run_dir = adapter.run_folder(arguments)
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
     names = {user["uuid"]: adapter.user_name(user["persona_info"])
-             for user in adapter.evaluated_users(root)}
+             for user in adapter.dataset_users(root)}
     config = MemoryConfig.from_environment()
     embeddings = backends._build_embeddings(config)
 
@@ -860,7 +903,7 @@ def label(arguments: argparse.Namespace) -> int:
     run_dir = adapter.run_folder(arguments)
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
     config = trace_config(run_dir)
-    users = {user["uuid"]: user for user in adapter.evaluated_users(root)}
+    users = {user["uuid"]: user for user in adapter.dataset_users(root)}
     results = trace_results(run_dir)[:arguments.users]
 
     # From HaluMem's folder, as evaluate does: llms.py reads eval/.env from there.
@@ -928,6 +971,147 @@ def label(arguments: argparse.Namespace) -> int:
 def needs_of(stored: Dict[str, Any]) -> Dict[str, List[str]]:
     return {key: outcome["needed"] for key, outcome in stored["labels"].items()
             if outcome.get("needed")}
+
+
+# --------------------------------------------------------------------------- #
+# The calibration in context
+# --------------------------------------------------------------------------- #
+
+def labelled_questions(run_dir: str, uuid: str) -> Dict[str, set]:
+    """Question key -> the ids the judge chose, for the questions it could label."""
+    return {key: set(outcome.get("needed") or ())
+            for key, outcome in load_labels(run_dir, uuid)["labels"].items()
+            if "error" not in outcome}
+
+
+def context_counts(events: Sequence[Any], labelled: Dict[str, set],
+                   config: MemoryConfig) -> Dict[Tuple[Any, ...], List[int]]:
+    """(ratings of the mode) -> [pairs, served] on one user of a trace.
+
+    A pair is a rated memory, safety apart, still active when a question of a later
+    session comes: an update or a delete ends it. It served when the judge chose it for
+    that question. A question the judge could not label stays out; one that needs nothing
+    counts, with none of its pairs served.
+    """
+    names = calibrate_utility.MODES[config.consolidation_utility]
+    counts: Dict[Tuple[Any, ...], List[int]] = defaultdict(lambda: [0, 0])
+
+    def collect(replay: Replay, event: Question, ranked: List[str]) -> None:
+        needed = labelled.get(event.key)
+        if needed is None:
+            return
+        for item_id, item in replay.items.items():
+            ratings = tuple(getattr(item, name) for name in names)
+            if item.safety or None in ratings or replay.born[item_id] >= event.session:
+                continue
+            counts[ratings][0] += 1
+            counts[ratings][1] += item_id in needed
+
+    # No limit and no search: only which memories are active when, as in the trace.
+    Replay(config, None, None, lambda key, memories: [], on_question=collect).run(events)
+    return dict(counts)
+
+
+def calibration_pairs(entries: Sequence[Dict[str, Any]], names: Sequence[str]
+                      ) -> List[calibrate_utility.Pair]:
+    """The pairs of calibrate_utility.py from the counts a calibration saved."""
+    pairs: List[calibrate_utility.Pair] = []
+    for entry in entries:
+        ratings = {"safety": False, **dict(zip(names, entry["ratings"]))}
+        served = calibrate_utility.Pair(entry["user"], ratings, True)
+        unserved = calibrate_utility.Pair(entry["user"], ratings, False)
+        pairs += [served] * entry["served"] + [unserved] * (entry["pairs"] - entry["served"])
+    return pairs
+
+
+def calibrate(arguments: argparse.Namespace) -> int:
+    """The utility tables from a trace of the calibration users, with the ratings in context."""
+    run_dir = adapter.run_folder(arguments)
+    root = os.path.abspath(os.path.expanduser(arguments.halumem))
+    manifest = trace_manifest(run_dir)
+    config = MemoryConfig(**manifest["config"])
+    mode = config.consolidation_utility
+    if mode == "none":
+        raise SystemExit("The trace rates nothing: its utility is none.")
+    if manifest.get("users") != "calibration":
+        raise SystemExit("calibrate needs a trace of the calibration users: "
+                         "halumem_adapter.py run --calibration-users.")
+    results = trace_results(run_dir)[:arguments.users]
+    unlabelled = [result["uuid"] for result in results
+                  if not os.path.exists(labels_path(run_dir, result["uuid"]))]
+    if unlabelled:
+        raise SystemExit(f"{len(unlabelled)} users without labels: launch label first.")
+    dataset = {user["uuid"]: user for user in adapter.dataset_users(root)}
+    names = calibrate_utility.MODES[mode]
+    entries = []
+    for index, result in enumerate(results):
+        counts = context_counts(trace_events(result, dataset[result["uuid"]]),
+                                labelled_questions(run_dir, result["uuid"]), config)
+        entries += [{"user": index, "ratings": list(ratings), "pairs": pairs, "served": served}
+                    for ratings, (pairs, served) in sorted(counts.items())]
+    model = config.llm_config.get("model_name")
+    print(f"{len(results)} calibration users of {arguments.version}, {mode}, model {model}, "
+          f"commit {manifest.get('commit') or '(unknown)'}: the ratings given in context")
+    for line in calibrate_utility.report(mode, calibration_pairs(entries, names), len(results)):
+        print(line)
+    path = os.path.join(replay_folder(run_dir), CALIBRATION_FILE)
+    save_json(path, {"mode": mode, "model": model, "node_sampling": manifest.get("node_sampling"),
+                     "commit": manifest.get("commit"),
+                     "users": [result["uuid"] for result in results], "counts": entries})
+    print(f"\nSaved for simulate --calibration-trace: {path}")
+    return 0
+
+
+def context_table(root: str, versions: Sequence[str], manifest: Dict[str, Any],
+                  replayed: set) -> Optional[Sequence]:
+    """The table of the calibration traces' pairs together, for the trace replayed.
+
+    A calibration with another mode, model or sampling is left out; one that shares a
+    user with the trace replayed stops the replay, since the table would be judged on
+    the data it was estimated on.
+    """
+    config = MemoryConfig(**manifest["config"])
+    mode, model = config.consolidation_utility, config.llm_config.get("model_name")
+    if mode == "none":
+        return None
+    names = calibrate_utility.MODES[mode]
+    entries: List[Dict[str, Any]] = []
+    used = []
+    for version in versions:
+        folder = adapter.run_folder(argparse.Namespace(halumem=root, version=version))
+        path = os.path.join(folder, FOLDER, CALIBRATION_FILE)
+        if not os.path.exists(path):
+            raise SystemExit(f"No calibration in {folder}: launch calibrate first.")
+        with open(path, encoding="utf-8") as handle:
+            stored = json.load(handle)
+        if (stored["mode"], stored["model"], stored["node_sampling"]) != (
+                mode, model, manifest.get("node_sampling")):
+            print(f"{version}: {stored['mode']} with {stored['model']}, not the trace's {mode} "
+                  f"with {model} and its sampling: left out")
+            continue
+        shared = set(stored["users"]) & replayed
+        if shared:
+            raise SystemExit(f"{version} was calibrated on {len(shared)} users of this trace: "
+                             "the table would be judged on its own data.")
+        entries += stored["counts"]
+        used.append((version, stored))
+    if not entries:
+        print("No calibrated rules.")
+        return None
+    try:
+        table = calibrate_utility.mode_table(
+            mode, calibrate_utility.usable_pairs(calibration_pairs(entries, names), mode))
+    except ValueError as error:
+        print(f"No calibrated rules: {error}")
+        return None
+    print(f"Calibrated rules: the {mode} table of {model}, from the ratings in context of "
+          f"{len(used)} calibration traces together")
+    for version, stored in used:
+        print(f"  {version}: {len(stored['users'])} users, "
+              f"commit {stored.get('commit') or '(unknown)'}")
+    for line in calibrate_utility.literal(calibrate_utility.TABLE_NAMES[mode], table):
+        print(f"  {line}")
+    return table
 
 
 # --------------------------------------------------------------------------- #
@@ -1015,6 +1199,16 @@ def summarize(users: List[Dict[str, Any]], config: MemoryConfig,
             "by age": {bucket: ratio(total[f"age {bucket} kept"], total[f"age {bucket} needed"])
                        for _, _, bucket in AGE_BUCKETS},
             "needed": total["needed"],
+            "same session": ratio(total["victims age 0"], total["prunes"]),
+            "victims mean age": ratio(total["victims age sum"], total["prunes"]),
+            "victims by age": {bucket: ratio(total[f"victims age {bucket}"], total["prunes"])
+                               for _, _, bucket in AGE_BUCKETS},
+            "victims by level": {key[len(LEVEL_KEY):]: ratio(total[key], total["prunes"])
+                                 for key in total
+                                 if key.startswith(LEVEL_KEY) and not key.endswith(" later")},
+            "victims needed later by level": {
+                key[len(LEVEL_KEY):-len(" later")]: ratio(total[key], total[key[:-len(" later")]])
+                for key in total if key.startswith(LEVEL_KEY) and key.endswith(" later")},
         }
     for name, values in summary.items():
         if "@" not in name:
@@ -1024,6 +1218,11 @@ def summarize(users: List[Dict[str, Any]], config: MemoryConfig,
         high = summary[f"oracle@{limit}"]["retention"]
         values["of oracle"] = (None if None in (low, high, values["retention"]) or high == low
                                else (values["retention"] - low) / (high - low))
+        chance = summary[f"random@{limit}"]["prunes needed later"]
+        best = summary[f"oracle@{limit}"]["prunes needed later"]
+        regret = values["prunes needed later"]
+        values["NPS"] = (None if None in (chance, best, regret) or chance == best
+                         else (chance - regret) / (chance - best))
     mode = config.consolidation_utility
     rated = [(ratings, needed) for user in users for ratings, needed, _ in user["rated"]]
     levels = defaultdict(lambda: [0, 0])
@@ -1051,7 +1250,9 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
           f"memories found, {summary['unlimited']['needed']} needed in all")
     main = summary["main rule"]
     header = (f"{'rule':<{RULE_WIDTH}}{'kept':>6}{'95% interval':>16}{'found':>7}"
-              f"{'of oracle':>10}{'diverge':>9}{'prunes':>8}{'later':>7}")
+              f"{'of oracle':>10}{'diverge':>9}{'prunes':>8}{'later':>7}{'NPS':>7}"
+              f"{'same':>7}")
+    fraction = main.rsplit(" ", 1)[-1]
     for limit in LIMITS:
         print(f"\nArchive limit {limit}\n{header}")
         rows = [name for name in summary if name.endswith(f"@{limit}")]
@@ -1064,7 +1265,10 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
                   f"{percent(values['retrievable']):>7}{percent(values['of oracle']):>10}"
                   f"{percent(values['divergence']):>9}"
                   f"{values['prunes per session'] or 0:>8.1f}"
-                  f"{percent(values['prunes needed later']):>7}")
+                  f"{percent(values['prunes needed later']):>7}{percent(values['NPS']):>7}"
+                  f"{percent(values['same session']):>7}")
+        print_victims([(name.split("@")[0], summary[name]) for name in rows
+                       if not name.startswith("score ") or name.split("@")[0].endswith(fraction)])
         values = summary[f"{main}@{limit}"]
         print("  * by type: " + ", ".join(f"{name} {percent(value)}"
                                           for name, value in sorted(values["by type"].items())))
@@ -1079,7 +1283,27 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
     print("\nkept: needed memories still in core or archive; found: in core or among the "
           f"{QUESTION_K} the search returns;\nof oracle: (kept - random) / (oracle - random); "
           "diverge: updates and redundants on a removed memory;\nprunes: per session; later: "
-          "prunes a later question needed. * is the trace's rule.")
+          "prunes a later question needed (HPR); NPS: (HPR random - HPR) / (HPR random - HPR "
+          "oracle);\nsame: prunes of a memory written in the same session. Victims: share of "
+          "the prunes by level of the trace's ratings,\nin brackets how many a later question "
+          "needed. * is the trace's rule.")
+
+
+def print_victims(rows: Sequence[Tuple[str, Dict[str, Any]]]) -> None:
+    """Who leaves, rule by rule: mean age in sessions and level, with the needed later."""
+    levels = [level for level in LEVEL_ORDER
+              if any(level in values["victims by level"] for _, values in rows)]
+    print(f"  victims, at the trace's fraction:{'':<{RULE_WIDTH - 33}}{'age':>6}"
+          + "".join(f"{level:>14}" for level in levels))
+    for rule, values in rows:
+        if not values["victims by level"] and values["victims mean age"] is None:
+            continue
+        age = values["victims mean age"]
+        cells = [f"{percent(values['victims by level'].get(level))} "
+                 f"({percent(values['victims needed later by level'].get(level))})"
+                 for level in levels]
+        print(f"  {rule:<{RULE_WIDTH - 2}}{'-' if age is None else f'{age:.1f}':>6}"
+              + "".join(f"{cell:>14}" for cell in cells))
 
 
 def calibration_table(root: str, paths: Sequence[str],
@@ -1115,7 +1339,8 @@ def calibration_table(root: str, paths: Sequence[str],
 def simulate(arguments: argparse.Namespace) -> int:
     run_dir = adapter.run_folder(arguments)
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
-    config = trace_config(run_dir)
+    manifest = trace_manifest(run_dir)
+    config = MemoryConfig(**manifest["config"])
     if config.count_candidate_search:
         raise SystemExit("The trace counts the candidate searches, which the log does not "
                          "hold: it cannot be replayed.")
@@ -1124,8 +1349,12 @@ def simulate(arguments: argparse.Namespace) -> int:
                   if not os.path.exists(labels_path(run_dir, result["uuid"]))]
     if unlabelled:
         raise SystemExit(f"{len(unlabelled)} users without labels: launch label first.")
-    dataset = {user["uuid"]: user for user in adapter.evaluated_users(root)}
-    table = calibration_table(root, arguments.ratings, config)
+    dataset = {user["uuid"]: user for user in adapter.dataset_users(root)}
+    if arguments.calibration_trace:
+        table = context_table(root, arguments.calibration_trace, manifest,
+                              {result["uuid"] for result in results})
+    else:
+        table = calibration_table(root, arguments.ratings, config)
     context = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(max_workers=arguments.workers, mp_context=context) as pool:
         users = list(pool.map(simulate_user, [run_dir] * len(results), results,
@@ -1153,11 +1382,18 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     judged.add_argument("--judge-workers", type=int, default=10, dest="judge_workers",
                         help="judge calls at the same time")
     judged.set_defaults(step_function=label)
+    steps.add_parser("calibrate", parents=[common],
+                     help="the utility tables from a trace of the calibration users").set_defaults(
+        step_function=calibrate)
     replayed = steps.add_parser("simulate", parents=[common], help="every rule, every limit")
     replayed.add_argument("--workers", type=int, default=1, help="users at the same time")
     replayed.add_argument("--ratings", nargs="+", default=[calibrate_utility.DEFAULT_RATINGS],
                           help="the calibration series: those of the trace's model, together, "
                                "give the calibrated rules")
+    replayed.add_argument("--calibration-trace", nargs="+", type=adapter.version_name,
+                          dest="calibration_trace",
+                          help="calibrated traces of the calibration users, in place of "
+                               "--ratings: the table from the ratings given in context")
     replayed.set_defaults(step_function=simulate)
     return parser.parse_args(argv)
 

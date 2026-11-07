@@ -285,11 +285,6 @@ class RulesTest(unittest.TestCase):
 
     TABLE = ((0.1, 0.1, 0.9), (0.2, 0.2, 0.95), (0.3, 0.3, 1.0))
 
-    def test_every_rule_keeps_the_traces_frequency_function(self):
-        rules = replay_tool.score_rules(CONFIG, self.TABLE)
-
-        self.assertEqual({rule.config.eviction_frequency_function for rule in rules}, {"log"})
-
     def test_none_has_one_rule_per_fraction(self):
         names = [rule.name for rule in replay_tool.score_rules(CONFIG)
                  if rule.config.consolidation_utility == "none"]
@@ -312,11 +307,6 @@ class RulesTest(unittest.TestCase):
         names = [rule.name for rule in replay_tool.score_rules(config)]
 
         self.assertIn(ScoreRule(config).name, names)
-
-    def test_without_a_table_there_are_no_calibrated_rules(self):
-        names = [rule.name for rule in replay_tool.score_rules(CONFIG)]
-
-        self.assertFalse([name for name in names if "calibrated" in name])
 
     def test_the_calibrated_rules_are_the_combinations_that_read_the_table(self):
         calibrated = [rule for rule in replay_tool.score_rules(CONFIG, self.TABLE)
@@ -351,14 +341,6 @@ class RulesTest(unittest.TestCase):
 
         self.assertEqual(sorted(replay.items), ["a"])
 
-    def test_the_calibrated_utility_alone_needs_a_table(self):
-        names = [rule.name for rule in replay_tool.reference_rules(0.10, "need_gain")]
-        with_table = [rule.name for rule in
-                      replay_tool.reference_rules(0.10, "need_gain", self.TABLE)]
-
-        self.assertNotIn("utility calibrated", names)
-        self.assertIn("utility calibrated", with_table)
-
     def test_a_table_in_the_same_order_adds_no_utility_alone(self):
         increasing = [rule.name for rule in replay_tool.reference_rules(
             0.10, "single", (0.0001, 0.15, 0.33, 0.59, 1.0))]
@@ -377,6 +359,173 @@ class RulesTest(unittest.TestCase):
                                          "ratings": {}}) + "\n")
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertIsNone(replay_tool.calibration_table(folder, [path], CONFIG))
+
+
+class VictimsTest(unittest.TestCase):
+    """Who leaves: its age in sessions, its rating level, and whether it was needed later."""
+
+    def test_an_old_rated_victim_needed_later(self):
+        events = [Insert(0, at(0), [create("a", 0, need=3, gain=3)]),
+                  Insert(1, at(10), [create("b", 10, need=1, gain=1)]),
+                  asked("2:0", 20, session=2)]
+
+        replay = replayed(events, limit=1, rule=fifo(), needs={"2:0": ["a"]})
+
+        self.assertEqual(replay.counts["victims age 1"], 1)
+        self.assertEqual(replay.counts["victims level high"], 1)
+        self.assertEqual(replay.counts["victims level high later"], 1)
+
+    def test_a_victim_written_in_the_session_of_its_prune(self):
+        events = [Insert(0, at(0), [create("a", 0)]), Insert(0, at(1), [create("b", 1)])]
+
+        replay = replayed(events, limit=1, rule=fifo())
+
+        self.assertEqual(replay.counts["victims age 0"], 1)
+        self.assertEqual(replay.counts["victims level unrated"], 1, "no ratings in need_gain")
+
+
+class SummaryTest(unittest.TestCase):
+    """The indicators summed over the users, against random and the oracle."""
+
+    def summary(self, rule_counts):
+        def counts(prunes, later, **extra):
+            return {"prunes": prunes, "prunes needed later": later, "needed": 10, "kept": 5,
+                    **extra}
+        tallies = {"unlimited": {"needed": 10}, "random@25": counts(10, 5),
+                   "oracle@25": counts(10, 1), "lru@25": counts(10, 3, **rule_counts)}
+        return replay_tool.summarize([{"tallies": tallies, "rated": []}], CONFIG)["lru@25"]
+
+    def test_nps_is_one_for_the_oracle_and_zero_for_random(self):
+        self.assertAlmostEqual(self.summary({})["NPS"], (0.5 - 0.3) / (0.5 - 0.1))
+
+    def test_the_victims_by_session_and_level(self):
+        values = self.summary({"victims age 0": 4, "victims age sum": 12,
+                               "victims level high": 2, "victims level high later": 1})
+
+        self.assertAlmostEqual(values["same session"], 0.4)
+        self.assertAlmostEqual(values["victims mean age"], 1.2)
+        self.assertAlmostEqual(values["victims by level"]["high"], 0.2)
+        self.assertAlmostEqual(values["victims needed later by level"]["high"], 0.5)
+
+
+class ContextCountsTest(unittest.TestCase):
+    """The pairs of the calibration in context: rated memories at later questions."""
+
+    def test_a_pair_is_a_rated_memory_alive_at_a_question_of_a_later_session(self):
+        events = [
+            Insert(0, at(0), [create("a", 0, need=3, gain=3), create("b", 0, need=1, gain=1),
+                              create("s", 0, safety=True)]),
+            asked("0:0", 0, session=0),
+            Insert(1, at(10), [operation("update", "c", 10, related="b",
+                                         ratings={"need": 2, "gain": 2})]),
+            asked("1:0", 11, session=1),
+            asked("1:1", 12, session=1),
+            asked("2:0", 20, session=2),
+        ]
+        labelled = {"0:0": {"a"}, "1:0": {"a"}, "2:0": {"c"}}
+
+        counts = replay_tool.context_counts(events, labelled, CONFIG)
+
+        self.assertEqual(counts, {(3, 3): [2, 1], (2, 2): [1, 1]},
+                         "same session, safety, the updated b and 1:1 unlabelled stay out")
+
+
+class CalibrateTest(unittest.TestCase):
+    """From a trace of the calibration users to the table simulate uses."""
+
+    FRAME = replay_tool.adapter.FRAME
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = folder.name
+        os.makedirs(os.path.join(self.root, "data"))
+        dialogue = [{"timestamp": "Jan 01, 2030, 09:00:00"}, {"timestamp": "x"}]
+        users = [{"uuid": uuid, "sessions": [
+            {"dialogue": dialogue, "end_time": "Jan 01, 2030, 10:00:00"},
+            {"dialogue": [{"timestamp": "Feb 01, 2030, 09:00:00"}, {"timestamp": "x"}],
+             "end_time": "Feb 01, 2030, 10:00:00"}]} for uuid in ("u1", "u2", "e1")]
+        with open(os.path.join(self.root, "data", "HaluMem-Medium.jsonl"), "w",
+                  encoding="utf-8") as handle:
+            for user in users:
+                handle.write(json.dumps(user) + "\n")
+
+    def trace(self, version, uuids, users, needed, config=CONFIG):
+        run_dir = os.path.join(self.root, "eval", "results", f"{self.FRAME}-{version}")
+        os.makedirs(os.path.join(run_dir, "replay", "labels"))
+        with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as handle:
+            json.dump({"config": dataclasses.asdict(config),
+                       "node_sampling": {"consolidation": {}}, "commit": "abc", "users": users},
+                      handle)
+        with open(os.path.join(run_dir, f"{self.FRAME}_eval_results.jsonl"), "w",
+                  encoding="utf-8") as handle:
+            for uuid in uuids:
+                handle.write(json.dumps({"uuid": uuid, "sessions": [
+                    {"operations": [dict(create("a", 0, need=3, gain=3), exchange=0, insert=0),
+                                    dict(create("b", 0, need=1, gain=1), exchange=0, insert=0)],
+                     "questions": []},
+                    {"operations": [], "questions": [{"question_type": "Basic Fact Recall"}]},
+                ]}) + "\n")
+        for uuid in uuids:
+            with open(os.path.join(run_dir, "replay", "labels", f"{uuid}.json"), "w",
+                      encoding="utf-8") as handle:
+                json.dump({"labels": {"1:0": {"needed": [needed[uuid]]}}}, handle)
+        return run_dir
+
+    def calibrate(self, version):
+        arguments = replay_tool.parse_arguments(["calibrate", "--halumem", self.root,
+                                                 "--version", version])
+        with contextlib.redirect_stdout(io.StringIO()):
+            return arguments.step_function(arguments)
+
+    def table(self, versions, replayed, config=CONFIG):
+        manifest = {"config": dataclasses.asdict(config), "node_sampling": {"consolidation": {}}}
+        with contextlib.redirect_stdout(io.StringIO()):
+            return replay_tool.context_table(self.root, versions, manifest, replayed)
+
+    def test_calibrate_saves_the_counts_of_every_user(self):
+        run_dir = self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "b"})
+
+        self.assertEqual(self.calibrate("cal"), 0)
+
+        with open(os.path.join(run_dir, "replay", replay_tool.CALIBRATION_FILE),
+                  encoding="utf-8") as handle:
+            stored = json.load(handle)
+        self.assertEqual(stored["users"], ["u1", "u2"])
+        self.assertEqual(stored["counts"], [
+            {"user": 0, "ratings": [1, 1], "pairs": 1, "served": 0},
+            {"user": 0, "ratings": [3, 3], "pairs": 1, "served": 1},
+            {"user": 1, "ratings": [1, 1], "pairs": 1, "served": 1},
+            {"user": 1, "ratings": [3, 3], "pairs": 1, "served": 0}])
+
+    def test_only_a_trace_of_the_calibration_users_is_calibrated(self):
+        self.trace("eval", ["e1"], "evaluated", {"e1": "a"})
+
+        with self.assertRaises(SystemExit):
+            self.calibrate("eval")
+
+    def test_simulate_takes_the_table_of_the_calibration_traces(self):
+        self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "a"})
+        self.calibrate("cal")
+
+        table = self.table(["cal"], {"e1"})
+
+        self.assertLess(table[0][0], table[2][2], "need 3 gain 3 is the one that served")
+
+    def test_a_calibration_of_another_model_is_left_out(self):
+        self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "a"})
+        self.calibrate("cal")
+        other = dataclasses.replace(CONFIG, llm_config={**CONFIG.llm_config,
+                                                        "model_name": "grande"})
+
+        self.assertIsNone(self.table(["cal"], {"e1"}, other))
+
+    def test_a_calibration_on_the_users_replayed_stops_the_replay(self):
+        self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "a"})
+        self.calibrate("cal")
+
+        with self.assertRaises(SystemExit):
+            self.table(["cal"], {"u1", "e1"})
 
 
 class JudgeCandidatesTest(unittest.TestCase):

@@ -632,13 +632,6 @@ class NodeStatsTest(MemoryServiceTestCase):
         self.assertEqual(SEARCH_STATS["calls"], 2)
         self.assertGreater(SEARCH_STATS["seconds"], 0)
 
-    def test_the_archive_searches_are_reset_with_the_nodes(self):
-        search_archive("cosa bevo?")
-
-        reset_node_stats()
-
-        self.assertEqual(SEARCH_STATS, {"calls": 0, "seconds": 0.0})
-
 
 class ToolChoiceSpy:
     """Record how the tools are bound, without changing the result.

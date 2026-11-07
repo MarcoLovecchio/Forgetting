@@ -5,9 +5,12 @@ Every user is replayed from an empty memory and leaves what HaluMem's evaluation
 reads: the memories extracted in each session, the memories found for every update,
 the answer to every question.
 
-The first CALIBRATION_USERS users of the dataset belong to calibration_ratings.py and
-calibrate_utility.py: run never replays them, so no user is both calibrated on and
-evaluated, and --users counts from the first user after them.
+The first CALIBRATION_USERS users of the dataset belong to the calibration: run replays
+them only with --calibration-users, which replays nothing else, in a version of its own:
+the trace eviction_replay.py calibrate derives the utility tables from, with the ratings
+given in context. So no user is both calibrated on and evaluated. --users counts the
+first users of the chosen set: for the evaluated ones, from the first after the
+calibration users.
 
     run        replays the dialogues through the real agent, with the models on the
                cluster and an archive on disk for each user; it never calls the judge
@@ -318,10 +321,13 @@ def git_commit() -> str:
     return commit + ("+" if commit and dirty else "")
 
 
-def check_manifest(run_dir: str, config: MemoryConfig) -> None:
-    """Write what the run is, or refuse to mix it with a different one."""
+def check_manifest(run_dir: str, config: MemoryConfig, users: str) -> None:
+    """Write what the run is, or refuse to mix it with a different one.
+
+    `users` is the set replayed, "evaluated" or "calibration": never both in one run.
+    """
     manifest = {"config": dataclasses.asdict(config), "node_sampling": NODE_SAMPLING,
-                "commit": git_commit()}
+                "commit": git_commit(), "users": users}
     path = os.path.join(run_dir, "run.json")
     if os.path.exists(path):
         with open(path, encoding="utf-8") as handle:
@@ -390,6 +396,18 @@ def calibration_users(root: str) -> List[Dict[str, Any]]:
 def evaluated_users(root: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """The users the experiments replay: every one after the calibration users."""
     return load_users(os.path.join(root, DATASET), limit, skip=CALIBRATION_USERS)
+
+
+def dataset_users(root: str) -> List[Dict[str, Any]]:
+    """Every user of the dataset, the calibration ones first."""
+    return load_users(os.path.join(root, DATASET))
+
+
+def replayed_users(root: str, arguments: argparse.Namespace) -> List[Dict[str, Any]]:
+    """The calibration users with --calibration-users, the evaluated ones otherwise."""
+    if arguments.calibration_users:
+        return calibration_users(root)[:arguments.users]
+    return evaluated_users(root, arguments.users)
 
 
 def merge_results(users: Sequence[Dict[str, Any]], run_dir: str) -> int:
@@ -508,15 +526,17 @@ def run(arguments: argparse.Namespace) -> int:
     run_dir = run_folder(arguments)
     for folder in ("tmp", "logs", "archives"):
         os.makedirs(os.path.join(run_dir, folder), exist_ok=True)
-    check_manifest(run_dir, config)
+    check_manifest(run_dir, config,
+                   "calibration" if arguments.calibration_users else "evaluated")
 
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
-    users = evaluated_users(root, arguments.users)
+    users = replayed_users(root, arguments)
     pending = [user for user in users
                if not os.path.exists(result_path(run_dir, user["uuid"]))]
-    print(f"{len(users)} users after the {CALIBRATION_USERS} of the calibration, "
-          f"{len(users) - len(pending)} already done, {arguments.workers} at a time",
-          flush=True)
+    which = ("calibration users" if arguments.calibration_users
+             else f"users after the {CALIBRATION_USERS} of the calibration")
+    print(f"{len(users)} {which}, {len(users) - len(pending)} already done, "
+          f"{arguments.workers} at a time", flush=True)
 
     # Spawn: a forked process would inherit the parent's models and clients.
     context = multiprocessing.get_context("spawn")
@@ -585,7 +605,10 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     replay = steps.add_parser("run", parents=[common], help="replay the dataset")
     replay.add_argument("--users", type=int,
-                        help="only the first users after the calibration ones, for a pilot")
+                        help="only the first users of the set, for a pilot")
+    replay.add_argument("--calibration-users", action="store_true", dest="calibration_users",
+                        help="replay the calibration users, and only them: the trace of "
+                             "eviction_replay.py calibrate")
     replay.add_argument("--workers", type=int, default=1, help="users at the same time")
     replay.add_argument("--utility", choices=("none", "single", "need_gain"))
     replay.add_argument("--combination", choices=("weighted_sum", "product", "expected_gain"))
