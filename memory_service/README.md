@@ -238,6 +238,15 @@ facts came without the ratings of the mode, and in `ratings` how many times each
 each rating was given, counted as in the long test: the run prints both when the user
 finishes, and summed over the finished users at the end.
 
+What the memory costs the robot is kept too. Every session has `archive_bytes`, the size
+on disk of the user's Chroma folder when it ends: Chroma writes its index in batches and
+does not always give back the space of a removed memory, so the size grows in steps and
+may not shrink after a prune. Every question has `vector_search_ms`, the archive search
+alone with the embedding of the question, next to `search_duration_ms`, the whole
+retrieve branch with the answer. In `node_stats`, next to the model calls, `archive_search`
+holds the calls and seconds of every archive search of the user, those of consolidation
+included.
+
 **Calibration of the utility tables.** `test/calibration_ratings.py` has the model judge
 the memory points of the calibration users as consolidation judges a new fact: the same
 descriptions of safety and of the ratings of `--utility` (`single` or `need_gain`), the

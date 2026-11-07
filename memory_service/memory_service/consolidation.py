@@ -41,6 +41,7 @@ When the character budget of core memory is exceeded, split_core_by_recency move
 the least recently written or confirmed memories to the archive: no model decides it.
 """
 
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple, Union
@@ -523,6 +524,11 @@ def _rewrite_archive_metadata(item_id: str, status: Optional[str] = None) -> Opt
     return archived
 
 
+# Every archive search of the process, the embedding of the query included: what the
+# experiments measure next to the model calls. reset_node_stats clears it.
+SEARCH_STATS: Dict[str, float] = {"calls": 0, "seconds": 0.0}
+
+
 def _search_active(query: str, k: int) -> List[Any]:
     """The k active archival memories closest to a text, as documents with their metadata."""
     try:
@@ -530,12 +536,16 @@ def _search_active(query: str, k: int) -> List[Any]:
     except (TypeError, ValueError):
         k = ARCHIVE_CANDIDATES_K
 
+    started = time.perf_counter()
     try:
         return backends.get_vector_store().similarity_search(
             query, k=k, filter={"status": "active"})
     except Exception as error:
         print(f"\tArchive search failed: {error}")
         return []
+    finally:
+        SEARCH_STATS["calls"] += 1
+        SEARCH_STATS["seconds"] += time.perf_counter() - started
 
 
 def search_archive(query: str, k: int = ARCHIVE_CANDIDATES_K) -> List[Tuple[str, str]]:

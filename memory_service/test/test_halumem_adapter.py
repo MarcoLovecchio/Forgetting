@@ -182,6 +182,37 @@ class ReplayTest(unittest.TestCase):
         self.assertIn("Date: 2033-12-08, Content: The user has a dog named Argo",
                       replayed["questions"][0]["context"])
 
+    def test_the_search_of_a_question_is_timed_apart_from_its_answer(self):
+        question = {"question": "Come si chiama il cane di Mario?", "answer": "Argo",
+                    "evidence": []}
+        self.replay(session(("a", "b")))
+        searches = len(self.store.searches)
+
+        answered = adapter.answer_question(self.agent, question, "Rossi Mario")
+
+        self.assertEqual(len(self.store.searches) - searches, 1)
+        self.assertGreaterEqual(answered["vector_search_ms"], 0)
+        self.assertLessEqual(answered["vector_search_ms"], answered["search_duration_ms"])
+
+    def test_every_session_keeps_the_size_of_the_archive_on_disk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with open(os.path.join(folder, "chroma.sqlite3"), "wb") as handle:
+                handle.write(b"\0" * 1234)
+            self.agent.config = dataclasses.replace(CONFIG, chroma_path=folder)
+
+            replayed = self.replay(session(("a", "b")))
+
+        self.assertEqual(replayed["archive_bytes"], 1234)
+
+    def test_the_searches_of_a_user_are_counted_with_the_model_calls(self):
+        user = {**USER, "sessions": [session(("a", "b"))]}
+        adapter.reset_node_stats()
+
+        replayed = adapter.replay_user(self.agent, user)
+
+        self.assertEqual(replayed["node_stats"]["archive_search"]["calls"],
+                         len(self.store.searches))
+
     def test_the_same_question_twice_is_asked_twice(self):
         question = {"question": "Dove vive Mario?", "answer": "Mondello", "evidence": []}
 

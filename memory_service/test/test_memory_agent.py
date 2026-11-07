@@ -9,7 +9,9 @@ test_consolidation.py; this file keeps the unit level checks.
     pytest memory_service
 """
 
+import contextlib
 import dataclasses
+import io
 import os
 import sys
 import unittest
@@ -29,7 +31,9 @@ from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
 
 from memory_service.consolidation import (  # noqa: E402
     CoreMemoryItem,
+    SEARCH_STATS,
     archive_items,
+    search_archive,
 )
 from memory_service.memory_manager_llm import (  # noqa: E402
     NODE_STATS,
@@ -615,6 +619,25 @@ class NodeStatsTest(MemoryServiceTestCase):
         self.agent.run_memory_agent("retrieve", query="cosa bevo?")
 
         self.assertEqual(NODE_STATS["retrieval"]["output_tokens"], 0)
+
+    def test_every_archive_search_is_counted_even_when_it_fails(self):
+        def broken(*args, **kwargs):
+            raise RuntimeError("archivio irraggiungibile")
+
+        search_archive("cosa bevo?")
+        self.vector_store.similarity_search = broken
+        with contextlib.redirect_stdout(io.StringIO()):
+            search_archive("cosa bevo?")
+
+        self.assertEqual(SEARCH_STATS["calls"], 2)
+        self.assertGreater(SEARCH_STATS["seconds"], 0)
+
+    def test_the_archive_searches_are_reset_with_the_nodes(self):
+        search_archive("cosa bevo?")
+
+        reset_node_stats()
+
+        self.assertEqual(SEARCH_STATS, {"calls": 0, "seconds": 0.0})
 
 
 class ToolChoiceSpy:

@@ -28,6 +28,18 @@ A session goes like this:
   of each memory. They leave `messages` right after, so they are never consolidated,
   but like any search they count in n_retrieve and n_search.
 
+What the robot pays for the memory is kept too:
+
+- every session, archive_bytes, the size on disk of the user's archive folder when the
+  session ends. It is the folder as Chroma leaves it: the index is written in batches
+  and a removed memory does not always give its space back, so it grows in steps and
+  may not shrink after a prune;
+- every question, vector_search_ms, the archive search alone, the embedding of the
+  question included, next to search_duration_ms, the whole retrieve branch with the
+  answer;
+- every user, archive_search in node_stats: the calls and seconds of every archive
+  search, those of consolidation and of the evaluation of the updates included.
+
 The dataset calls people by name and the service calls them "the user": neutral rewrites
 what goes to the service, personalized what goes to the judge.
 
@@ -70,6 +82,7 @@ from memory_service import backends  # noqa: E402
 from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
     OperationLogEntry,
+    SEARCH_STATS,
     count_ratings,
     count_unrated,
     describe_ratings,
@@ -179,6 +192,7 @@ def answer_question(agent: MemoryAgent, question: Dict[str, Any], name: str) -> 
     """The question through the retrieve branch, leaving no trace in the messages."""
     agent.up_to_date = False
     asked = neutral(question["question"], name)
+    searched = SEARCH_STATS["seconds"]
     started = time.time()
     state = with_retries(lambda: agent.run_memory_agent("retrieve", query=asked))
     elapsed = (time.time() - started) * 1000
@@ -192,6 +206,7 @@ def answer_question(agent: MemoryAgent, question: Dict[str, Any], name: str) -> 
     answered["context"] = "\n".join(serialize(state["core_memory"]) + [state["retrieved_memory"]])
     answered["system_response"] = personalized(answer, name)
     answered["search_duration_ms"] = elapsed
+    answered["vector_search_ms"] = (SEARCH_STATS["seconds"] - searched) * 1000
     return answered
 
 
@@ -230,6 +245,7 @@ def replay_session(agent: MemoryAgent, session: Dict[str, Any], name: str) -> Di
         "operations": operations,
         "active_core": len(serialize_core_memory_for_prompt(agent.state["core_memory"])),
         "active_archive": active_in_archive(),
+        "archive_bytes": directory_size(agent.config.chroma_path),
     }
     if "questions" in session:
         replayed["questions"] = [answer_question(agent, question, name)
@@ -247,7 +263,8 @@ def replay_user(agent: MemoryAgent, user: Dict[str, Any],
         progress(f"{name}: session {index} of {len(user['sessions'])}, "
                  f"{sessions[-1]['active_archive']} active in the archive")
     replayed = {"uuid": user["uuid"], "user_name": name, "sessions": sessions,
-                "node_stats": {node: dict(stats) for node, stats in NODE_STATS.items()}}
+                "node_stats": {**{node: dict(stats) for node, stats in NODE_STATS.items()},
+                               "archive_search": dict(SEARCH_STATS)}}
     mode = agent.config.consolidation_utility
     entries = [(operation["op_type"], operation["ratings"])
                for session in sessions for operation in session["operations"]]

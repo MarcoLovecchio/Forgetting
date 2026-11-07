@@ -14,6 +14,7 @@ from memory_service.consolidation import (
     CONSOLIDATION_TOOLS,
     CoreMemoryItem,
     OperationLogEntry,
+    SEARCH_STATS,
     apply_memory_operations,
     build_candidate_memories,
     core_memory_length,
@@ -77,8 +78,9 @@ NODE_STATS: Dict[str, Dict[str, float]] = {}
 
 
 def reset_node_stats() -> None:
-    """Reset the counters: what is measured is a run, not the life of the process."""
+    """Reset the counters, the archive searches too: what is measured is a run."""
     NODE_STATS.clear()
+    SEARCH_STATS.update(calls=0, seconds=0.0)
 
 
 def _timed(node: str, call):
