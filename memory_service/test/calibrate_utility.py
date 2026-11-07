@@ -42,12 +42,16 @@ weight of PRIOR_WEIGHT pairs and made non-decreasing along rows and columns.
 Every table is then tried on each user left out, estimated on the others: the AUC is
 how often a pair that served scores higher than one that did not, ties counting a
 half, which is what eviction needs, since it removes the lowest scores. need alone
-and gain alone are tried too, to see what each rating adds.
+and gain alone are tried too, to see what each rating adds, and NEED_GAIN_TABLE as
+eviction.py holds it, which learns nothing from the pairs: the provisional table beside
+the calibrated one. In single there is no such line: the provisional UTILITY_TABLE ranks
+the levels as the calibrated one, so its AUC is the same.
 
-    python memory_service/test/calibrate_utility.py --halumem PATH [--ratings FILE]
+    python memory_service/test/calibrate_utility.py --halumem PATH [--ratings FILE ...]
 
-uses the ratings of the last saved commit and model; with --model, of the last commit
-saved with that model.
+uses, of each file, the ratings of the last saved commit and model; with --model, of the
+last commit saved with that model. Several files are several series of the same points:
+their pairs go together, so each level's fraction averages the judgments of the series.
 """
 
 import argparse
@@ -60,6 +64,7 @@ from itertools import accumulate
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import halumem_adapter as adapter
+from memory_service import eviction
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_RATINGS = os.path.join(HERE, "calibration_work", "halumem_ratings.jsonl")
@@ -107,6 +112,12 @@ def latest(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return []
     stamp = (records[-1].get("commit"), records[-1].get("model"))
     return [record for record in records if (record.get("commit"), record.get("model")) == stamp]
+
+
+def of_model(records: Sequence[Dict[str, Any]], model: Optional[str]) -> List[Dict[str, Any]]:
+    """The sessions of the last commit saved with `model`; without it, as latest."""
+    return latest([record for record in records
+                   if model is None or record.get("model") == model])
 
 
 def series(records: Sequence[Dict[str, Any]], mode: str,
@@ -269,9 +280,16 @@ def table_model(table: Callable[[Sequence[Pair]], Tuple[Tuple[float, ...], ...]]
     return estimate
 
 
+def eviction_table(train: Sequence[Pair]) -> Tuple[Tuple[float, ...], ...]:
+    """NEED_GAIN_TABLE as eviction.py holds it: it learns nothing from the pairs."""
+    return eviction.NEED_GAIN_TABLE
+
+
+# In single the table of eviction.py ranks the levels as the calibrated one: the same AUC.
 MODELS: Dict[str, Tuple[Tuple[str, Model], ...]] = {
     "single": (("utility", level_model("utility")),),
     "need_gain": (("need", level_model("need")), ("gain", level_model("gain")),
+                  ("provisional", table_model(eviction_table)),
                   ("product", table_model(product_table)), ("free", table_model(free_table))),
 }
 
@@ -350,7 +368,7 @@ def auc_lines(pairs: Sequence[Pair], mode: str) -> List[str]:
         users = "  ".join("-" if value is None else f"{value:.3f}"
                           for _, value in sorted(by_user.items()))
         shown = "-" if pooled is None else f"{pooled:.3f}"
-        lines.append(f"    {name:<8} {shown}   by user: {users}")
+        lines.append(f"    {name:<11} {shown}   by user: {users}")
     return lines
 
 
@@ -364,16 +382,25 @@ def mode_table(mode: str, usable: Sequence[Pair]):
     return utility_table(usable) if mode == "single" else normalized(product_table(usable))
 
 
-def calibrated_table(root: str, records: Sequence[Dict[str, Any]], mode: str):
-    """The table of `mode` from these sessions of the calibration users, as main prints it.
+def pooled_pairs(users: Sequence[Dict[str, Any]], series_list: Sequence[Sequence[Dict[str, Any]]],
+                 mode: str) -> List[Pair]:
+    """The pairs of every series together: a point judged in three series counts three times,
+    once with each judgment, so the fraction of a level averages the series."""
+    pairs = []
+    for records in series_list:
+        rated = rated_points(records, mode)
+        pairs += [pair for index, user in enumerate(users)
+                  for pair in pairs_of(user, index, rated.get(user["uuid"], {}))]
+    return pairs
+
+
+def calibrated_table(root: str, series_list: Sequence[Sequence[Dict[str, Any]]], mode: str):
+    """The table of `mode` from one series or more of the calibration users, as main prints it.
 
     It raises ValueError when no pair served at some rating.
     """
     users = adapter.calibration_users(root)
-    rated = rated_points(records, mode)
-    pairs = [pair for index, user in enumerate(users)
-             for pair in pairs_of(user, index, rated.get(user["uuid"], {}))]
-    return mode_table(mode, usable_pairs(pairs, mode))
+    return mode_table(mode, usable_pairs(pooled_pairs(users, series_list, mode), mode))
 
 
 def report(mode: str, pairs: Sequence[Pair], users: int) -> List[str]:
@@ -398,31 +425,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="The utility tables from HaluMem's "
                                                  "calibration users.")
     parser.add_argument("--halumem", required=True, help="the folder of the HaluMem clone")
-    parser.add_argument("--ratings", default=DEFAULT_RATINGS,
-                        help="the file calibration_ratings.py writes")
+    parser.add_argument("--ratings", nargs="+", default=[DEFAULT_RATINGS],
+                        help="the files calibration_ratings.py writes, one series each: "
+                             "their pairs go together")
     parser.add_argument("--model", help="the ratings of this model, instead of the last saved")
     arguments = parser.parse_args(argv)
 
-    records = [record for record in load_ratings(arguments.ratings)
-               if arguments.model is None or record.get("model") == arguments.model]
-    if not records:
-        print(f"No ratings saved in {arguments.ratings}"
-              + (f" with model {arguments.model}" if arguments.model else ""))
+    loaded = [(path, load_ratings(path)) for path in arguments.ratings]
+    model = arguments.model or next((records[-1].get("model")
+                                     for _, records in reversed(loaded) if records), None)
+    series_list = []
+    for path, records in loaded:
+        same = of_model(records, model)
+        if not same:
+            print(f"No ratings saved in {path}" + (f" with model {model}" if model else ""))
+            continue
+        print(f"{path}: {len(same)} sessions rated with commit "
+              f"{same[-1].get('commit') or '(unknown)'} and model "
+              f"{same[-1].get('model') or '(unknown)'}, out of {len(records)} saved")
+        series_list.append(same)
+    if not series_list:
         return 1
-    same = latest(records)
-    print(f"{len(same)} sessions rated with commit {same[-1].get('commit') or '(unknown)'} "
-          f"and model {same[-1].get('model') or '(unknown)'}, out of {len(records)} saved")
 
     users = adapter.calibration_users(os.path.abspath(os.path.expanduser(arguments.halumem)))
     for mode in MODES:
-        rated = rated_points(same, mode)
-        print(f"\n{mode}:" if rated else f"\n{mode}: no ratings")
-        if not rated:
+        rated_series = [(same, rated) for same in series_list
+                        for rated in (rated_points(same, mode),) if rated]
+        if not rated_series:
+            print(f"\n{mode}: no ratings")
             continue
-        print(judged_line(rated, mode))
-        pairs = [pair for index, user in enumerate(users)
-                 for pair in pairs_of(user, index, rated.get(user["uuid"], {}))]
-        for line in report(mode, pairs, sum(1 for user in users if user["uuid"] in rated)):
+        together = f" {len(rated_series)} series, their pairs together" if len(
+            rated_series) > 1 else ""
+        print(f"\n{mode}:{together}")
+        for _, rated in rated_series:
+            print(judged_line(rated, mode))
+        pairs = pooled_pairs(users, [same for same, _ in rated_series], mode)
+        present = {uuid for _, rated in rated_series for uuid in rated}
+        for line in report(mode, pairs, sum(1 for user in users if user["uuid"] in present)):
             print(line)
     return 0
 

@@ -261,7 +261,8 @@ pulled toward the fraction of all the levels when the data are few and made mono
 need level times that of the gain level, both normalized to paste into `eviction.py`. For
 `need_gain` it also prints the free table, cell by cell. Every table, and need and gain
 alone, is tried on each user left out: the AUC says how often a pair that served scores
-above one that did not.
+above one that did not. For `need_gain` the line `provisional` is the `NEED_GAIN_TABLE`
+`eviction.py` holds, which learns nothing from the pairs, beside the calibrated ones.
 
 ```bash
 python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need_gain --workers 5
@@ -269,10 +270,17 @@ python3 memory_service/test/calibration_ratings.py --halumem PATH --utility sing
 
 # the tables again, from the ratings already saved
 python3 memory_service/test/calibrate_utility.py --halumem PATH
+
+# three series of the same model, their pairs together
+python3 memory_service/test/calibrate_utility.py --halumem PATH --ratings A.jsonl B.jsonl C.jsonl --model MODEL
 ```
 
 `calibrate_utility.py` reads the last model saved; `--model` picks another, so a file
 can hold the 4B and the 9B. `calibration_ratings.py` passes it the model it just used.
+With several `--ratings` files, each a series of the same points, the pairs of all of
+them go together: a point counts once per series, with that series' judgment, so the
+fraction of a level averages the series and the rare levels get more pairs. A file with
+no ratings of the model is left out, and said so.
 
 **Stability of the ratings.** A series launched again with another `--ratings` file
 judges the same points once more. `test/rating_alpha.py` takes two series or more, each
@@ -294,8 +302,9 @@ service's rule is `choose_prune_targets`, the search of every question is comput
 on the smaller archive from the vectors of the trace. Next to the service's score, with
 utility `none` or the trace's, the three combinations, three prune fractions and the
 trace's frequency function, it replays the calibrated rules: the trace's utility with the
-table `calibrate_utility.py` derives from the ratings of the trace's model (`--ratings`,
-the calibration file by default) in place of the provisional one, for `weighted_sum` and
+table `calibrate_utility.py` derives from the series of the trace's model, their pairs
+together (`--ratings` with one file or more, the calibration file by default), in place
+of the provisional one, for `weighted_sum` and
 `product`, since `expected_gain` reads no table. Without ratings of that model and mode
 they are left out, and `simulate` says so. As references it replays FIFO, LRU, LFU,
 utility alone, with the calibrated table too, random and an oracle that knows the
@@ -326,7 +335,7 @@ insert, the search must find what the questions found. Everything lands in the r
 python3 memory_service/test/halumem_adapter.py run --halumem PATH --version trace --archive-limit 100000
 python3 memory_service/test/eviction_replay.py embed --halumem PATH --version trace
 python3 memory_service/test/eviction_replay.py label --halumem PATH --version trace
-python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --ratings FILE
+python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --ratings A.jsonl B.jsonl C.jsonl
 ```
 
 ## The models on the cluster

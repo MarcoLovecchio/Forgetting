@@ -376,7 +376,7 @@ class RulesTest(unittest.TestCase):
                                          "model": "qwen3.5-9b", "commit": "abc",
                                          "ratings": {}}) + "\n")
             with contextlib.redirect_stdout(io.StringIO()):
-                self.assertIsNone(replay_tool.calibration_table(folder, path, CONFIG))
+                self.assertIsNone(replay_tool.calibration_table(folder, [path], CONFIG))
 
 
 class JudgeCandidatesTest(unittest.TestCase):

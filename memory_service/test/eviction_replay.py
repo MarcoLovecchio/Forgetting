@@ -41,7 +41,8 @@ The rules, each once: two that would choose the same are one.
                     with none the combination does not count, with single expected_gain
                     is weighted_sum
     calibrated      the trace's utility with the table calibrate_utility.py derives from
-                    the --ratings of the trace's model in place of the provisional one,
+                    the --ratings series of the trace's model, their pairs together, in
+                    place of the provisional one,
                     for weighted_sum and product: expected_gain reads no table
     references      FIFO, LRU, LFU, utility alone, with the calibrated table too unless it
                     ranks the levels as the provisional one, random (RANDOM_SEEDS), with
@@ -74,7 +75,7 @@ replayed.
     python3 memory_service/test/eviction_replay.py embed --halumem PATH --version NAME
     python3 memory_service/test/eviction_replay.py label --halumem PATH --version NAME
     python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version NAME
-                                                   [--ratings FILE]
+                                                   [--ratings FILE ...]
 
 Everything lands in PATH/eval/results/memory_service-NAME/replay/.
 """
@@ -1081,22 +1082,31 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
           "prunes a later question needed. * is the trace's rule.")
 
 
-def calibration_table(root: str, path: str, config: MemoryConfig) -> Optional[Sequence]:
-    """The table calibrated on the ratings of the trace's mode and model, None without them."""
+def calibration_table(root: str, paths: Sequence[str],
+                      config: MemoryConfig) -> Optional[Sequence]:
+    """The table calibrated on the series of the trace's model, their pairs together, as
+    calibrate_utility.py prints it with --model; None without ratings of the trace's mode."""
     mode, model = config.consolidation_utility, config.llm_config.get("model_name")
     if mode == "none":
         return None
-    records = calibrate_utility.series(calibrate_utility.load_ratings(path), mode, model)
-    if not records:
-        print(f"No {mode} ratings of {model} in {path}: no calibrated rules.")
+    found = []
+    for path in paths:
+        same = calibrate_utility.of_model(calibrate_utility.load_ratings(path), model)
+        if calibrate_utility.rated_points(same, mode):
+            found.append((path, same))
+        else:
+            print(f"No {mode} ratings of {model} in {path}")
+    if not found:
+        print("No calibrated rules.")
         return None
     try:
-        table = calibrate_utility.calibrated_table(root, records, mode)
+        table = calibrate_utility.calibrated_table(root, [same for _, same in found], mode)
     except ValueError as error:
         print(f"No calibrated rules: {error}")
         return None
-    print(f"Calibrated rules: the {mode} table of {model}, {len(records)} sessions rated with "
-          f"commit {records[-1].get('commit') or '(unknown)'}")
+    print(f"Calibrated rules: the {mode} table of {model}, from {len(found)} series together")
+    for path, same in found:
+        print(f"  {path}: {len(same)} sessions, commit {same[-1].get('commit') or '(unknown)'}")
     for line in calibrate_utility.literal(calibrate_utility.TABLE_NAMES[mode], table):
         print(f"  {line}")
     return table
@@ -1145,8 +1155,8 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     judged.set_defaults(step_function=label)
     replayed = steps.add_parser("simulate", parents=[common], help="every rule, every limit")
     replayed.add_argument("--workers", type=int, default=1, help="users at the same time")
-    replayed.add_argument("--ratings", default=calibrate_utility.DEFAULT_RATINGS,
-                          help="the calibration ratings: those of the trace's model and mode "
+    replayed.add_argument("--ratings", nargs="+", default=[calibrate_utility.DEFAULT_RATINGS],
+                          help="the calibration series: those of the trace's model, together, "
                                "give the calibrated rules")
     replayed.set_defaults(step_function=simulate)
     return parser.parse_args(argv)

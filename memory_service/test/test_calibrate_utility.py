@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
@@ -20,6 +21,7 @@ import calibrate_utility as cu  # noqa: E402
 import calibration_ratings as cr  # noqa: E402
 import halumem_adapter as adapter  # noqa: E402
 from calibrate_utility import Pair  # noqa: E402
+from memory_service import eviction  # noqa: E402
 
 from fakes import ScriptedChatModel  # noqa: E402
 
@@ -198,6 +200,16 @@ class AucTest(unittest.TestCase):
 
         self.assertEqual(cu.held_out_auc(pairs, model), (0.0, {0: 0.0, 1: 0.0}))
 
+    def test_the_provisional_table_is_the_one_of_eviction_py_whatever_the_pairs(self):
+        model = dict(cu.MODELS["need_gain"])["provisional"]
+        asymmetric = ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6), (0.7, 0.8, 0.9))
+        train = [pair(True, need=1, gain=3), pair(False, need=3, gain=1)]
+
+        with mock.patch.object(eviction, "NEED_GAIN_TABLE", asymmetric):
+            score = model(train)
+            self.assertEqual(score(pair(False, need=3, gain=1)), 0.7)
+            self.assertEqual(score(pair(False, need=1, gain=3)), 0.3)
+
     def test_with_a_single_user_nothing_is_predicted(self):
         pairs = [pair(True, need=3, gain=3), pair(False, need=1, gain=1)]
 
@@ -226,14 +238,64 @@ class MainTest(unittest.TestCase):
         return {"uuid": uuid, "session": 0, "mode": mode, "model": model, "commit": commit,
                 "ratings": ratings}
 
-    def run_main(self, records, *options):
-        with open(self.ratings, "w", encoding="utf-8") as handle:
+    def write(self, path, records):
+        with open(path, "w", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record) + "\n")
+        return path
+
+    def run_main(self, records, *options):
+        self.write(self.ratings, records)
+        return self.main("--ratings", self.ratings, *options)
+
+    def main(self, *options):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = cu.main(["--halumem", self.root, "--ratings", self.ratings, *options])
+            code = cu.main(["--halumem", self.root, *options])
         return code, output.getvalue()
+
+    def opposite(self, uuid, first):
+        """The dog and the jazz with utility 5 and 1, or the other way round."""
+        levels = (5, 1) if first else (1, 5)
+        return {"uuid": uuid, "session": 0, "mode": "single", "model": "qwen", "commit": "abc",
+                "ratings": {str(index): {"safety": False, "utility": level}
+                            for index, level in enumerate(levels)}}
+
+    def test_two_series_together_average_their_judgments(self):
+        first = [self.opposite(uuid, True) for uuid in ("u0", "u1")]
+        second = [self.opposite(uuid, False) for uuid in ("u0", "u1")]
+
+        alone = cu.calibrated_table(self.root, [first], "single")
+        together = cu.calibrated_table(self.root, [first, second], "single")
+
+        self.assertLess(alone[0], alone[4], "alone, the dog at 5 is the one that served")
+        self.assertEqual(len(set(together)), 1, "together, 5 and 1 served half the time each")
+
+    def test_main_prints_the_table_of_the_series_together(self):
+        series = [[self.opposite(uuid, first) for uuid in ("u0", "u1")] for first in (True, False)]
+        paths = [self.write(os.path.join(self.root, name), records)
+                 for name, records in zip(("a.jsonl", "b.jsonl"), series)]
+
+        code, output = self.main("--ratings", *paths)
+
+        table = cu.calibrated_table(self.root, series, "single")
+        self.assertEqual(code, 0)
+        self.assertIn("2 series, their pairs together", output)
+        for line in cu.literal("UTILITY_TABLE", table):
+            self.assertIn(line, output)
+
+    def test_a_series_of_another_model_stays_out(self):
+        small = self.write(os.path.join(self.root, "a.jsonl"),
+                           [self.record(uuid, "need_gain", model="qwen3.5-4b")
+                            for uuid in ("u0", "u1")])
+        large = self.write(os.path.join(self.root, "b.jsonl"),
+                           [self.record(uuid, "need_gain", model="qwen3.5-9b")
+                            for uuid in ("u0", "u1")])
+
+        _, output = self.main("--ratings", small, large, "--model", "qwen3.5-4b")
+
+        self.assertIn(f"No ratings saved in {large} with model qwen3.5-4b", output)
+        self.assertNotIn("series, their pairs together", output)
 
     def test_model_picks_the_ratings_of_that_model(self):
         small = [self.record(uuid, "need_gain", model="qwen3.5-4b") for uuid in ("u0", "u1")]
@@ -251,7 +313,7 @@ class MainTest(unittest.TestCase):
 
         _, output = self.run_main(records)
 
-        table = cu.calibrated_table(self.root, records, "need_gain")
+        table = cu.calibrated_table(self.root, [records], "need_gain")
         for line in cu.literal("NEED_GAIN_TABLE", table):
             self.assertIn(line, output)
 
