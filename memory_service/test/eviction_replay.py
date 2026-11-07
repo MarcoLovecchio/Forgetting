@@ -21,6 +21,9 @@ sees the same memories, so a difference between two rules comes from the rules o
               question of a later session, served when the judge chose it. It prints the
               tables and the AUC on the user left out, and saves the counts in
               CALIBRATION_FILE for simulate --calibration-trace
+    compare   the trace's ratings against the same memories rated without context by
+              calibration_ratings.py --trace: the levels of each, the shift and the
+              crossing of the two, their agreement, and the AUC of each on the same pairs
     simulate  every rule at every limit of LIMITS, and the indicators
 
 What the replay does with the trace:
@@ -88,6 +91,8 @@ replayed.
     python3 memory_service/test/eviction_replay.py embed --halumem PATH --version NAME
     python3 memory_service/test/eviction_replay.py label --halumem PATH --version NAME
     python3 memory_service/test/eviction_replay.py calibrate --halumem PATH --version CAL
+    python3 memory_service/test/eviction_replay.py compare --halumem PATH --version CAL
+                                                   --ratings FILE
     python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version NAME
                                                    [--calibration-trace CAL ...]
                                                    [--ratings FILE ...]
@@ -131,6 +136,7 @@ from memory_service.eviction import (  # noqa: E402
     prune_count,
     utility_term,
 )
+import rating_alpha  # noqa: E402
 
 LIMITS = (25, 50, 100, 150, 200)
 COMBINATIONS = ("weighted_sum", "product", "expected_gain")
@@ -984,25 +990,34 @@ def labelled_questions(run_dir: str, uuid: str) -> Dict[str, set]:
             if "error" not in outcome}
 
 
-def context_counts(events: Sequence[Any], labelled: Dict[str, set],
-                   config: MemoryConfig) -> Dict[Tuple[Any, ...], List[int]]:
+def context_counts(events: Sequence[Any], labelled: Dict[str, set], config: MemoryConfig,
+                   judgments: Optional[Dict[str, Dict[str, Any]]] = None
+                   ) -> Dict[Tuple[Any, ...], List[int]]:
     """(ratings of the mode) -> [pairs, served] on one user of a trace.
 
     A pair is a rated memory, safety apart, still active when a question of a later
     session comes: an update or a delete ends it. It served when the judge chose it for
     that question. A question the judge could not label stays out; one that needs nothing
-    counts, with none of its pairs served.
+    counts, with none of its pairs served. With `judgments` (id -> judgment) the ratings
+    are those, and a memory without one stays out: two sets of ratings on the same pairs.
     """
     names = calibrate_utility.MODES[config.consolidation_utility]
     counts: Dict[Tuple[Any, ...], List[int]] = defaultdict(lambda: [0, 0])
+
+    def rated(item_id: str, item: CoreMemoryItem) -> Optional[Tuple[Any, ...]]:
+        judgment = ratings_of(item) if judgments is None else judgments.get(item_id)
+        if not judgment or judgment.get("safety"):
+            return None
+        ratings = tuple(judgment.get(name) for name in names)
+        return None if None in ratings else ratings
 
     def collect(replay: Replay, event: Question, ranked: List[str]) -> None:
         needed = labelled.get(event.key)
         if needed is None:
             return
         for item_id, item in replay.items.items():
-            ratings = tuple(getattr(item, name) for name in names)
-            if item.safety or None in ratings or replay.born[item_id] >= event.session:
+            ratings = rated(item_id, item)
+            if ratings is None or replay.born[item_id] >= event.session:
                 continue
             counts[ratings][0] += 1
             counts[ratings][1] += item_id in needed
@@ -1052,6 +1067,9 @@ def calibrate(arguments: argparse.Namespace) -> int:
     model = config.llm_config.get("model_name")
     print(f"{len(results)} calibration users of {arguments.version}, {mode}, model {model}, "
           f"commit {manifest.get('commit') or '(unknown)'}: the ratings given in context")
+    print(calibrate_utility.shares_line(calibrate_utility.level_shares(
+        [judgment for result in results for judgment in written_judgments(result).values()],
+        mode), "by memory"))
     for line in calibrate_utility.report(mode, calibration_pairs(entries, names), len(results)):
         print(line)
     path = os.path.join(replay_folder(run_dir), CALIBRATION_FILE)
@@ -1059,6 +1077,107 @@ def calibrate(arguments: argparse.Namespace) -> int:
                      "commit": manifest.get("commit"),
                      "users": [result["uuid"] for result in results], "counts": entries})
     print(f"\nSaved for simulate --calibration-trace: {path}")
+    return 0
+
+
+def written_judgments(result: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """The last judgment of every memory a create or an update wrote, by id: {} unrated.
+
+    The log shows safety only when true: a judged memory without it is safety false.
+    """
+    written: Dict[str, Dict[str, Any]] = {}
+    for session in result["sessions"]:
+        for operation in session["operations"]:
+            if operation["op_type"] in ("create", "update"):
+                shown = operation.get("ratings") or {}
+                written[operation["item_id"]] = {"safety": False, **shown} if shown else {}
+    return written
+
+
+def crossing(first: Dict[Any, Optional[Dict[str, Any]]],
+             second: Dict[Any, Optional[Dict[str, Any]]], name: str,
+             top: int) -> Tuple[Optional[float], List[List[int]]]:
+    """The mean of first - second on `name` and the table of first's level by second's,
+    over the facts both rated with it."""
+    table = [[0] * top for _ in range(top)]
+    shifts = []
+    for key in first.keys() & second.keys():
+        one, other = (first[key] or {}).get(name), (second[key] or {}).get(name)
+        if one is None or other is None:
+            continue
+        table[one - 1][other - 1] += 1
+        shifts.append(one - other)
+    return (sum(shifts) / len(shifts) if shifts else None), table
+
+
+def compare(arguments: argparse.Namespace) -> int:
+    """The ratings of a trace against the same memories rated without context."""
+    run_dir = adapter.run_folder(arguments)
+    root = os.path.abspath(os.path.expanduser(arguments.halumem))
+    config = MemoryConfig(**trace_manifest(run_dir)["config"])
+    mode, model = config.consolidation_utility, config.llm_config.get("model_name")
+    if mode == "none":
+        raise SystemExit("The trace rates nothing: its utility is none.")
+    records = calibrate_utility.latest([
+        record for record in calibrate_utility.load_ratings(arguments.ratings)
+        if (record.get("trace"), record.get("mode"), record.get("model"))
+        == (arguments.version, mode, model)])
+    if not records:
+        raise SystemExit(f"No ratings without context of {arguments.version} with {mode} and "
+                         f"{model} in {arguments.ratings}: launch calibration_ratings.py "
+                         "--trace first.")
+    results = trace_results(run_dir)[:arguments.users]
+    uuids = {result["uuid"] for result in results}
+    without = {(record["uuid"], item_id): judgment for record in records
+               if record["uuid"] in uuids for item_id, judgment in record["memories"].items()}
+    within = {(result["uuid"], item_id): judgment for result in results
+              for item_id, judgment in written_judgments(result).items()}
+    both = within.keys() & without.keys()
+    print(f"{arguments.version}: {len(within)} memories written, {len(both)} rated again "
+          f"without context (commit {records[-1].get('commit') or '(unknown)'})")
+    within = {key: within[key] for key in both}
+    without = {key: without[key] for key in both}
+    for label, judgments in (("with context, by memory", within),
+                             ("without context, by memory", without)):
+        print(calibrate_utility.shares_line(
+            calibrate_utility.level_shares(judgments.values(), mode), label))
+
+    for name in calibrate_utility.MODES[mode]:
+        top = calibrate_utility.LEVELS[name]
+        shift, table = crossing(within, without, name, top)
+        shown = "-" if shift is None else f"{shift:+.2f}"
+        print(f"\n{name}: with minus without, {shown} on average; rows with context, "
+              "columns without")
+        print("        " + "".join(f"{level:>8}" for level in range(1, top + 1)))
+        for level, row in enumerate(table, 1):
+            print(f"{level:>8}" + "".join(f"{count:>8}" for count in row))
+
+    print("\nAgreement of the two (Krippendorff): set it beside rating_alpha.py between "
+          "series without context, which is the noise alone")
+    print(f"  {'rating':<12} {'points':>6}  {'alpha':>6}  {'95% interval':^15}  {'exact':>7}")
+    for rating in rating_alpha.RATINGS:
+        if rating.mode == mode:
+            print(rating_alpha.rating_line([within, without], rating))
+
+    unlabelled = [uuid for uuid in uuids if not os.path.exists(labels_path(run_dir, uuid))]
+    if unlabelled:
+        print(f"\n{len(unlabelled)} users without labels: launch label for the AUC.")
+        return 0
+    dataset = {user["uuid"]: user for user in adapter.dataset_users(root)}
+    names = calibrate_utility.MODES[mode]
+    for label, judgments in (("with context", within), ("without context", without)):
+        entries = []
+        for index, result in enumerate(results):
+            mine = {item_id: judgment for (uuid, item_id), judgment in judgments.items()
+                    if uuid == result["uuid"]}
+            counts = context_counts(trace_events(result, dataset[result["uuid"]]),
+                                    labelled_questions(run_dir, result["uuid"]), config, mine)
+            entries += [{"user": index, "ratings": list(ratings), "pairs": pairs,
+                         "served": served} for ratings, (pairs, served) in counts.items()]
+        print(f"\n{label}, on the memories rated both ways:")
+        for line in calibrate_utility.auc_lines(
+                calibrate_utility.usable_pairs(calibration_pairs(entries, names), mode), mode):
+            print(line)
     return 0
 
 
@@ -1385,6 +1504,12 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     steps.add_parser("calibrate", parents=[common],
                      help="the utility tables from a trace of the calibration users").set_defaults(
         step_function=calibrate)
+    compared = steps.add_parser("compare", parents=[common],
+                                help="the trace's ratings against the same memories rated "
+                                     "without context")
+    compared.add_argument("--ratings", required=True,
+                          help="the file of calibration_ratings.py --trace")
+    compared.set_defaults(step_function=compare)
     replayed = steps.add_parser("simulate", parents=[common], help="every rule, every limit")
     replayed.add_argument("--workers", type=int, default=1, help="users at the same time")
     replayed.add_argument("--ratings", nargs="+", default=[calibrate_utility.DEFAULT_RATINGS],

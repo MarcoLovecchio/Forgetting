@@ -430,6 +430,38 @@ class ContextCountsTest(unittest.TestCase):
                          "same session, safety, the updated b and 1:1 unlabelled stay out")
 
 
+class CompareTest(unittest.TestCase):
+    """The ratings of a trace against the same memories rated without context."""
+
+    def test_a_judged_memory_without_safety_in_the_log_is_safety_false(self):
+        trace = {"sessions": [{"operations": [
+            create("a", 0, need=3, gain=2), create("s", 0, safety=True), create("u", 0),
+            operation("redundant", "a", 1)]}]}
+
+        self.assertEqual(replay_tool.written_judgments(trace),
+                         {"a": {"safety": False, "need": 3, "gain": 2}, "s": {"safety": True},
+                          "u": {}})
+
+    def test_the_crossing_of_the_two_ratings_and_the_mean_shift(self):
+        within = {"a": {"need": 3}, "b": {"need": 2}, "c": {"need": 2}, "d": {}}
+        without = {"a": {"need": 1}, "b": {"need": 2}, "c": {"need": 3}, "d": {"need": 1}}
+
+        shift, table = replay_tool.crossing(within, without, "need", 3)
+
+        self.assertAlmostEqual(shift, (2 + 0 - 1) / 3)
+        self.assertEqual(table, [[0, 0, 0], [0, 1, 1], [1, 0, 0]])
+
+    def test_ratings_from_elsewhere_count_on_the_same_pairs(self):
+        events = [Insert(0, at(0), [create("a", 0, need=3, gain=3), create("b", 0, need=3,
+                                                                           gain=3)]),
+                  asked("1:0", 10, session=1)]
+        free = {"a": {"safety": False, "need": 1, "gain": 1}, "b": {"safety": True}}
+
+        counts = replay_tool.context_counts(events, {"1:0": {"a"}}, CONFIG, free)
+
+        self.assertEqual(counts, {(1, 1): [1, 1]}, "b is safety without context: it stays out")
+
+
 class CalibrateTest(unittest.TestCase):
     """From a trace of the calibration users to the table simulate uses."""
 
@@ -519,6 +551,38 @@ class CalibrateTest(unittest.TestCase):
                                                         "model_name": "grande"})
 
         self.assertIsNone(self.table(["cal"], {"e1"}, other))
+
+    def test_compare_reads_the_ratings_without_context_of_that_trace(self):
+        self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "b"})
+        path = os.path.join(self.root, "without.jsonl")
+        with open(path, "w", encoding="utf-8") as handle:
+            for uuid in ("u1", "u2"):
+                handle.write(json.dumps({
+                    "uuid": uuid, "session": 0, "mode": "need_gain", "model": "fake",
+                    "commit": "abc", "trace": "cal",
+                    "memories": {"a": {"safety": False, "need": 2, "gain": 2},
+                                 "b": {"safety": False, "need": 3, "gain": 1}}}) + "\n")
+        arguments = replay_tool.parse_arguments(["compare", "--halumem", self.root,
+                                                 "--version", "cal", "--ratings", path])
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(arguments.step_function(arguments), 0)
+
+        self.assertIn("4 memories written, 4 rated again without context", output.getvalue())
+
+    def test_compare_needs_the_ratings_of_that_trace(self):
+        self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "b"})
+        path = os.path.join(self.root, "other.jsonl")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"uuid": "u1", "session": 0, "mode": "need_gain",
+                                     "model": "fake", "commit": "abc", "trace": "altra",
+                                     "memories": {}}) + "\n")
+        arguments = replay_tool.parse_arguments(["compare", "--halumem", self.root,
+                                                 "--version", "cal", "--ratings", path])
+
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            arguments.step_function(arguments)
 
     def test_a_calibration_on_the_users_replayed_stops_the_replay(self):
         self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "a"})

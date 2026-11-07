@@ -61,7 +61,7 @@ import sys
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import halumem_adapter as adapter
 from memory_service import eviction
@@ -132,7 +132,8 @@ def rated_points(records: Sequence[Dict[str, Any]],
     """uuid -> (session, point) -> the judgment, None if never given, for `mode`."""
     rated: Dict[str, Dict[Point, Optional[Dict[str, Any]]]] = {}
     for record in records:
-        if record.get("mode") == mode:
+        # A line of calibration_ratings.py --trace holds memories, not points.
+        if record.get("mode") == mode and "ratings" in record:
             points = rated.setdefault(record["uuid"], {})
             for point, judgment in record["ratings"].items():
                 points[(record["session"], int(point))] = judgment
@@ -348,6 +349,26 @@ def level_lines(levels: Levels, rating: str) -> List[str]:
     return lines
 
 
+def level_shares(judgments: Iterable[Optional[Dict[str, Any]]],
+                 mode: str) -> Dict[str, Dict[int, float]]:
+    """The share of each level of each rating of `mode`, over the facts rated with it."""
+    judged = [judgment for judgment in judgments if judgment and not judgment.get("safety")]
+    shares = {}
+    for name in MODES[mode]:
+        levels = [judgment[name] for judgment in judged if judgment.get(name) is not None]
+        shares[name] = ({level: levels.count(level) / len(levels)
+                         for level in range(1, LEVELS[name] + 1)} if levels else {})
+    return shares
+
+
+def shares_line(shares: Dict[str, Dict[int, float]], label: str) -> str:
+    """The shares as need 1/2/3 = 1.9/89.6/8.5%, each fact counted once."""
+    parts = [f"{name} {'/'.join(str(level) for level in levels)} = "
+             f"{'/'.join(f'{100 * share:.1f}' for share in levels.values())}%"
+             for name, levels in shares.items() if levels]
+    return f"  {label}: " + (", ".join(parts) if parts else "no ratings")
+
+
 def judged_line(rated: Dict[str, Dict[Point, Optional[Dict[str, Any]]]], mode: str) -> str:
     """How many points were judged, about safety, without the mode's ratings, skipped."""
     judgments = [judgment for points in rated.values() for judgment in points.values()]
@@ -459,6 +480,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"\n{mode}:{together}")
         for _, rated in rated_series:
             print(judged_line(rated, mode))
+            print(shares_line(level_shares([judgment for points in rated.values()
+                                            for judgment in points.values()], mode), "by point"))
         pairs = pooled_pairs(users, [same for same, _ in rated_series], mode)
         present = {uuid for _, rated in rated_series for uuid in rated}
         for line in report(mode, pairs, sum(1 for user in users if user["uuid"] in present)):

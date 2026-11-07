@@ -15,7 +15,16 @@ the commit. Launched again, a session already judged with the same mode, model a
 commit is skipped, so a stopped series goes on where it was. At the end
 calibrate_utility.py prints the tables.
 
+With --trace the same prompt judges, session by session, the memories a trace of
+halumem_adapter.py wrote (every create and update, by id, with its last text) instead of
+the points: the same facts as the trace's ratings, without the context of
+consolidation. The trace must have the mode, the model and the sampling of the series;
+the lines carry its name and go by default to calibration_work/<trace>_without_context.jsonl.
+eviction_replay.py compare sets the two ratings side by side.
+
     python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need_gain
+    python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need_gain \
+        --trace cal-ng-4b
 """
 
 import argparse
@@ -39,7 +48,7 @@ if PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, PACKAGE_ROOT)
 
 from memory_service import backends  # noqa: E402
-from memory_service.config import MemoryConfig  # noqa: E402
+from memory_service.config import NODE_SAMPLING, MemoryConfig  # noqa: E402
 from memory_service.consolidation import (  # noqa: E402
     MODE_RATINGS,
     SAFETY_DESCRIPTION,
@@ -169,12 +178,35 @@ def rate_session(llm: Any, user: Dict[str, Any], session_index: int,
             "ratings": {str(index): judgment for (index, _), judgment in zip(points, judgments)}}
 
 
+def trace_facts(session: Dict[str, Any]) -> Dict[str, str]:
+    """id -> text of every memory a create or an update of the session wrote, the last text."""
+    facts: Dict[str, str] = {}
+    for operation in session["operations"]:
+        if operation["op_type"] in ("create", "update") and operation["content"]:
+            facts[operation["item_id"]] = operation["content"]
+    return facts
+
+
+def rate_trace_session(llm: Any, result: Dict[str, Any], session_index: int,
+                       stamp: Dict[str, Any]) -> Dict[str, Any]:
+    """The line of a session of a trace: the judgment of each memory it wrote, by id."""
+    facts = trace_facts(result["sessions"][session_index])
+    ids = list(facts)
+    judgments = judge_session(llm, stamp["mode"], [facts[item_id] for item_id in ids])
+    return {"uuid": result["uuid"], "session": session_index, **stamp,
+            "memories": dict(zip(ids, judgments))}
+
+
 def rate_users(users: Sequence[Dict[str, Any]], llm: Any, stamp: Dict[str, Any], path: str,
-               workers: int = 1) -> int:
-    """Judge the sessions not judged yet with the same stamp: how many were judged now."""
+               workers: int = 1, rate: Any = None) -> int:
+    """Judge the sessions not judged yet with the same stamp: how many were judged now.
+
+    `rate` is rate_session, or rate_trace_session for the sessions of a trace.
+    """
+    rate = rate or rate_session
     done = {(record["uuid"], record["session"])
             for record in calibrate_utility.load_ratings(path)
-            if all(record.get(key) == value for key, value in stamp.items())}
+            if all(record.get(key) == stamp.get(key) for key in {*stamp, "trace"})}
     pending = [(user, index) for user in users for index in range(len(user["sessions"]))
                if (user["uuid"], index) not in done]
     print(f"{len(pending)} sessions to judge, {len(done)} already judged", flush=True)
@@ -182,7 +214,7 @@ def rate_users(users: Sequence[Dict[str, Any]], llm: Any, stamp: Dict[str, Any],
     lock = threading.Lock()
 
     def one(user: Dict[str, Any], index: int) -> Dict[str, Any]:
-        record = rate_session(llm, user, index, stamp)
+        record = rate(llm, user, index, stamp)
         with lock, open(path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         return record
@@ -192,9 +224,10 @@ def rate_users(users: Sequence[Dict[str, Any]], llm: Any, stamp: Dict[str, Any],
         for future in as_completed([pool.submit(one, *item) for item in pending]):
             record = future.result()
             judged += 1
-            skipped = sum(1 for judgment in record["ratings"].values() if judgment is None)
+            facts = record.get("ratings", record.get("memories", {}))
+            skipped = sum(1 for judgment in facts.values() if judgment is None)
             print(f"[{judged}/{len(pending)}] user {record['uuid'][:8]} session "
-                  f"{record['session']}: {len(record['ratings'])} points"
+                  f"{record['session']}: {len(facts)} facts"
                   f"{f', {skipped} never judged' if skipped else ''}", flush=True)
     return judged
 
@@ -207,8 +240,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--utility", required=True, choices=("single", "need_gain"))
     parser.add_argument("--model", help="the Qwen model, instead of the one in LLM_CONFIG")
     parser.add_argument("--workers", type=int, default=1, help="sessions at the same time")
-    parser.add_argument("--ratings", default=calibrate_utility.DEFAULT_RATINGS,
-                        help="the file the judgments are appended to")
+    parser.add_argument("--ratings", help="the file the judgments are appended to")
+    parser.add_argument("--trace", type=adapter.version_name,
+                        help="judge the memories this trace wrote, instead of the points")
     arguments = parser.parse_args(argv)
     if arguments.workers < 1:
         parser.error("--workers must be at least 1")
@@ -229,10 +263,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
     stamp = {"mode": arguments.utility, "model": config.llm_config.get("model_name"),
              "commit": adapter.git_commit()}
+    if arguments.trace:
+        return rate_trace(root, arguments, stamp)
+    arguments.ratings = arguments.ratings or calibrate_utility.DEFAULT_RATINGS
     rate_users(adapter.calibration_users(root), backends.get_llm("consolidation"), stamp,
                arguments.ratings, arguments.workers)
     shown = ["--model", stamp["model"]] if stamp["model"] else []
     return calibrate_utility.main(["--halumem", root, "--ratings", arguments.ratings, *shown])
+
+
+def rate_trace(root: str, arguments: argparse.Namespace, stamp: Dict[str, Any]) -> int:
+    """Judge without context the memories of a trace with the same mode, model and sampling."""
+    run_dir = adapter.run_folder(argparse.Namespace(halumem=root, version=arguments.trace))
+    with open(os.path.join(run_dir, "run.json"), encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    trace = MemoryConfig(**manifest["config"])
+    if (trace.consolidation_utility, trace.llm_config.get("model_name")) != (
+            stamp["mode"], stamp["model"]) or manifest.get("node_sampling") != json.loads(
+            json.dumps(NODE_SAMPLING)):
+        raise SystemExit(f"{arguments.trace} was run with {trace.consolidation_utility}, "
+                         f"{trace.llm_config.get('model_name')} and its own sampling: rate "
+                         "it with the same.")
+    path = arguments.ratings or os.path.join(HERE, "calibration_work",
+                                             f"{arguments.trace}_without_context.jsonl")
+    results = adapter.load_users(os.path.join(run_dir, f"{adapter.FRAME}_eval_results.jsonl"))
+    rate_users(results, backends.get_llm("consolidation"), {**stamp, "trace": arguments.trace},
+               path, arguments.workers, rate_trace_session)
+    print(f"Without context: {path}\nSide by side with the trace: eviction_replay.py compare "
+          f"--version {arguments.trace} --ratings {path}")
+    return 0
 
 
 if __name__ == "__main__":

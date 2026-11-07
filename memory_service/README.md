@@ -369,11 +369,22 @@ the table of those traces together; a calibration of another mode, model or samp
 left out, and one that shares a user with the trace replayed stops it. The context-free
 series stay for the stability of the ratings, which only identical texts can measure.
 
+How much the context itself changes the ratings is measured on the same texts:
+`calibration_ratings.py --trace CAL` judges with the calibration prompt, session by
+session, the memories the trace wrote (every create and update, by id, with its last
+text), and `compare` sets them beside the trace's own ratings: the levels of each counted
+once per memory, the mean shift and the crossing of the two for every rating, their
+agreement (Krippendorff, to set beside the one between context-free series, which is the
+noise alone), and the AUC of each on the same pairs. Both reports also count the levels
+once per fact (`by point`, `by memory`), so the shares do not weigh a fact by its pairs.
+
 ```bash
 python3 memory_service/test/halumem_adapter.py run --halumem PATH --version cal --calibration-users --archive-limit 100000 --utility need_gain
 python3 memory_service/test/eviction_replay.py embed --halumem PATH --version cal
 python3 memory_service/test/eviction_replay.py label --halumem PATH --version cal
 python3 memory_service/test/eviction_replay.py calibrate --halumem PATH --version cal
+python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need_gain --trace cal --workers 4
+python3 memory_service/test/eviction_replay.py compare --halumem PATH --version cal --ratings memory_service/test/calibration_work/cal_without_context.jsonl
 python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --calibration-trace cal
 ```
 

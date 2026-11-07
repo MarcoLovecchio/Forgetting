@@ -334,6 +334,21 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 1)
 
 
+class SharesTest(unittest.TestCase):
+    """The levels counted once per fact, not once per pair."""
+
+    def test_each_rated_fact_counts_once_and_safety_and_missing_stay_out(self):
+        judgments = [{"safety": False, "need": 3, "gain": 2}, {"safety": False, "need": 2},
+                     {"safety": True}, None, {"safety": False, "need": 3, "gain": 2}]
+
+        shares = cu.level_shares(judgments, "need_gain")
+
+        self.assertEqual(shares["need"], {1: 0.0, 2: 1 / 3, 3: 2 / 3})
+        self.assertEqual(shares["gain"], {1: 0.0, 2: 1.0, 3: 0.0})
+        self.assertEqual(cu.shares_line({"gain": shares["gain"]}, "by point"),
+                         "  by point: gain 1/2/3 = 0.0/100.0/0.0%")
+
+
 class RatingsTest(unittest.TestCase):
     """The judgment of the calibration users' points, with the model replaced."""
 
@@ -406,6 +421,35 @@ class RatingsTest(unittest.TestCase):
         self.assertEqual((self.rate(), self.rate()), (1, 0))
         self.assertEqual(self.rate({**self.STAMP, "mode": "single"}), 1)
         self.assertEqual(len(self.ratings()), 2)
+
+    def test_the_memories_of_a_trace_are_judged_by_id_with_their_last_text(self):
+        operations = [{"op_type": "create", "item_id": "a1", "content": "The user has a dog"},
+                      {"op_type": "update", "item_id": "a1", "content": "The user has two dogs"},
+                      {"op_type": "create", "item_id": "b2", "content": "The user likes jazz"},
+                      {"op_type": "redundant", "item_id": "b2", "content": "The user likes jazz"}]
+        result = {"uuid": "u", "sessions": [{"operations": operations}]}
+        self.script({"number": 1, "safety": False, "need": 3, "gain": 3},
+                    {"number": 2, "safety": False, "need": 2, "gain": 1})
+
+        record = cr.rate_trace_session(self.llm, result, 0, {**self.STAMP, "trace": "cal"})
+
+        self.assertEqual(record["memories"], {"a1": {"safety": False, "need": 3, "gain": 3},
+                                              "b2": {"safety": False, "need": 2, "gain": 1}})
+        self.assertIn("two dogs", self.sent())
+        self.assertNotIn("has a dog", self.sent())
+
+    def test_the_points_and_the_memories_of_a_trace_are_never_taken_for_each_other(self):
+        self.script({"number": 1, "safety": False, "need": 2, "gain": 2},
+                    {"number": 2, "safety": False, "need": 2, "gain": 2})
+        trace = {"uuid": "u", "sessions": [{"operations": [
+            {"op_type": "create", "item_id": "a1", "content": "The user has a dog"}]}]}
+        with contextlib.redirect_stdout(io.StringIO()):
+            judged = cr.rate_users([trace], self.llm, {**self.STAMP, "trace": "cal"}, self.path,
+                                   rate=cr.rate_trace_session)
+
+        self.assertEqual((judged, self.rate()), (1, 1), "same user and session, other facts")
+        self.assertEqual(cu.rated_points(cu.load_ratings(self.path), "need_gain")["u"].keys(),
+                         {(0, 0), (0, 2)}, "the points read only the lines of the points")
 
 
 if __name__ == "__main__":
