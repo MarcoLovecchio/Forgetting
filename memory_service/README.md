@@ -273,7 +273,9 @@ pulled toward the fraction of all the levels when the data are few and made mono
 need level times that of the gain level, both normalized to paste into `eviction.py`. For
 `need_gain` it also prints the free table, cell by cell. Every table, and need and gain
 alone, is tried on each user left out: the AUC says how often a pair that served scores
-above one that did not. For `need_gain` the line `provisional` is the `NEED_GAIN_TABLE`
+above one that did not, user by user and then averaged. The users are not pooled: each
+is scored by a table estimated on the others, with a scale of its own, and eviction
+ranks one archive at a time. For `need_gain` the line `provisional` is the `NEED_GAIN_TABLE`
 `eviction.py` holds, which learns nothing from the pairs, beside the calibrated ones.
 
 ```bash

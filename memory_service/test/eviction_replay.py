@@ -78,7 +78,8 @@ The indicators, summed over the users:
     rating AUC      how often a memory a later session needs has a higher utility term
                     (need x gain, or utility) than one no later session needs, on the
                     trace alone: a question of the same session is kept by recency
-                    anyway, as in calibrate_utility.py; with the calibrated table too
+                    anyway, as in calibrate_utility.py; user by user and averaged, with
+                    the calibrated table too
 
 Before the rules, simulate checks the replay against the trace: with no limit its core
 split must archive what the trace archived, and its search must find what the
@@ -1343,16 +1344,21 @@ def summarize(users: List[Dict[str, Any]], config: MemoryConfig,
         values["NPS"] = (None if None in (chance, best, regret) or chance == best
                          else (chance - regret) / (chance - best))
     mode = config.consolidation_utility
-    rated = [(ratings, needed) for user in users for ratings, needed, _ in user["rated"]]
     levels = defaultdict(lambda: [0, 0])
     for user in users:
         for _, needed, level in user["rated"]:
             levels[level][0] += needed
             levels[level][1] += 1
-    summary["rating AUC"] = auc([(utility_value(ratings, mode), needed)
-                                 for ratings, needed in rated])
-    summary["rating AUC calibrated"] = (None if table is None else auc(
-        [(utility_value(ratings, mode, table), needed) for ratings, needed in rated]))
+
+    def rating_auc(chosen: Optional[Sequence]) -> Optional[float]:
+        # User by user, as calibrate_utility.py: eviction ranks one archive at a time.
+        return calibrate_utility.mean_auc({
+            index: auc([(utility_value(ratings, mode, chosen), needed)
+                        for ratings, needed, _ in user["rated"]])
+            for index, user in enumerate(users)})
+
+    summary["rating AUC"] = rating_auc(None)
+    summary["rating AUC calibrated"] = None if table is None else rating_auc(table)
     summary["calibrated table"] = table
     summary["needed by level"] = {level: ratio(*levels[level]) for level in levels}
     summary["main rule"] = ScoreRule(config).name
@@ -1393,7 +1399,8 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
                                           for name, value in sorted(values["by type"].items())))
         print("  * by age:  " + ", ".join(f"{name} {percent(value)}"
                                           for name, value in values["by age"].items()))
-    print(f"\nRating AUC (utility term, needed by a later session): {summary['rating AUC']}")
+    print(f"\nRating AUC (utility term, needed by a later session, mean over the users): "
+          f"{summary['rating AUC']}")
     if summary.get("calibrated table") is not None:
         print(f"Rating AUC with the calibrated table: {summary['rating AUC calibrated']}")
     levels = sorted(summary["needed by level"].items())

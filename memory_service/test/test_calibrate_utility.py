@@ -210,6 +210,18 @@ class AucTest(unittest.TestCase):
             self.assertEqual(score(pair(False, need=3, gain=1)), 0.7)
             self.assertEqual(score(pair(False, need=1, gain=3)), 0.3)
 
+    def test_the_auc_is_the_mean_over_the_users_not_the_users_pooled(self):
+        # Each user has a scale of its own, as the tables of different folds do: pooled,
+        # the served pair of one would fall below the pair of the other that did not.
+        def model(train):
+            return lambda item: ((0.9 if item.user == 0 else 0.1)
+                                 + (0.05 if item.ratings["need"] == 3 else 0.0))
+
+        pairs = [pair(True, user=0, need=3), pair(False, user=0, need=1),
+                 pair(True, user=1, need=3), pair(False, user=1, need=1)]
+
+        self.assertEqual(cu.held_out_auc(pairs, model), (1.0, {0: 1.0, 1: 1.0}))
+
     def test_with_a_single_user_nothing_is_predicted(self):
         pairs = [pair(True, need=3, gain=3), pair(False, need=1, gain=1)]
 

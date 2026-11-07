@@ -41,7 +41,10 @@ weight of PRIOR_WEIGHT pairs and made non-decreasing along rows and columns.
 
 Every table is then tried on each user left out, estimated on the others: the AUC is
 how often a pair that served scores higher than one that did not, ties counting a
-half, which is what eviction needs, since it removes the lowest scores. need alone
+half, which is what eviction needs, since it removes the lowest scores. It is computed
+user by user and averaged: eviction ranks the memories of one archive, and a table
+estimated on other users has a scale of its own, so pooling the users would compare
+scores of different tables. need alone
 and gain alone are tried too, to see what each rating adds, and NEED_GAIN_TABLE as
 eviction.py holds it, which learns nothing from the pairs: the provisional table beside
 the calibrated one. In single there is no such line: the provisional UTILITY_TABLE ranks
@@ -308,24 +311,28 @@ def auc(scored: Sequence[Tuple[float, bool]]) -> Optional[float]:
     return wins / (len(positive) * len(negative))
 
 
+def mean_auc(by_user: Dict[Any, Optional[float]]) -> Optional[float]:
+    """The mean of the users' AUCs, each user weighing the same; None without any."""
+    values = [value for value in by_user.values() if value is not None]
+    return sum(values) / len(values) if values else None
+
+
 def held_out_auc(pairs: Sequence[Pair],
                  model: Model) -> Tuple[Optional[float], Dict[int, Optional[float]]]:
-    """The AUC on each user left out, scored by the table of the others, and on all of them.
+    """The AUC on each user left out, scored by the table of the others, and their mean.
 
-    Without a second user nothing can be predicted, and the AUC is None.
+    Not the AUC of all the users pooled: each user is scored by a table of its own fold,
+    with a scale of its own. Without a second user nothing is predicted, and it is None.
     """
-    pooled: List[Tuple[float, bool]] = []
     by_user: Dict[int, Optional[float]] = {}
     for user in sorted({pair.user for pair in pairs}):
         try:
             score = model([pair for pair in pairs if pair.user != user])
         except ValueError:
             continue
-        scored = [(value, pair.served) for pair in pairs if pair.user == user
-                  for value in (score(pair),) if value is not None]
-        by_user[user] = auc(scored)
-        pooled += scored
-    return auc(pooled), by_user
+        by_user[user] = auc([(value, pair.served) for pair in pairs if pair.user == user
+                             for value in (score(pair),) if value is not None])
+    return mean_auc(by_user), by_user
 
 
 def literal(name: str, table) -> List[str]:
@@ -382,13 +389,13 @@ def judged_line(rated: Dict[str, Dict[Point, Optional[Dict[str, Any]]]], mode: s
 
 def auc_lines(pairs: Sequence[Pair], mode: str) -> List[str]:
     results = [(name, *held_out_auc(pairs, model)) for name, model in MODELS[mode]]
-    if all(pooled is None for _, pooled, _ in results):
+    if all(mean is None for _, mean, _ in results):
         return ["  With a single user there is no user to leave out."]
-    lines = ["  AUC on the user left out (0.5 is chance):"]
-    for name, pooled, by_user in results:
+    lines = ["  AUC on the user left out, mean over the users (0.5 is chance):"]
+    for name, mean, by_user in results:
         users = "  ".join("-" if value is None else f"{value:.3f}"
                           for _, value in sorted(by_user.items()))
-        shown = "-" if pooled is None else f"{pooled:.3f}"
+        shown = "-" if mean is None else f"{mean:.3f}"
         lines.append(f"    {name:<11} {shown}   by user: {users}")
     return lines
 

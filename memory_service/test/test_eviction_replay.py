@@ -395,6 +395,15 @@ class SummaryTest(unittest.TestCase):
                    "oracle@25": counts(10, 1), "lru@25": counts(10, 3, **rule_counts)}
         return replay_tool.summarize([{"tallies": tallies, "rated": []}], CONFIG)["lru@25"]
 
+    def test_the_rating_auc_is_the_mean_over_the_users(self):
+        high, low = {"need": 3, "gain": 3}, {"need": 1, "gain": 1}
+        users = [{"tallies": {"unlimited": {}}, "rated": [(high, True, "high"),
+                                                          (low, False, "low")]},
+                 {"tallies": {"unlimited": {}}, "rated": [(low, True, "low"),
+                                                          (high, False, "high")]}]
+
+        self.assertAlmostEqual(replay_tool.summarize(users, CONFIG)["rating AUC"], 0.5)
+
     def test_nps_is_one_for_the_oracle_and_zero_for_random(self):
         self.assertAlmostEqual(self.summary({})["NPS"], (0.5 - 0.3) / (0.5 - 0.1))
 
