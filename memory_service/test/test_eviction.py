@@ -39,7 +39,9 @@ from memory_service.eviction import (  # noqa: E402
     evict_archived_tombstones,
     eviction_terms,
     frequency_term,
+    gain_term,
     need_gain_term,
+    need_term,
     power_decay_term,
     prune_archive,
     prune_count,
@@ -378,12 +380,57 @@ class UtilityTermTest(unittest.TestCase):
             self.assertEqual(need_gain_term(1, 3), 0.3)
             self.assertEqual(need_gain_term(3, 1), 0.7)
 
-    def test_without_utility_the_two_combinations_are_the_same_mean(self):
+    def test_without_utility_the_three_combinations_are_the_same_mean(self):
         terms = {"time_decay": 0.4, "frequency": 0.2}
 
-        for combination in ("weighted_sum", "product"):
+        for combination in ("weighted_sum", "product", "expected_gain"):
             with self.subTest(combination=combination):
                 self.assertAlmostEqual(combine_terms(terms, combination), 0.3)
+
+
+class ExpectedGainTest(EvictionTestCase):
+    """Need and gain apart: the need inside the mean, the gain as its factor."""
+
+    CONFIG = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="need_gain",
+                                 eviction_combination="expected_gain")
+
+    def test_need_and_gain_are_two_terms_instead_of_utility(self):
+        rated = {"updated_at": NOW.isoformat(), "n_retrieve": 0, "need": 1, "gain": 3}
+        unrated = {"updated_at": NOW.isoformat(), "n_retrieve": 0}
+
+        with mock.patch.object(eviction, "NEED_TABLE", (0.1, 0.2, 0.3)), \
+                mock.patch.object(eviction, "GAIN_TABLE", (0.7, 0.8, 0.9)):
+            self.assertEqual([need_term(need) for need in (1, 2, 3)], [0.1, 0.2, 0.3])
+            self.assertEqual([gain_term(gain) for gain in (1, 2, 3)], [0.7, 0.8, 0.9])
+            terms = eviction_terms(rated, self.CONFIG, NOW, 0)
+            middle = eviction_terms(unrated, self.CONFIG, NOW, 0)
+
+        self.assertNotIn("utility", terms)
+        self.assertEqual((terms["need"], terms["gain"]), (0.1, 0.9))
+        self.assertEqual((middle["need"], middle["gain"]), (0.2, 0.8))
+
+    def test_the_gain_multiplies_the_mean_of_the_others(self):
+        terms = {"need": 0.6, "gain": 0.5, "time_decay": 0.4, "frequency": 0.2}
+
+        with mock.patch.object(eviction, "EXPECTED_GAIN_WEIGHTS",
+                               {"need": 0.5, "time_decay": 0.25, "frequency": 0.25}):
+            self.assertAlmostEqual(combine_terms(terms, "expected_gain"), 0.5 * 0.45)
+
+    def test_with_a_single_rating_it_is_the_weighted_sum(self):
+        single = dataclasses.replace(self.CONFIG, consolidation_utility="single")
+        terms = eviction_terms({"updated_at": NOW.isoformat(), "n_retrieve": 0, "utility": 4},
+                               single, NOW, 0)
+
+        self.assertEqual(combine_terms(terms, "expected_gain"),
+                         combine_terms(terms, "weighted_sum"))
+
+    def test_the_lower_gain_leaves_and_the_log_shows_need_and_gain(self):
+        low = self.archive("ha un gatto di nome Milo", days_old=5, need=2, gain=1)
+        self.archive("ha un cane di nome Argo", days_old=5, need=2, gain=3)
+
+        self.assertEqual(prune_archive(self.log, self.CONFIG, now=NOW), [low])
+        self.assertCountEqual(self.log[0].score_terms,
+                              ("need", "gain", "time_decay", "frequency"))
 
 
 class PruneCountTest(unittest.TestCase):

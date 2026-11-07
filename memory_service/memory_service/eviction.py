@@ -41,6 +41,14 @@ weights, and from there it also reaches the log.
                       model did not give it or it was off the scale - takes the
                       middle one, NEUTRAL_RATINGS.
 
+    need, gain        in place of utility, with `need_gain` and the
+                      expected_gain combination only, which keeps the two apart:
+                        need_term   the entry of NEED_TABLE, how likely the
+                                    memory is to be needed;
+                        gain_term   the entry of GAIN_TABLE, what it is worth
+                                    then: it multiplies, so its range is narrow.
+                      Unrated, they take NEUTRAL_RATINGS too.
+
     time_decay        the time since a timestamp, with one of the two curves
                       according to eviction_time_decay_function; both are 1 at
                       the moment of the timestamp, share the scale
@@ -69,11 +77,16 @@ weights, and from there it also reaches the log.
 
 combine_terms follows eviction_combination:
 
-    weighted_sum      0.5 utility + 0.25 time_decay + 0.25 frequency
+    weighted_sum      0.4 utility + 0.3 time_decay + 0.3 frequency
     product           utility * (0.5 time_decay + 0.5 frequency)
+    expected_gain     gain * (0.4 need + 0.3 time_decay + 0.3 frequency): the
+                      probability of being needed, from the rating and the
+                      history, times the gain, as in Anderson's rational
+                      analysis of memory
 
-The weights are rescaled over the terms present: without utility the two
-formulas are the same mean of time_decay and frequency.
+The weights are rescaled over the terms present: without utility the three
+formulas are the same mean of time_decay and frequency. With `single` there is
+no gain to multiply by, and expected_gain is the weighted sum.
 
 The memories leave all together: the scores are computed only once, on the
 candidates of that moment.
@@ -140,8 +153,9 @@ EVICTED_STATUSES = ("superseded", "deleted")
 
 DECAY_SHAPE = 0.5
 POWER_EXPONENT = 0.5
-WEIGHTED_SUM_WEIGHTS = {"utility": 0.5, "time_decay": 0.25, "frequency": 0.25}
+WEIGHTED_SUM_WEIGHTS = {"utility": 0.4, "time_decay": 0.3, "frequency": 0.3}
 PRODUCT_WEIGHTS = {"time_decay": 0.5, "frequency": 0.5}
+EXPECTED_GAIN_WEIGHTS = {"need": 0.4, "time_decay": 0.3, "frequency": 0.3}
 
 # Provisional until they are calibrated: rating / 5 and (need / 3) * (gain / 3).
 # A calibrated table must stay in (0, 1], never going down as the level goes up.
@@ -154,6 +168,9 @@ NEED_GAIN_TABLE = (
     (2 / 9, 4 / 9, 6 / 9),  # need 2
     (3 / 9, 6 / 9, 9 / 9),  # need 3
 )
+# expected_gain: need / 3 and (6 + gain) / 9.
+NEED_TABLE = (1 / 3, 2 / 3, 3 / 3)
+GAIN_TABLE = (7 / 9, 8 / 9, 9 / 9)
 
 
 def _find_tombstones(store) -> List[Tuple[str, str]]:
@@ -278,6 +295,16 @@ def need_gain_term(need: int, gain: int) -> float:
     return NEED_GAIN_TABLE[need - 1][gain - 1]
 
 
+def need_term(need: int) -> float:
+    """The entry of NEED_TABLE for the 1-3 need."""
+    return NEED_TABLE[need - 1]
+
+
+def gain_term(gain: int) -> float:
+    """The entry of GAIN_TABLE for the 1-3 gain."""
+    return GAIN_TABLE[gain - 1]
+
+
 def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
                    frequency_max: int) -> Dict[str, float]:
     """The terms, by name: they are also the sub-scores the log reports.
@@ -290,8 +317,12 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
     if config.consolidation_utility == "single":
         terms["utility"] = utility_term(metadata.get("utility", NEUTRAL_RATINGS["utility"]))
     elif config.consolidation_utility == "need_gain":
-        terms["utility"] = need_gain_term(metadata.get("need", NEUTRAL_RATINGS["need"]),
-                                          metadata.get("gain", NEUTRAL_RATINGS["gain"]))
+        need = metadata.get("need", NEUTRAL_RATINGS["need"])
+        gain = metadata.get("gain", NEUTRAL_RATINGS["gain"])
+        if config.eviction_combination == "expected_gain":
+            terms["need"], terms["gain"] = need_term(need), gain_term(gain)
+        else:
+            terms["utility"] = need_gain_term(need, gain)
     decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
     terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now,
                                 config.eviction_time_decay_scale_hours)
@@ -308,11 +339,14 @@ def weighted_mean(terms: Dict[str, float], weights: Dict[str, float]) -> float:
 def combine_terms(terms: Dict[str, float], combination: str) -> float:
     """The score from the terms, in [0, 1]: the lowest leaves first.
 
-    Without utility the two combinations are the same mean.
+    Without utility the three combinations are the same mean.
     """
     if combination == "product" and "utility" in terms:
         rest = {name: value for name, value in terms.items() if name != "utility"}
         return terms["utility"] * weighted_mean(rest, PRODUCT_WEIGHTS)
+    if combination == "expected_gain" and "gain" in terms:
+        rest = {name: value for name, value in terms.items() if name != "gain"}
+        return terms["gain"] * weighted_mean(rest, EXPECTED_GAIN_WEIGHTS)
     return weighted_mean(terms, WEIGHTED_SUM_WEIGHTS)
 
 

@@ -277,7 +277,7 @@ memories. Its input is a trace: a `run` whose archive never reaches the limit
 insert, with a limit and a rule and no model: the core split is `choose_core_split`, the
 service's rule is `choose_prune_targets`, the search of every question is computed again
 on the smaller archive from the vectors of the trace. Next to the service's score, with
-utility `none` or the trace's, both combinations and three prune fractions, it replays
+utility `none` or the trace's, the three combinations and three prune fractions, it replays
 FIFO, LRU, LFU, utility alone, random and an oracle that knows the questions to come, at
 the limits 25, 50, 100, 150 and 200. When an operation targets a memory the rule already
 removed, the real system would have gone another way: the replay counts it (divergence)
@@ -462,7 +462,7 @@ The values are read from environment variables (from `.env` / `.config`):
 | `MEMORY_LLM_NODE` | entry of `LLM_CONFIG` to use |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `2` (default): messages kept before the summary. **Keep it even**: with an odd number the tail of the window is an assistant answer, and every consolidation receives the end of one exchange plus the start of the next instead of a whole (user, assistant) pair |
 | `MEMORY_CORE_MEMORY_LIMIT` | maximum characters of the core memory |
-| `MEMORY_ARCHIVE_LIMIT` | **active** memories in the archive beyond which eviction steps in. It does not block insertion: the graph's `exceed_archive_limit` router checks it at the end of every `insert` and, if exceeded, in the `prune_archive` node the share `prune_fraction` of the active memories with the lowest score leaves, all together (`eviction.prune_archive`, `prune` entry in the log). Memories with `safety` true are never candidates and get no score, but the share is computed on all the active ones. The score combines utility (see `consolidation_utility` below), the decay over time and the frequency. The decay is a Weibull or a power law according to `eviction_time_decay_function` (`weibull` or `power`), both with the scale `eviction_time_decay_scale_hours` (91 days by default), computed on `updated_at` or `retrieved_at` according to `eviction_time_decay_field`. The frequency is `n_used` when uses are counted (`track_used`, see below) and `n_retrieve` otherwise, on a log scale relative to the highest among the candidates: log(1 + n) / log(1 + highest). `eviction_combination` chooses how: `weighted_sum` is 0.5 utility + 0.25 decay + 0.25 frequency, `product` is utility × (0.5 decay + 0.5 frequency); without utility both are the mean of decay and frequency. It runs only with `MemoryConfig.eviction` on (the default): the switches are changed only in the code (`config.py`), with no environment variable |
+| `MEMORY_ARCHIVE_LIMIT` | **active** memories in the archive beyond which eviction steps in. It does not block insertion: the graph's `exceed_archive_limit` router checks it at the end of every `insert` and, if exceeded, in the `prune_archive` node the share `prune_fraction` of the active memories with the lowest score leaves, all together (`eviction.prune_archive`, `prune` entry in the log). Memories with `safety` true are never candidates and get no score, but the share is computed on all the active ones. The score combines utility (see `consolidation_utility` below), the decay over time and the frequency. The decay is a Weibull or a power law according to `eviction_time_decay_function` (`weibull` or `power`), both with the scale `eviction_time_decay_scale_hours` (91 days by default), computed on `updated_at` or `retrieved_at` according to `eviction_time_decay_field`. The frequency is `n_used` when uses are counted (`track_used`, see below) and `n_retrieve` otherwise, on a log scale relative to the highest among the candidates: log(1 + n) / log(1 + highest). `eviction_combination` chooses how: `weighted_sum` is 0.4 utility + 0.3 decay + 0.3 frequency, `product` is utility × (0.5 decay + 0.5 frequency), `expected_gain` is gain × (0.4 need + 0.3 decay + 0.3 frequency), the probability that the memory is needed times what it is worth then, as in Anderson's rational analysis of memory, with need and gain as two terms of their own; without utility the three are the mean of decay and frequency, and with `single`, which has no gain, `expected_gain` is the weighted sum. It runs only with `MemoryConfig.eviction` on (the default): the switches are changed only in the code (`config.py`), with no environment variable |
 | `MEMORY_GENERATE_ANSWER` | `true` (default) or `false`: whether the `retrieve` branch also **composes an answer** for the user. No field of the service returns it — the archive reaches the caller through `retrieved_memories` — so it only ends up in `last_messages`, as a turn of the conversation. `false` saves one call per `retrieve`, leaves one (user, assistant) pair per exchange instead of three messages, and keeps the memory from quoting itself inside consolidation. `track_used` needs it on, because the list of used memories comes from the answer |
 | `MEMORY_CHROMA_PATH` | archive folder (resolved to an absolute path) |
 | `MEMORY_COLLECTION_NAME` | ChromaDB collection |
@@ -553,10 +553,12 @@ as for the other terms: with `single` the rating's entry in `UTILITY_TABLE`, wit
 `need_gain` the (need, gain) cell of `NEED_GAIN_TABLE`, both in `eviction.py`.
 Until they are calibrated they are rating / 5 and (need / 3) · (gain / 3); the
 calibrated values are printed by `test/calibrate_utility.py` (see the Tests
-section). A memory without a rating, because the model did not give it or gave it
-off the scale, takes the middle one (`NEUTRAL_RATINGS`: 3, or need 2 and gain 2),
-so the prune does not stop. In all modes a memory with `safety` true never leaves
-the archive because of the limit.
+section). With `need_gain` and the `expected_gain` combination, need and gain enter
+apart instead: the need's entry in `NEED_TABLE` (need / 3) inside the mean, the gain's
+in `GAIN_TABLE` ((6 + gain) / 9) as the factor, narrow because it multiplies. A memory
+without a rating, because the model did not give it or gave it off the scale, takes
+the middle one (`NEUTRAL_RATINGS`: 3, or need 2 and gain 2), so the prune does not stop.
+In all modes a memory with `safety` true never leaves the archive because of the limit.
 
 `.env` and `.config` are searched for walking up the directories starting from the
 working directory and from the package's location. If the node is launched from an

@@ -117,7 +117,7 @@ class MemoryConfig:
     count_candidate_search: bool = False
     retrieve_k: Optional[int] = 20
     answer_with_dates: bool = True
-    eviction_combination: Literal["weighted_sum", "product"] = "weighted_sum"
+    eviction_combination: Literal["weighted_sum", "product", "expected_gain"] = "weighted_sum"
     retrieval_mode: Literal["decide", "always"] = "decide"
     generate_answer: bool = True
     track_used: bool = False

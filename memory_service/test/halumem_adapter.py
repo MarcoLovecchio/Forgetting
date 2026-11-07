@@ -570,7 +570,7 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                         help="only the first users after the calibration ones, for a pilot")
     replay.add_argument("--workers", type=int, default=1, help="users at the same time")
     replay.add_argument("--utility", choices=("none", "single", "need_gain"))
-    replay.add_argument("--combination", choices=("weighted_sum", "product"))
+    replay.add_argument("--combination", choices=("weighted_sum", "product", "expected_gain"))
     replay.add_argument("--core-limit", type=int, dest="core_limit")
     replay.add_argument("--archive-limit", type=int, dest="archive_limit")
     replay.add_argument("--prune-fraction", type=float, dest="prune_fraction")

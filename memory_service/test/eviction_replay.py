@@ -33,7 +33,7 @@ would have gone another way. Each case is counted, and handled as the system wou
 update keeps its new memory, which starts from zero counts, a redundant stores its fact
 again as a new memory, a delete finds nothing.
 
-The rules: the service's score, with utility none or the trace's, both combinations and
+The rules: the service's score, with utility none or the trace's, every combination and
 PRUNE_FRACTIONS; FIFO, LRU, LFU, utility alone and random (RANDOM_SEEDS) as references,
 with the trace's prune fraction; the oracle, which knows the questions to come and
 removes first what no question will need, then what is needed latest.
@@ -102,7 +102,7 @@ from memory_service.eviction import (  # noqa: E402
 )
 
 LIMITS = (25, 50, 100, 150, 200)
-COMBINATIONS = ("weighted_sum", "product")
+COMBINATIONS = ("weighted_sum", "product", "expected_gain")
 PRUNE_FRACTIONS = (0.05, 0.10, 0.20)
 RANDOM_SEEDS = 20
 QUESTION_K = adapter.QUESTION_K
