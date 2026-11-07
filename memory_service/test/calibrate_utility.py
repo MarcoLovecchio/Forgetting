@@ -50,6 +50,11 @@ eviction.py holds it, which learns nothing from the pairs: the provisional table
 the calibrated one. In single there is no such line: the provisional UTILITY_TABLE ranks
 the levels as the calibrated one, so its AUC is the same.
 
+With two series or more it also tries the mean vote: for every point the mean of the
+ratings the series gave it (and of need x gain, the provisional term), scored as it is.
+Set beside need, gain, provisional and utility, it says how much of the weakness of one
+vote is noise that averaging takes away, and how much is in the judgment itself.
+
     python memory_service/test/calibrate_utility.py --halumem PATH [--ratings FILE ...]
 
 uses, of each file, the ratings of the last saved commit and model; with --model, of the
@@ -335,6 +340,52 @@ def held_out_auc(pairs: Sequence[Pair],
     return mean_auc(by_user), by_user
 
 
+CONSENSUS_TERMS: Dict[str, Tuple[Tuple[str, Callable[[Dict[str, Any]], float]], ...]] = {
+    "single": (("utility", lambda ratings: ratings["utility"]),),
+    "need_gain": (("need", lambda ratings: ratings["need"]),
+                  ("gain", lambda ratings: ratings["gain"]),
+                  ("need x gain", lambda ratings: ratings["need"] * ratings["gain"])),
+}
+
+
+def mean_votes(series_list: Sequence[Sequence[Dict[str, Any]]],
+               mode: str) -> Dict[str, Dict[Point, Dict[str, Any]]]:
+    """uuid -> point -> the mean of each term over the series that rated it.
+
+    A series that judged the point safety or left a rating out does not vote on it.
+    """
+    votes: Dict[str, Dict[Point, List[Dict[str, Any]]]] = {}
+    for records in series_list:
+        for uuid, points in rated_points(records, mode).items():
+            for point, judgment in points.items():
+                if judgment and not judgment.get("safety") and all(
+                        judgment.get(name) is not None for name in MODES[mode]):
+                    votes.setdefault(uuid, {}).setdefault(point, []).append(judgment)
+    return {uuid: {point: {"safety": False, **{
+                term: sum(value(judgment) for judgment in judged) / len(judged)
+                for term, value in CONSENSUS_TERMS[mode]}}
+                for point, judged in points.items()}
+            for uuid, points in votes.items()}
+
+
+def consensus_lines(users: Sequence[Dict[str, Any]],
+                    series_list: Sequence[Sequence[Dict[str, Any]]], mode: str) -> List[str]:
+    """The AUC of the mean vote of the series, term by term, mean over the users left out."""
+    voted = mean_votes(series_list, mode)
+    pairs = [pair for index, user in enumerate(users)
+             for pair in pairs_of(user, index, voted.get(user["uuid"], {}))]
+    lines = [f"  AUC of the mean vote of {len(series_list)} series, mean over the users "
+             "(beside the AUC of one vote):"]
+    for term, _ in CONSENSUS_TERMS[mode]:
+        mean, by_user = held_out_auc(pairs, lambda train, term=term: (
+            lambda pair: pair.ratings[term]))
+        users_shown = "  ".join("-" if value is None else f"{value:.3f}"
+                                for _, value in sorted(by_user.items()))
+        lines.append(f"    {term:<11} {'-' if mean is None else f'{mean:.3f}'}   "
+                     f"by user: {users_shown}")
+    return lines
+
+
 def literal(name: str, table) -> List[str]:
     """The table as it is written in eviction.py."""
     if not isinstance(table[0], tuple):
@@ -493,6 +544,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         present = {uuid for _, rated in rated_series for uuid in rated}
         for line in report(mode, pairs, sum(1 for user in users if user["uuid"] in present)):
             print(line)
+        if len(rated_series) > 1:
+            print()
+            for line in consensus_lines(users, [same for same, _ in rated_series], mode):
+                print(line)
     return 0
 
 

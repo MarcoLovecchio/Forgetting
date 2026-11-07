@@ -277,6 +277,9 @@ above one that did not, user by user and then averaged. The users are not pooled
 is scored by a table estimated on the others, with a scale of its own, and eviction
 ranks one archive at a time. For `need_gain` the line `provisional` is the `NEED_GAIN_TABLE`
 `eviction.py` holds, which learns nothing from the pairs, beside the calibrated ones.
+With two series or more it also prints the AUC of the mean vote: for every point the
+mean of the ratings the series gave it, and of need × gain. Beside the AUC of one vote it
+says how much of the weakness of a rating is noise that averaging takes away.
 
 ```bash
 python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need_gain --workers 5

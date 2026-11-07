@@ -296,6 +296,30 @@ class MainTest(unittest.TestCase):
         for line in cu.literal("UTILITY_TABLE", table):
             self.assertIn(line, output)
 
+    def test_the_mean_vote_averages_the_series_point_by_point(self):
+        noisy = [self.opposite(uuid, True) for uuid in ("u0", "u1")]
+        flat = [{**record, "ratings": {"0": {"safety": False, "utility": 1},
+                                       "1": {"safety": True, "utility": None}}}
+                for record in noisy]
+
+        voted = cu.mean_votes([noisy, flat], "single")
+
+        self.assertEqual(voted["u0"][(0, 0)], {"safety": False, "utility": 3.0})
+        self.assertEqual(voted["u0"][(0, 1)], {"safety": False, "utility": 1.0},
+                         "the series that said safety does not vote")
+
+    def test_the_mean_vote_can_rank_what_one_vote_ties(self):
+        # The dog served: one series gives it 5, the other ties it with the jazz at 1.
+        first = [self.opposite(uuid, True) for uuid in ("u0", "u1")]
+        tied = [{**record, "ratings": {"0": {"safety": False, "utility": 1},
+                                       "1": {"safety": False, "utility": 1}}}
+                for record in first]
+
+        lines = cu.consensus_lines(cu.adapter.calibration_users(self.root), [first, tied],
+                                   "single")
+
+        self.assertIn("utility     1.000", lines[1])
+
     def test_a_series_of_another_model_stays_out(self):
         small = self.write(os.path.join(self.root, "a.jsonl"),
                            [self.record(uuid, "need_gain", model="qwen3.5-4b")
