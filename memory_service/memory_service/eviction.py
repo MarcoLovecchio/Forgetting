@@ -39,7 +39,9 @@ weights, and from there it also reaches the log.
                       The two tables are calibrated with
                       test/calibrate_utility.py. A memory without a rating - the
                       model did not give it or it was off the scale - takes the
-                      middle one, NEUTRAL_RATINGS.
+                      middle one, NEUTRAL_RATINGS. choose_prune_targets can be
+                      given another table of the mode: the calibrated rules of
+                      test/eviction_replay.py.
 
     need, gain        in place of utility, with `need_gain` and the
                       expected_gain combination only, which keeps the two apart:
@@ -149,7 +151,7 @@ leaving the archive.
 
 import math
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from memory_service import backends
 from memory_service.config import MemoryConfig
@@ -297,14 +299,15 @@ def rate_term(count: int, searches: int) -> float:
     return (count + 1) / (max(searches, count) + 2)
 
 
-def utility_term(utility: int) -> float:
-    """The entry of UTILITY_TABLE for the classifier's 1-5 rating."""
-    return UTILITY_TABLE[utility - 1]
+def utility_term(utility: int, table: Optional[Sequence[float]] = None) -> float:
+    """The entry of UTILITY_TABLE, or of `table`, for the classifier's 1-5 rating."""
+    return (table or UTILITY_TABLE)[utility - 1]
 
 
-def need_gain_term(need: int, gain: int) -> float:
-    """The cell of NEED_GAIN_TABLE: row need, column gain."""
-    return NEED_GAIN_TABLE[need - 1][gain - 1]
+def need_gain_term(need: int, gain: int,
+                   table: Optional[Sequence[Sequence[float]]] = None) -> float:
+    """The cell of NEED_GAIN_TABLE, or of `table`: row need, column gain."""
+    return (table or NEED_GAIN_TABLE)[need - 1][gain - 1]
 
 
 def need_term(need: int) -> float:
@@ -318,23 +321,24 @@ def gain_term(gain: int) -> float:
 
 
 def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
-                   frequency_max: int) -> Dict[str, float]:
+                   frequency_max: int, table: Optional[Sequence] = None) -> Dict[str, float]:
     """The terms, by name: they are also the sub-scores the log reports.
 
     `frequency_max`, the highest count among the candidates on the field of
     frequency_field, depends on the other memories, so whoever has them all
-    computes it.
+    computes it. `table` takes the place of the table of consolidation_utility.
     """
     terms = {}
     if config.consolidation_utility == "single":
-        terms["utility"] = utility_term(metadata.get("utility", NEUTRAL_RATINGS["utility"]))
+        terms["utility"] = utility_term(metadata.get("utility", NEUTRAL_RATINGS["utility"]),
+                                        table)
     elif config.consolidation_utility == "need_gain":
         need = metadata.get("need", NEUTRAL_RATINGS["need"])
         gain = metadata.get("gain", NEUTRAL_RATINGS["gain"])
         if config.eviction_combination == "expected_gain":
             terms["need"], terms["gain"] = need_term(need), gain_term(gain)
         else:
-            terms["utility"] = need_gain_term(need, gain)
+            terms["utility"] = need_gain_term(need, gain, table)
     decay = DECAY_FUNCTIONS[config.eviction_time_decay_function]
     terms["time_decay"] = decay(metadata[config.eviction_time_decay_field], now,
                                 config.eviction_time_decay_scale_hours)
@@ -373,12 +377,13 @@ def prune_count(active: int, fraction: float) -> int:
 
 
 def choose_prune_targets(active: List[Tuple[str, str, dict]], config: MemoryConfig,
-                         now: datetime) -> List[Tuple[float, str, str, Dict[str, float]]]:
+                         now: datetime, table: Optional[Sequence] = None
+                         ) -> List[Tuple[float, str, str, Dict[str, float]]]:
     """(score, id, content, terms) of what leaves, lowest score first.
 
     `active` holds (id, content, metadata) of every active memory, the protected ones
     included: they count in the share but are never candidates. It removes nothing:
-    test/eviction_replay.py calls it too.
+    test/eviction_replay.py calls it too, with a calibrated `table` for the utility.
     """
     candidates = [(doc_id, content, metadata) for doc_id, content, metadata in active
                   if not metadata.get("safety")]
@@ -386,7 +391,7 @@ def choose_prune_targets(active: List[Tuple[str, str, dict]], config: MemoryConf
                         default=0)
     scored = []
     for doc_id, content, metadata in candidates:
-        terms = eviction_terms(metadata, config, now, frequency_max)
+        terms = eviction_terms(metadata, config, now, frequency_max, table)
         scored.append((combine_terms(terms, config.eviction_combination), doc_id, content, terms))
     leaving = prune_count(len(active), config.prune_fraction)
     return sorted(scored, key=lambda target: target[:2])[:leaving]

@@ -218,22 +218,52 @@ class MainTest(unittest.TestCase):
                 handle.write(json.dumps(user(uuid, session([point(DOG), point(JAZZ)]),
                                              session([], [question(DOG)]))) + "\n")
 
-    def record(self, uuid, mode, commit="abc"):
+    def record(self, uuid, mode, commit="abc", model="qwen"):
         judged = {"utility": (5, 1)} if mode == "single" else {"need": (3, 1), "gain": (3, 1)}
         ratings = {str(index): {"safety": False, **{name: levels[index]
                                                     for name, levels in judged.items()}}
                    for index in (0, 1)}
-        return {"uuid": uuid, "session": 0, "mode": mode, "model": "qwen", "commit": commit,
+        return {"uuid": uuid, "session": 0, "mode": mode, "model": model, "commit": commit,
                 "ratings": ratings}
 
-    def run_main(self, records):
+    def run_main(self, records, *options):
         with open(self.ratings, "w", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record) + "\n")
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = cu.main(["--halumem", self.root, "--ratings", self.ratings])
+            code = cu.main(["--halumem", self.root, "--ratings", self.ratings, *options])
         return code, output.getvalue()
+
+    def test_model_picks_the_ratings_of_that_model(self):
+        small = [self.record(uuid, "need_gain", model="qwen3.5-4b") for uuid in ("u0", "u1")]
+        large = [self.record(uuid, "single", model="qwen3.5-9b") for uuid in ("u0", "u1")]
+
+        _, last = self.run_main(small + large)
+        _, chosen = self.run_main(small + large, "--model", "qwen3.5-4b")
+
+        self.assertIn("need_gain: no ratings", last)
+        self.assertIn("single: no ratings", chosen)
+        self.assertIn("NEED_GAIN_TABLE = (", chosen)
+
+    def test_the_calibrated_table_is_the_one_main_prints(self):
+        records = [self.record(uuid, "need_gain") for uuid in ("u0", "u1")]
+
+        _, output = self.run_main(records)
+
+        table = cu.calibrated_table(self.root, records, "need_gain")
+        for line in cu.literal("NEED_GAIN_TABLE", table):
+            self.assertIn(line, output)
+
+    def test_series_keeps_the_last_commit_of_the_mode_and_model(self):
+        records = [self.record("u0", "need_gain", commit="old", model="qwen3.5-9b"),
+                   self.record("u0", "need_gain", commit="new", model="qwen3.5-9b"),
+                   self.record("u0", "need_gain", commit="other", model="qwen3.5-4b"),
+                   self.record("u0", "single", commit="last", model="qwen3.5-9b")]
+
+        chosen = cu.series(records, "need_gain", "qwen3.5-9b")
+
+        self.assertEqual([record["commit"] for record in chosen], ["new"])
 
     def test_only_the_ratings_of_the_last_commit_and_model_count(self):
         old = self.record("u0", "single", commit="vecchio")

@@ -46,7 +46,8 @@ and gain alone are tried too, to see what each rating adds.
 
     python memory_service/test/calibrate_utility.py --halumem PATH [--ratings FILE]
 
-uses the ratings of the last saved commit and model.
+uses the ratings of the last saved commit and model; with --model, of the last commit
+saved with that model.
 """
 
 import argparse
@@ -65,6 +66,7 @@ DEFAULT_RATINGS = os.path.join(HERE, "calibration_work", "halumem_ratings.jsonl"
 
 LEVELS = {"utility": 5, "need": 3, "gain": 3}
 MODES = {"single": ("utility",), "need_gain": ("need", "gain")}
+TABLE_NAMES = {"single": "UTILITY_TABLE", "need_gain": "NEED_GAIN_TABLE"}
 PRIOR_WEIGHT = 2.0
 
 Point = Tuple[int, int]
@@ -105,6 +107,13 @@ def latest(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return []
     stamp = (records[-1].get("commit"), records[-1].get("model"))
     return [record for record in records if (record.get("commit"), record.get("model")) == stamp]
+
+
+def series(records: Sequence[Dict[str, Any]], mode: str,
+           model: Optional[str] = None) -> List[Dict[str, Any]]:
+    """The sessions of `mode` rated with the last commit saved for it, of `model` if given."""
+    return latest([record for record in records if record.get("mode") == mode
+                   and (model is None or record.get("model") == model)])
 
 
 def rated_points(records: Sequence[Dict[str, Any]],
@@ -345,18 +354,38 @@ def auc_lines(pairs: Sequence[Pair], mode: str) -> List[str]:
     return lines
 
 
+def usable_pairs(pairs: Sequence[Pair], mode: str) -> List[Pair]:
+    return [pair for pair in pairs if all(pair.ratings.get(name) is not None
+                                          for name in MODES[mode])]
+
+
+def mode_table(mode: str, usable: Sequence[Pair]):
+    """UTILITY_TABLE or NEED_GAIN_TABLE, as eviction.py takes it."""
+    return utility_table(usable) if mode == "single" else normalized(product_table(usable))
+
+
+def calibrated_table(root: str, records: Sequence[Dict[str, Any]], mode: str):
+    """The table of `mode` from these sessions of the calibration users, as main prints it.
+
+    It raises ValueError when no pair served at some rating.
+    """
+    users = adapter.calibration_users(root)
+    rated = rated_points(records, mode)
+    pairs = [pair for index, user in enumerate(users)
+             for pair in pairs_of(user, index, rated.get(user["uuid"], {}))]
+    return mode_table(mode, usable_pairs(pairs, mode))
+
+
 def report(mode: str, pairs: Sequence[Pair], users: int) -> List[str]:
     """The report of a consolidation_utility mode, with its table."""
     names = MODES[mode]
-    usable = [pair for pair in pairs if all(pair.ratings.get(name) is not None for name in names)]
+    usable = usable_pairs(pairs, mode)
     lines = [f"  {users} users, {len(usable)} pairs, {sum(pair.served for pair in usable)} served"]
     try:
         for name in names:
             lines += level_lines(by_level(usable, name), name)
-        if mode == "single":
-            lines += [""] + literal("UTILITY_TABLE", utility_table(usable))
-        else:
-            lines += [""] + literal("NEED_GAIN_TABLE", normalized(product_table(usable)))
+        lines += [""] + literal(TABLE_NAMES[mode], mode_table(mode, usable))
+        if mode == "need_gain":
             lines += ["", "  Free table, for comparison:"]
             lines += ["  " + line for line in literal("free", normalized(free_table(usable)))]
     except ValueError as error:
@@ -371,11 +400,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--halumem", required=True, help="the folder of the HaluMem clone")
     parser.add_argument("--ratings", default=DEFAULT_RATINGS,
                         help="the file calibration_ratings.py writes")
+    parser.add_argument("--model", help="the ratings of this model, instead of the last saved")
     arguments = parser.parse_args(argv)
 
-    records = load_ratings(arguments.ratings)
+    records = [record for record in load_ratings(arguments.ratings)
+               if arguments.model is None or record.get("model") == arguments.model]
     if not records:
-        print(f"No ratings saved in {arguments.ratings}")
+        print(f"No ratings saved in {arguments.ratings}"
+              + (f" with model {arguments.model}" if arguments.model else ""))
         return 1
     same = latest(records)
     print(f"{len(same)} sessions rated with commit {same[-1].get('commit') or '(unknown)'} "

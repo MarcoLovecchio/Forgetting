@@ -231,7 +231,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
              "commit": adapter.git_commit()}
     rate_users(adapter.calibration_users(root), backends.get_llm("consolidation"), stamp,
                arguments.ratings, arguments.workers)
-    return calibrate_utility.main(["--halumem", root, "--ratings", arguments.ratings])
+    shown = ["--model", stamp["model"]] if stamp["model"] else []
+    return calibrate_utility.main(["--halumem", root, "--ratings", arguments.ratings, *shown])
 
 
 if __name__ == "__main__":

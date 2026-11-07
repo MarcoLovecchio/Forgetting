@@ -271,16 +271,38 @@ python3 memory_service/test/calibration_ratings.py --halumem PATH --utility sing
 python3 memory_service/test/calibrate_utility.py --halumem PATH
 ```
 
+`calibrate_utility.py` reads the last model saved; `--model` picks another, so a file
+can hold the 4B and the 9B. `calibration_ratings.py` passes it the model it just used.
+
+**Stability of the ratings.** A series launched again with another `--ratings` file
+judges the same points once more. `test/rating_alpha.py` takes two series or more, each
+file a rater and each point a unit, and prints Krippendorff's alpha of every rating:
+safety nominal, utility, need, gain and need × gain ordinal. A rating a series did not
+give (a safety point, a point never judged) is missing. Next to alpha it prints a
+bootstrap interval over the points and the exact agreement. Of each file and mode it
+reads the last commit and model saved for that mode, or with `--model` that model's.
+
+```bash
+python3 memory_service/test/rating_alpha.py --ratings A.jsonl B.jsonl C.jsonl --model MODEL
+```
+
 **The eviction replay.** `test/eviction_replay.py` compares eviction rules on the same
 memories. Its input is a trace: a `run` whose archive never reaches the limit
 (`--archive-limit 100000`). The replay walks the trace's operations again, insert by
 insert, with a limit and a rule and no model: the core split is `choose_core_split`, the
 service's rule is `choose_prune_targets`, the search of every question is computed again
 on the smaller archive from the vectors of the trace. Next to the service's score, with
-utility `none` or the trace's, the three combinations, both frequency functions and three
-prune fractions, it replays
-FIFO, LRU, LFU, utility alone, random and an oracle that knows the questions to come, at
-the limits 25, 50, 100, 150 and 200. When an operation targets a memory the rule already
+utility `none` or the trace's, the three combinations, three prune fractions and the
+trace's frequency function, it replays the calibrated rules: the trace's utility with the
+table `calibrate_utility.py` derives from the ratings of the trace's model (`--ratings`,
+the calibration file by default) in place of the provisional one, for `weighted_sum` and
+`product`, since `expected_gain` reads no table. Without ratings of that model and mode
+they are left out, and `simulate` says so. As references it replays FIFO, LRU, LFU,
+utility alone, with the calibrated table too, random and an oracle that knows the
+questions to come, at the limits 25, 50, 100, 150 and 200. Two rules that would choose
+the same are replayed once: with `none` the combination does not count, with `single`
+`expected_gain` is `weighted_sum`, and utility alone with a calibrated table that ranks
+the levels as the provisional one is utility alone. When an operation targets a memory the rule already
 removed, the real system would have gone another way: the replay counts it (divergence)
 and does what the system would do, an update keeps its new memory, a redundant stores its
 fact again, a delete finds nothing.
@@ -294,7 +316,8 @@ ranking: many beyond the 40th would mean the question alone misses them. `simula
 replays and prints, for every rule and limit,
 the share of needed memories still kept and still found, where it lies between random and
 the oracle, by question type and by age, the divergence and the prunes; and the AUC of
-need × gain against being needed by a later session. Before the rules it checks the replay
+the utility term (need × gain, or utility in `single`) against being needed by a later
+session, with the calibrated table too. Before the rules it checks the replay
 with no limit against the trace: the split must archive the same memories at the same
 insert, the search must find what the questions found. Everything lands in the run's
 `replay/` folder, and `label` and `embed` skip what they already did.
@@ -303,7 +326,7 @@ insert, the search must find what the questions found. Everything lands in the r
 python3 memory_service/test/halumem_adapter.py run --halumem PATH --version trace --archive-limit 100000
 python3 memory_service/test/eviction_replay.py embed --halumem PATH --version trace
 python3 memory_service/test/eviction_replay.py label --halumem PATH --version trace
-python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4
+python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --ratings FILE
 ```
 
 ## The models on the cluster

@@ -3,9 +3,13 @@
 Run: python memory_service/run_tests.py -v
 """
 
+import contextlib
 import dataclasses
+import io
+import json
 import os
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 
@@ -163,7 +167,7 @@ class OverTheLimitTest(unittest.TestCase):
         replay = replayed(self.events(), limit=1, rule=rule)
 
         self.assertEqual(sorted(replay.items), ["b"], "the oldest decays the most")
-        self.assertEqual(rule.name, "score none weighted_sum log 0.10")
+        self.assertEqual(rule.name, "score none 0.10")
 
 
 class DivergenceTest(unittest.TestCase):
@@ -252,7 +256,7 @@ class IndicatorsTest(unittest.TestCase):
                             create("s", 0, safety=True)]},
             {"operations": []}]}
 
-        rated = replay_tool.rated_memories(trace, {"0:0": ["a", "b"], "1:0": ["b"]})
+        rated = replay_tool.rated_memories(trace, {"0:0": ["a", "b"], "1:0": ["b"]}, "need_gain")
 
         self.assertEqual([(needed, level) for _, needed, level in rated],
                          [(False, "high"), (True, "2/2")])
@@ -262,9 +266,117 @@ class IndicatorsTest(unittest.TestCase):
             create("c", 0, need=2, gain=2),
             operation("update", "c", 0, related="b", ratings={"need": 3, "gain": 3})]}]}
 
-        rated = replay_tool.rated_memories(trace, {})
+        rated = replay_tool.rated_memories(trace, {}, "need_gain")
 
         self.assertEqual([level for _, _, level in rated], ["high"])
+
+    def test_in_single_the_memories_are_rated_by_utility(self):
+        trace = {"sessions": [{"operations": [create("a", 0, utility=5),
+                                              create("b", 0, utility=3),
+                                              create("c", 0, need=3, gain=3)]}]}
+
+        rated = replay_tool.rated_memories(trace, {}, "single")
+
+        self.assertEqual(rated, [({"utility": 5}, False, "high"), ({"utility": 3}, False, "3")])
+
+
+class RulesTest(unittest.TestCase):
+    """The rules the replay tries on a trace."""
+
+    TABLE = ((0.1, 0.1, 0.9), (0.2, 0.2, 0.95), (0.3, 0.3, 1.0))
+
+    def test_every_rule_keeps_the_traces_frequency_function(self):
+        rules = replay_tool.score_rules(CONFIG, self.TABLE)
+
+        self.assertEqual({rule.config.eviction_frequency_function for rule in rules}, {"log"})
+
+    def test_none_has_one_rule_per_fraction(self):
+        names = [rule.name for rule in replay_tool.score_rules(CONFIG)
+                 if rule.config.consolidation_utility == "none"]
+
+        self.assertEqual(names, ["score none 0.05", "score none 0.10", "score none 0.20"])
+
+    def test_single_has_no_expected_gain_beside_its_weighted_sum(self):
+        config = dataclasses.replace(CONFIG, consolidation_utility="single")
+        rules = [rule for rule in replay_tool.score_rules(config, (0.2, 0.4, 0.6, 0.8, 1.0))
+                 if rule.config.consolidation_utility == "single"]
+
+        self.assertEqual({rule.config.eviction_combination for rule in rules},
+                         {"weighted_sum", "product"})
+        self.assertEqual(len(rules), 12)
+
+    def test_a_single_trace_with_expected_gain_still_has_its_own_rule(self):
+        config = dataclasses.replace(CONFIG, consolidation_utility="single",
+                                     eviction_combination="expected_gain")
+
+        names = [rule.name for rule in replay_tool.score_rules(config)]
+
+        self.assertIn(ScoreRule(config).name, names)
+
+    def test_without_a_table_there_are_no_calibrated_rules(self):
+        names = [rule.name for rule in replay_tool.score_rules(CONFIG)]
+
+        self.assertFalse([name for name in names if "calibrated" in name])
+
+    def test_the_calibrated_rules_are_the_combinations_that_read_the_table(self):
+        calibrated = [rule for rule in replay_tool.score_rules(CONFIG, self.TABLE)
+                      if rule.table is not None]
+
+        self.assertEqual({rule.config.eviction_combination for rule in calibrated},
+                         {"weighted_sum", "product"})
+        self.assertEqual({rule.config.consolidation_utility for rule in calibrated},
+                         {"need_gain"})
+        self.assertIn("score need_gain calibrated weighted_sum 0.10",
+                      [rule.name for rule in calibrated])
+
+    def test_a_calibrated_rule_prunes_by_its_table(self):
+        events = [Insert(0, at(0), [create("a", 0, need=1, gain=3),
+                                    create("b", 0, need=3, gain=1)])]
+        config = dataclasses.replace(CONFIG, prune_fraction=0.5)
+
+        provisional = replayed(events, limit=1, rule=ScoreRule(config), config=config)
+        calibrated = replayed(events, limit=1, rule=ScoreRule(config, self.TABLE),
+                              config=config)
+
+        self.assertEqual(sorted(provisional.items), ["b"], "a tie: the lower id leaves")
+        self.assertEqual(sorted(calibrated.items), ["a"])
+
+    def test_utility_alone_reads_the_traces_mode(self):
+        config = dataclasses.replace(CONFIG, consolidation_utility="single")
+        events = [Insert(0, at(0), [create("a", 0, utility=5), create("b", 0, utility=1)])]
+        rule = next(rule for rule in replay_tool.reference_rules(0.5, "single")
+                    if rule.name == "utility")
+
+        replay = replayed(events, limit=1, rule=rule, config=config)
+
+        self.assertEqual(sorted(replay.items), ["a"])
+
+    def test_the_calibrated_utility_alone_needs_a_table(self):
+        names = [rule.name for rule in replay_tool.reference_rules(0.10, "need_gain")]
+        with_table = [rule.name for rule in
+                      replay_tool.reference_rules(0.10, "need_gain", self.TABLE)]
+
+        self.assertNotIn("utility calibrated", names)
+        self.assertIn("utility calibrated", with_table)
+
+    def test_a_table_in_the_same_order_adds_no_utility_alone(self):
+        increasing = [rule.name for rule in replay_tool.reference_rules(
+            0.10, "single", (0.0001, 0.15, 0.33, 0.59, 1.0))]
+        tied = [rule.name for rule in replay_tool.reference_rules(
+            0.10, "single", (0.1, 0.1, 0.33, 0.59, 1.0))]
+
+        self.assertNotIn("utility calibrated", increasing)
+        self.assertIn("utility calibrated", tied)
+
+    def test_without_ratings_of_the_traces_model_there_is_no_table(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "ratings.jsonl")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({"uuid": "u0", "session": 0, "mode": "need_gain",
+                                         "model": "qwen3.5-9b", "commit": "abc",
+                                         "ratings": {}}) + "\n")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertIsNone(replay_tool.calibration_table(folder, path, CONFIG))
 
 
 class JudgeCandidatesTest(unittest.TestCase):

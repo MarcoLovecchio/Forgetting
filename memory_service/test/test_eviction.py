@@ -35,6 +35,7 @@ from memory_service.consolidation import (  # noqa: E402
 )
 from memory_service.eviction import (  # noqa: E402
     archive_over_limit,
+    choose_prune_targets,
     combine_terms,
     evict_archived_tombstones,
     eviction_terms,
@@ -381,6 +382,28 @@ class UtilityTermTest(unittest.TestCase):
         with mock.patch.object(eviction, "NEED_GAIN_TABLE", asymmetric):
             self.assertEqual(need_gain_term(1, 3), 0.3)
             self.assertEqual(need_gain_term(3, 1), 0.7)
+
+    def test_a_table_given_takes_the_place_of_the_modes(self):
+        single = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="single")
+        need_gain = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="need_gain")
+        asymmetric = ((0.1, 0.2, 0.3), (0.4, 0.5, 0.6), (0.7, 0.8, 0.9))
+
+        self.assertEqual(eviction_terms(self.METADATA, single, NOW, 0,
+                                        (0.1, 0.3, 0.5, 0.7, 0.9))["utility"], 0.7)
+        self.assertEqual(eviction_terms(self.METADATA, need_gain, NOW, 0, asymmetric)["utility"],
+                         0.3)
+
+    def test_the_table_given_decides_what_leaves(self):
+        need_gain = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="need_gain",
+                                        eviction_combination="weighted_sum", prune_fraction=0.5)
+        same = {"updated_at": NOW.isoformat(), "n_retrieve": 0, "n_search": 0}
+        active = [("a", "il compleanno di Giulia", {**same, "need": 1, "gain": 3}),
+                  ("b", "il colore preferito", {**same, "need": 3, "gain": 1})]
+        gain_first = ((0.1, 0.1, 0.9), (0.2, 0.2, 0.95), (0.3, 0.3, 1.0))
+
+        leaving = choose_prune_targets(active, need_gain, NOW, gain_first)
+
+        self.assertEqual([doc_id for _, doc_id, _, _ in leaving], ["b"])
 
     def test_without_utility_the_three_combinations_are_the_same_mean(self):
         terms = {"time_decay": 0.4, "frequency": 0.2}
