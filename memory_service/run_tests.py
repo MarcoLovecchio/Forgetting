@@ -37,6 +37,8 @@ TEST_MODULES = (
     "test_halumem_adapter",  # the benchmark adapter, on an invented user
     "test_eviction_replay",  # the eviction rules replayed on invented traces
     "test_resource_frontier",  # what the memory costs at each limit, and the frontier
+    "test_consolidation_report",  # what consolidation wrote and what it cost, by run
+    "test_followup_questions",  # follow-up questions, with and without the model's query
     "test_memory_server",  # skipped when rclpy is not available
 )
 

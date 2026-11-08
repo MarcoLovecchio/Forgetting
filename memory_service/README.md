@@ -205,7 +205,7 @@ version never mixes the two). So no user is both calibrated on and evaluated, an
 calibration users. `run` replays one user per
 process, each with an archive of its own, exchange by exchange with the dataset's clock
 (`backends.set_clock`). It fixes what the experiments
-fix whatever `config.py` says (`always`, the window of 2, the power law on `updated_at`,
+fix whatever `config.py` says (`always` with the question as the query, the window of 2, the power law on `updated_at`,
 `count_candidate_search` off, `retrieve_k` 20 as HaluMem gives the other systems,
 `answer_with_dates`) and takes from the command line what they vary. It stops at
 once if the models do not answer. A user that finished is skipped when the same
@@ -314,8 +314,9 @@ python3 memory_service/test/rating_alpha.py --ratings A.jsonl B.jsonl C.jsonl --
 **The eviction replay.** `test/eviction_replay.py` compares eviction rules on the same
 memories. Its input is a trace: a `run` whose archive never reaches the limit
 (`--archive-limit 100000`). The replay walks the trace's operations again, insert by
-insert, with a limit and a rule and no model: the core split is `choose_core_split`, the
-service's rule is `choose_prune_targets`, the search of every question is computed again
+insert, with a limit and a rule and no model: the core split is `choose_core_split`, a
+redundant brings an archived memory back to the core as the service does, the service's
+rule is `choose_prune_targets`, the search of every question is computed again
 on the smaller archive from the vectors of the trace. Next to the service's score, with
 utility `none` or the trace's, the three combinations, three prune fractions and the
 trace's frequency function, it replays the calibrated rules: the trace's utility with a
@@ -383,6 +384,19 @@ agreement (Krippendorff, to set beside the one between context-free series, whic
 noise alone), and the AUC of each on the same pairs. Both reports also count the levels
 once per fact (`by point`, `by memory`), so the shares do not weigh a fact by its pairs.
 
+**The mean vote.** One rating is a noisy draw: on the calibration points the mean of five
+series ranks better than one vote. Whether a better rating keeps better memories is
+measured on a trace: rate its memories again without context two or three times
+(`calibration_ratings.py --trace`, one file per series). `compare` with all the files
+adds their agreement and the AUC of their mean vote; `simulate --rerated` with them adds
+the rules `rerated`, the trace's utility with the term of one vote without context (the
+first series), and `mean-vote`, with the mean of the terms of all of them, every
+combination at the trace's prune fraction. A memory the series did not rate keeps the
+trace's rating, and safety is always the trace's, so only the utility term changes.
+Beside the rating AUC, `simulate` prints the AUC of the vote with context and of each
+variant on the memories all of them rated. `eviction.choose_prune_targets` takes these
+terms by id (`given`), in place of those of the ratings.
+
 ```bash
 python3 memory_service/test/halumem_adapter.py run --halumem PATH --version cal --calibration-users --archive-limit 100000 --utility need_gain
 python3 memory_service/test/eviction_replay.py embed --halumem PATH --version cal
@@ -390,6 +404,11 @@ python3 memory_service/test/eviction_replay.py label --halumem PATH --version ca
 python3 memory_service/test/eviction_replay.py calibrate --halumem PATH --version cal
 python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need_gain --trace cal --workers 4
 python3 memory_service/test/eviction_replay.py compare --halumem PATH --version cal --ratings memory_service/test/calibration_work/cal_without_context.jsonl
+
+# the mean vote on a trace: three series without context, then the replay with them
+python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need_gain --trace trace --ratings R1.jsonl
+python3 memory_service/test/eviction_replay.py compare --halumem PATH --version trace --ratings R1.jsonl R2.jsonl R3.jsonl
+python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --rerated R1.jsonl R2.jsonl R3.jsonl
 python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --calibration-trace cal
 ```
 
@@ -404,6 +423,86 @@ same session, goes to `replay/frontier.csv` for the plots.
 
 ```bash
 python3 memory_service/test/resource_frontier.py --halumem PATH --version trace
+```
+
+**What consolidation writes.** `test/consolidation_report.py` reads one run or several
+and prints what consolidation made of the dialogue. From HaluMem's judgments in `tmp2/`,
+after `evaluate`, it prints:
+- recall and weighted recall of the memory points, and the interference points kept out;
+- target and weighted accuracy of what was extracted, and their F1;
+- the updates that were correct, hallucinated or omitted;
+- the same broken down by type of point (persona, event, relationship) and by the
+  session's place in the user's history (1-10, 11-25, 26-50, 51 on), to see whether
+  consolidation holds as the memory grows.
+
+From the run alone, before `evaluate` too, it prints:
+- creates, updates, redundants and deletes per exchange;
+- the share of redundants that brought an archived memory back to the core;
+- the share of exchanges that wrote nothing;
+- the memories written per memory point;
+- the cost of the consolidation calls: per exchange, the seconds and tokens of a call,
+  and their share of the time the dialogue took.
+
+Every figure is the mean over users of the user's own figure, and the judgments HaluMem
+could not use are left out, so the figures are not the pooled scores `evaluate` prints.
+With several versions only the users all of them hold are read. Each version after the
+first gets a column with its difference from the first, user by user, and the 95%
+bootstrap interval over the users. Seconds depend on how many users ran at once, so
+compare runs launched with the same `--workers`. `--csv` writes every row, version by
+version, for the plots.
+
+```bash
+python3 memory_service/test/consolidation_report.py --halumem PATH --versions trace-ng trace-none trace-single --csv consolidation.csv
+```
+
+**Questions that lean on the last exchange.** HaluMem's questions name what they ask
+about, and the adapter asks them with an empty window, so `query_rewrite` has nothing to
+resolve there. `test/followup_questions.py` builds that case offline, on a trace already
+run through `embed` and `label`, with no new run. In a trace no search changes what the
+memory holds, so every question can be answered again on the core and the archive the
+replay gives it.
+
+For every question, HaluMem's judge writes four texts once: the question as the user would
+ask it about themselves, a sentence of the user that brings up its subject, a reply of the
+assistant, and the follow-up that leans on them without naming the subject. Seven searches
+follow, each answered by the service's own `retrieval_node` and `generate_answer` with the
+trace's model and settings:
+- `Q`: the question with an empty window, searched with its words, as in a HaluMem run;
+- `Q-rw`: the same, searched with the model's query, as in a HaluMem run with
+  `query_rewrite`;
+- `Qw`: the question after the exchange, which is in the window;
+- `Qw-rw`: the same, searched with the model's query, which sees the exchange;
+- `F`: the follow-up after the exchange, searched with its words;
+- `F-rw`: the same, searched with the model's query;
+- `F+said`: the same, searched with the user's sentence and the follow-up, with no model.
+
+The answer reads the user's words, the window and what the search found, so two searches
+that find the same memories share one answer. The judge reads the original question.
+
+`report` prints, per search, the needed memories found (in core or among the 20, as the
+replay counts them) and the answers correct, hallucinated and omitted, on the questions
+every search has. Each search is set against a reference that differs in one thing only:
+- `F` against `Qw` is what leaning on the exchange costs, with the same window;
+- `F-rw` and `F+said` against `F` are what each remedy gives back;
+- `Qw-rw` against `Qw` is what the rewrite costs where nothing needs resolving, as on the
+  robot, whose window is seldom empty, and `Q-rw` against `Q` the same as on HaluMem;
+- `Qw` against `Q` is what the window alone changes in the answer, since the search is
+  the same.
+
+The differences are taken user by user, with the 95% bootstrap interval over the users. It
+also prints the correct answers by question type, the seconds and tokens of a rewrite and
+of an answer, and a few exchanges with their rewritten queries.
+
+The steps alternate the models: `generate` and `judge` need the judge of `eval/.env`, and
+`answer` needs the trace's model and the embedding model. Each step saves its work per user
+in the trace's `followup/` folder, and a step launched again skips what it already did,
+except the calls that failed.
+
+```bash
+python3 memory_service/test/followup_questions.py generate --halumem PATH --version trace
+python3 memory_service/test/followup_questions.py answer --halumem PATH --version trace --workers 4
+python3 memory_service/test/followup_questions.py judge --halumem PATH --version trace
+python3 memory_service/test/followup_questions.py report --halumem PATH --version trace
 ```
 
 ## The models on the cluster
@@ -471,6 +570,14 @@ one at a time, until the rest fits (`consolidation.split_core_by_recency`). Rece
 a single memory longer than the limit leaves too. Archiving is not deleting: the memory
 stays searchable, and only its seat in the always-on context is lost.
 
+A `redundant` on an archived memory brings it back (`reinforce_archived_item`): it leaves
+the archive with its counts, ratings and `safety`, enters the core with `updated_at` of
+now, and the split sends it back when newer memories push it out. So the core always
+holds the most recently written or confirmed memories, as working memory holds what was
+last rehearsed. An update of an archived memory already starts its new version in core.
+A memory the archive cannot delete stays there with its `updated_at` refreshed, so a
+memory is never in both places.
+
 Recency, and not a judgment of importance, because the model's split kept the newest
 memories anyway: on a HaluMem user, in four splits out of five every memory it kept was
 newer than every memory it archived, the ratings and `safety` made no difference, and it
@@ -505,11 +612,10 @@ The filter **does not happen after the search, but inside the index**:
 only among the active ones.
 
 It is not a detail. Filtering after a top-K search would yield fewer than K
-candidates, because the tombstones take the first places — and the gap **gets
-worse with use**, since with eviction off the tombstones are never removed:
-exactly on a heavily used archive the classifier would find itself without
-targets, with nothing signalling it. Asking for K active ones, K are received,
-always, as long as K active ones exist.
+candidates, because the tombstones take the first places: they leave the archive
+only at the end of the insert that retired them, so within it they are there, and
+the classifier would find itself with fewer targets, with nothing signalling it.
+Asking for K active ones, K are received, always, as long as K active ones exist.
 
 Every document in the archive has a `status`, written by `archive_metadata`: the
 case "document without status" does not exist, and the code does not consider it.
@@ -563,7 +669,7 @@ The values are read from environment variables (from `.env` / `.config`):
 | `MEMORY_LLM_NODE` | entry of `LLM_CONFIG` to use |
 | `MEMORY_MAX_HISTORICAL_MESSAGES` | `2` (default): messages kept before the summary. **Keep it even**: with an odd number the tail of the window is an assistant answer, and every consolidation receives the end of one exchange plus the start of the next instead of a whole (user, assistant) pair |
 | `MEMORY_CORE_MEMORY_LIMIT` | maximum characters of the core memory |
-| `MEMORY_ARCHIVE_LIMIT` | **active** memories in the archive beyond which eviction steps in. It does not block insertion: the graph's `exceed_archive_limit` router checks it at the end of every `insert` and, if exceeded, in the `prune_archive` node the share `prune_fraction` of the active memories with the lowest score leaves, all together (`eviction.prune_archive`, `prune` entry in the log). Memories with `safety` true are never candidates and get no score, but the share is computed on all the active ones. The score combines utility (see `consolidation_utility` below), the decay over time and the frequency. The decay is a Weibull or a power law according to `eviction_time_decay_function` (`weibull` or `power`), both with the scale `eviction_time_decay_scale_hours` (91 days by default), computed on `updated_at` or `retrieved_at` according to `eviction_time_decay_field`. The frequency is `n_used` when uses are counted (`track_used`, see below) and `n_retrieve` otherwise, on a log scale relative to the highest among the candidates: log(1 + n) / log(1 + highest); with `eviction_frequency_function` `rate` instead of `log` it is the count per search run while the memory was in the archive, with Laplace's rule: (n + 1) / (n_search + 2), 0.5 for a memory never searched (every counted search adds 1 to `n_search` of every active archived memory, and an update inherits it as it inherits `n_retrieve`). `eviction_combination` chooses how: `weighted_sum` is 0.4 utility + 0.3 decay + 0.3 frequency, `product` is utility × (0.5 decay + 0.5 frequency), `expected_gain` is gain × (0.4 need + 0.3 decay + 0.3 frequency), the probability that the memory is needed times what it is worth then, as in Anderson's rational analysis of memory, with need and gain as two terms of their own; without utility the three are the mean of decay and frequency, and with `single`, which has no gain, `expected_gain` is the weighted sum. It runs only with `MemoryConfig.eviction` on (the default): the switches are changed only in the code (`config.py`), with no environment variable |
+| `MEMORY_ARCHIVE_LIMIT` | **active** memories in the archive beyond which eviction steps in. It does not block insertion: the graph's `exceed_archive_limit` router checks it at the end of every `insert` and, if exceeded, in the `prune_archive` node the share `prune_fraction` of the active memories with the lowest score leaves, all together (`eviction.prune_archive`, `prune` entry in the log). Memories with `safety` true are never candidates and get no score, but the share is computed on all the active ones. The score combines utility (see `consolidation_utility` below), the decay over time and the frequency. The decay is a Weibull or a power law according to `eviction_time_decay_function` (`weibull` or `power`), both with the scale `eviction_time_decay_scale_hours` (91 days by default), computed on `updated_at` or `retrieved_at` according to `eviction_time_decay_field`. The frequency is `n_used` when uses are counted (`track_used`, see below) and `n_retrieve` otherwise, on a log scale relative to the highest among the candidates: log(1 + n) / log(1 + highest); with `eviction_frequency_function` `rate` instead of `log` it is the count per search run while the memory was in the archive, with Laplace's rule: (n + 1) / (n_search + 2), 0.5 for a memory never searched (every counted search adds 1 to `n_search` of every active archived memory, and an update inherits it as it inherits `n_retrieve`). `eviction_combination` chooses how: `weighted_sum` is 0.4 utility + 0.3 decay + 0.3 frequency, `product` is utility × (0.5 decay + 0.5 frequency), `expected_gain` is gain × (0.4 need + 0.3 decay + 0.3 frequency), the probability that the memory is needed times what it is worth then, as in Anderson's rational analysis of memory, with need and gain as two terms of their own; without utility the three are the mean of decay and frequency, and with `single`, which has no gain, `expected_gain` is the weighted sum. The prune runs only with `MemoryConfig.eviction` on (the default); the tombstones leave at the end of every insert whatever it says, so a superseded or deleted memory never outlives the insert that retired it and a forgotten fact leaves the disk. The switches are changed only in the code (`config.py`), with no environment variable |
 | `MEMORY_GENERATE_ANSWER` | `true` (default) or `false`: whether the `retrieve` branch also **composes an answer** for the user. No field of the service returns it — the archive reaches the caller through `retrieved_memories` — so it only ends up in `last_messages`, as a turn of the conversation. `false` saves one call per `retrieve`, leaves one (user, assistant) pair per exchange instead of three messages, and keeps the memory from quoting itself inside consolidation. `track_used` needs it on, because the list of used memories comes from the answer |
 | `MEMORY_CHROMA_PATH` | archive folder (resolved to an absolute path) |
 | `MEMORY_COLLECTION_NAME` | ChromaDB collection |
@@ -583,6 +689,17 @@ HaluMem the model's keyword queries missed more of the memories a question neede
 the question itself, even with the question in Italian and the facts in English. A
 retrieval increments `n_retrieve` of the returned memories. The long test prints and
 saves the run's mode.
+
+`query_rewrite` (off by default, also only in `config.py`) brings back the query the
+model writes. In `always` the model is called with the facts kept at hand and the
+messages still in the window, and writes the query and `k`. In `decide` it writes them
+when it chooses to search. Both prompts ask for the query in the language of the facts.
+The archive is searched with that query alone, and with the user's words only when the
+model writes an empty one. It is the case HaluMem never tests: a question that leans on
+the last exchange ("and what did I like there?") does not name what it asks for, while
+the model sees that exchange. The benchmark adapter keeps it off, and the eviction replay
+refuses a trace run with it on, since it searches again with the questions. The long
+test prints and saves it next to the mode.
 
 `count_candidate_search` (on or off, also only in `config.py`) makes the archive search
 that consolidation runs for the classifier's candidates count as a retrieval too: no
@@ -638,7 +755,11 @@ as a retrieval. A memory matches when one text contains the other, ignoring case
 the closing punctuation. Only a single match is taken: when memories with different
 texts match, none is chosen, since a guess could change the wrong one; the same text
 stored twice counts as one memory, and the core copy wins. A `redundant` or an `update`
-without a target is stored as a new memory, a `delete` without a target is ignored.
+without a target is stored as a new memory, a `delete` without a target is ignored. A
+`redundant` whose id names a memory that is no longer active is dropped: tombstones leave
+the archive at the end of every insert, so that memory was superseded or deleted in the
+same call, and storing the fact as new would bring it back. An `update` or a `delete` with
+such an id is resolved by its text, as one with an unknown id.
 
 The classifier is asked one question of the memory about the same thing: does what the
 user said make any part of it false? Only then it is an `update`; telling more is a

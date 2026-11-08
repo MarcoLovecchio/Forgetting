@@ -297,6 +297,7 @@ def run_config(arguments: argparse.Namespace) -> MemoryConfig:
         config,
         maximum_historical_messages=2,
         retrieval_mode="always",
+        query_rewrite=False,
         generate_answer=True,
         track_used=False,
         eviction=True,

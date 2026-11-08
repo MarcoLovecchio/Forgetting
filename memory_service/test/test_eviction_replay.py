@@ -36,6 +36,7 @@ CONFIG = MemoryConfig(
     track_used=False,
     generate_answer=False,
     count_candidate_search=False,
+    query_rewrite=False,
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
     llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
@@ -131,6 +132,18 @@ class AgainstTheTraceTest(unittest.TestCase):
 
     def test_the_same_memory_archived_at_another_insert_does_not_agree(self):
         self.assertEqual(self.check(archived_at=1)[1], 0.0)
+
+    def test_a_memory_mentioned_again_comes_back_and_the_least_recent_leaves(self):
+        config = dataclasses.replace(CONFIG, core_memory_limit=45)
+        events = [Insert(0, at(day), [operation("create", item_id, day, self.TEXTS[item_id])], day)
+                  for day, item_id in enumerate("abc")]
+        events.append(Insert(0, at(3), [operation("redundant", "a", 3, self.TEXTS["a"])], 3))
+
+        replay = replayed(events, config=config)
+
+        self.assertEqual(replay.split_archived, [(0, 2, "a"), (0, 3, "b")])
+        self.assertEqual((replay.core, replay.archive), ({"a", "c"}, {"b"}))
+        self.assertEqual(replay.counts["redundants from the archive"], 1)
 
 
 class OverTheLimitTest(unittest.TestCase):
@@ -417,6 +430,66 @@ class SummaryTest(unittest.TestCase):
         self.assertAlmostEqual(values["victims needed later by level"]["high"], 0.5)
 
 
+class VotesTest(unittest.TestCase):
+    """One vote without context, or the mean of several, as the utility of the rules."""
+
+    def test_the_terms_of_a_mean_vote(self):
+        votes = [{"safety": False, "need": 3, "gain": 3}, {"safety": False, "need": 1, "gain": 3},
+                 {"safety": True}, None]
+
+        terms = replay_tool.vote_terms(votes, "need_gain")
+
+        self.assertAlmostEqual(terms["utility"], (9 / 9 + 3 / 9) / 2)
+        self.assertAlmostEqual(terms["need"], (1.0 + 1 / 3) / 2)
+        self.assertAlmostEqual(terms["gain"], 1.0)
+        self.assertIsNone(replay_tool.vote_terms([{"safety": True}], "need_gain"))
+        self.assertEqual(replay_tool.vote_terms([{"safety": False, "utility": 5}], "single"),
+                         {"utility": 1.0})
+
+    def test_every_combination_of_every_variant_at_the_traces_fraction(self):
+        given = {"rerated": {}, "mean-vote": {}}
+
+        names = [rule.name for rule in replay_tool.given_rules(CONFIG, given)]
+
+        self.assertEqual(len(names), 6)
+        self.assertIn("score need_gain mean-vote expected_gain 0.10", names)
+        single = dataclasses.replace(CONFIG, consolidation_utility="single")
+        self.assertEqual(len(replay_tool.given_rules(single, given)), 4)
+
+    def test_a_mean_vote_rule_prunes_by_its_terms(self):
+        events = [Insert(0, at(0), [create("a", 0, need=2, gain=2), create("b", 0, need=2,
+                                                                           gain=2)])]
+        config = dataclasses.replace(CONFIG, prune_fraction=0.5)
+        rule = replay_tool.given_rules(config, {"mean-vote": {"a": {"utility": 0.9},
+                                                              "b": {"utility": 0.1}}})[0]
+
+        replay = replayed(events, limit=1, rule=rule, config=config)
+
+        self.assertEqual(sorted(replay.items), ["a"])
+
+    def test_the_votes_are_compared_on_the_memories_all_of_them_rated(self):
+        trace = {"sessions": [{"operations": [create("a", 0, need=3, gain=3),
+                                              create("b", 0, need=1, gain=1)]},
+                              {"operations": []}]}
+        given = {"rerated": {"a": {"utility": 0.2}, "b": {"utility": 0.4}},
+                 "mean-vote": {"a": {"utility": 0.3}}}
+
+        compared = replay_tool.votes_compared(trace, {"1:0": ["a"]}, "need_gain", given)
+
+        self.assertEqual(compared, {"with context": [(1.0, True)], "rerated": [(0.2, True)],
+                                    "mean-vote": [(0.3, True)]})
+
+    def test_the_rating_auc_of_every_vote_is_the_mean_over_the_users(self):
+        users = [{"tallies": {"unlimited": {}}, "rated": [],
+                  "votes compared": {"with context": [(1, True), (0, False)],
+                                     "mean-vote": [(0, True), (1, False)]}}]
+
+        summary = replay_tool.summarize(users, CONFIG)
+
+        self.assertEqual(summary["rating AUC of the votes"],
+                         {"with context": 1.0, "mean-vote": 0.0})
+
+
 class ContextCountsTest(unittest.TestCase):
     """The pairs of the calibration in context: rated memories at later questions."""
 
@@ -580,6 +653,39 @@ class CalibrateTest(unittest.TestCase):
 
         self.assertIn("4 memories written, 4 rated again without context", output.getvalue())
 
+    def rerated(self, name, need):
+        path = os.path.join(self.root, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            for uuid in ("u1", "u2"):
+                handle.write(json.dumps({
+                    "uuid": uuid, "session": 0, "mode": "need_gain", "model": "fake",
+                    "commit": "abc", "trace": "cal",
+                    "memories": {"a": {"safety": False, "need": need, "gain": 2},
+                                 "b": {"safety": False, "need": 1, "gain": 1}}}) + "\n")
+        return path
+
+    def test_the_votes_of_several_series_and_their_mean(self):
+        paths = [self.rerated("one.jsonl", 3), self.rerated("two.jsonl", 1)]
+        config = dataclasses.replace(CONFIG)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            votes = replay_tool.rerated_votes(paths, "cal", config, {"u1"})
+
+        self.assertAlmostEqual(votes["u1"]["rerated"]["a"]["utility"], 6 / 9)
+        self.assertAlmostEqual(votes["u1"]["mean-vote"]["a"]["utility"], (6 / 9 + 2 / 9) / 2)
+
+    def test_compare_with_several_series_adds_their_agreement_and_mean_vote(self):
+        self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "b"})
+        paths = [self.rerated("one.jsonl", 3), self.rerated("two.jsonl", 1)]
+        arguments = replay_tool.parse_arguments(["compare", "--halumem", self.root,
+                                                 "--version", "cal", "--ratings", *paths])
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(arguments.step_function(arguments), 0)
+
+        self.assertIn("mean vote of the 2 series", output.getvalue())
+
     def test_compare_needs_the_ratings_of_that_trace(self):
         self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "b"})
         path = os.path.join(self.root, "other.jsonl")
@@ -591,6 +697,15 @@ class CalibrateTest(unittest.TestCase):
                                                  "--version", "cal", "--ratings", path])
 
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+            arguments.step_function(arguments)
+
+    def test_a_trace_searched_with_the_queries_of_the_model_is_not_replayed(self):
+        self.trace("trace", ["e1"], "evaluated", {"e1": "a"},
+                   config=dataclasses.replace(CONFIG, query_rewrite=True))
+        arguments = replay_tool.parse_arguments(["simulate", "--halumem", self.root,
+                                                 "--version", "trace"])
+
+        with self.assertRaises(SystemExit):
             arguments.step_function(arguments)
 
     def test_a_calibration_on_the_users_replayed_stops_the_replay(self):

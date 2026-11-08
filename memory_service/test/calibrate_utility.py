@@ -348,24 +348,35 @@ CONSENSUS_TERMS: Dict[str, Tuple[Tuple[str, Callable[[Dict[str, Any]], float]], 
 }
 
 
+def mean_terms(judgments: Iterable[Optional[Dict[str, Any]]],
+               mode: str) -> Optional[Dict[str, Any]]:
+    """The mean of each term over the judgments that rated the fact; None without any.
+
+    A judgment that said safety or left a rating out does not vote.
+    """
+    judged = [judgment for judgment in judgments if judgment and not judgment.get("safety")
+              and all(judgment.get(name) is not None for name in MODES[mode])]
+    if not judged:
+        return None
+    return {"safety": False, **{term: sum(value(judgment) for judgment in judged) / len(judged)
+                                for term, value in CONSENSUS_TERMS[mode]}}
+
+
 def mean_votes(series_list: Sequence[Sequence[Dict[str, Any]]],
                mode: str) -> Dict[str, Dict[Point, Dict[str, Any]]]:
-    """uuid -> point -> the mean of each term over the series that rated it.
-
-    A series that judged the point safety or left a rating out does not vote on it.
-    """
-    votes: Dict[str, Dict[Point, List[Dict[str, Any]]]] = {}
+    """uuid -> point -> the mean of each term over the series that rated it."""
+    votes: Dict[str, Dict[Point, List[Optional[Dict[str, Any]]]]] = {}
     for records in series_list:
         for uuid, points in rated_points(records, mode).items():
             for point, judgment in points.items():
-                if judgment and not judgment.get("safety") and all(
-                        judgment.get(name) is not None for name in MODES[mode]):
-                    votes.setdefault(uuid, {}).setdefault(point, []).append(judgment)
-    return {uuid: {point: {"safety": False, **{
-                term: sum(value(judgment) for judgment in judged) / len(judged)
-                for term, value in CONSENSUS_TERMS[mode]}}
-                for point, judged in points.items()}
-            for uuid, points in votes.items()}
+                votes.setdefault(uuid, {}).setdefault(point, []).append(judgment)
+    voted: Dict[str, Dict[Point, Dict[str, Any]]] = {}
+    for uuid, points in votes.items():
+        for point, judgments in points.items():
+            mean = mean_terms(judgments, mode)
+            if mean is not None:
+                voted.setdefault(uuid, {})[point] = mean
+    return voted
 
 
 def consensus_lines(users: Sequence[Dict[str, Any]],

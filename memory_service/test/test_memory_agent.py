@@ -54,6 +54,7 @@ TEST_CONFIG = MemoryConfig(
     generate_answer=True,
     track_used=False,
     retrieval_mode="decide",
+    query_rewrite=False,
     retrieve_k=None,
     answer_with_dates=False,
     eviction=False,
@@ -180,6 +181,25 @@ class SplitLimitTest(MemoryServiceTestCase):
         state = self.insert_with_core(CoreMemoryItem(content="x" * 200))
 
         self.assertEqual(state["core_memory"], [])
+
+    def test_a_memory_mentioned_again_comes_back_and_the_least_recent_leaves(self):
+        now = datetime.now()
+        archived = CoreMemoryItem(content="a" * 60, updated_at=now - timedelta(days=30))
+        archive_items([archived])
+        older = CoreMemoryItem(content="b" * 60, updated_at=now - timedelta(hours=2))
+        newer = CoreMemoryItem(content="c" * 60, updated_at=now - timedelta(hours=1))
+        self.agent.state["core_memory"] = [older, newer]
+        self.agent.state["messages"] = self.conversation(9)
+        self.llm.script({"InsertCoreMemories": {"memories": [
+            {"fact": "a" * 60, "operation": "redundant", "target_item_id": archived.id}]}})
+
+        state = self.agent.run_memory_agent("insert")
+
+        self.assertEqual([item.id for item in state["core_memory"]], [newer.id, archived.id])
+        self.assertEqual([(entry.op_type, entry.item_id) for entry in state["operation_log"]],
+                         [("redundant", archived.id), ("archive", older.id)])
+        self.assertEqual(self.vector_store.status_of(older.id), "active")
+        self.assertNotIn(archived.id, self.vector_store.metadatas)
 
 
 class RetrieveInteractionTest(MemoryServiceTestCase):
@@ -727,6 +747,54 @@ class RetrievalModeTest(MemoryServiceTestCase):
         self.assertEqual(self.vector_store.searches, [
             {"query": "cosa bevo il pomeriggio?", "k": 3, "filter": {"status": "active"}}])
         self.assertIn("black tea", state["retrieved_memory"])
+
+
+class QueryRewriteTest(MemoryServiceTestCase):
+    """With query_rewrite the model writes the query in both modes, and it is searched."""
+
+    tool_responses = {"retrieve_memory": {"query": "afternoon drink tea", "k": 2}}
+    default_content = "Bevi te nero il pomeriggio."
+
+    def run_retrieve(self, mode, rewrite):
+        config = dataclasses.replace(TEST_CONFIG, retrieval_mode=mode, query_rewrite=rewrite)
+        backends.configure(config=config)
+        MemoryAgent.reset_instance()
+        agent = MemoryAgent(config=config)
+        self.archive({"memory_a": "User likes black tea in the afternoon"})
+        agent.run_memory_agent("retrieve", query="cosa bevo il pomeriggio?")
+
+    def searched(self):
+        return [search["query"] for search in self.vector_store.searches]
+
+    def written_fields(self):
+        """The arguments the model is asked to write for the search."""
+        search = self.llm.invocations[0]["bound"][0]
+        return set(search.tool_call_schema.model_json_schema()["properties"])
+
+    def test_always_asks_the_model_for_the_query_and_searches_with_it(self):
+        self.run_retrieve("always", True)
+
+        self.assertEqual(self.llm.invocations[0]["tools"], ["retrieve_memory"])
+        self.assertEqual(self.written_fields(), {"query", "k"})
+        self.assertEqual(self.searched(), ["afternoon drink tea"])
+
+    def test_decide_searches_with_the_query_of_the_model(self):
+        self.run_retrieve("decide", True)
+
+        self.assertEqual(self.searched(), ["afternoon drink tea"])
+
+    def test_without_the_switch_the_model_writes_no_query(self):
+        self.run_retrieve("decide", False)
+
+        self.assertEqual(self.written_fields(), {"k"})
+        self.assertEqual(self.searched(), ["cosa bevo il pomeriggio?"])
+
+    def test_an_empty_query_searches_the_words_of_the_user(self):
+        self.llm.script({"retrieve_memory": {"query": " ", "k": 2}})
+
+        self.run_retrieve("always", True)
+
+        self.assertEqual(self.searched(), ["cosa bevo il pomeriggio?"])
 
 
 class BenchmarkAnswerTest(MemoryServiceTestCase):

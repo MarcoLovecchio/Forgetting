@@ -33,6 +33,7 @@ CONFIG = MemoryConfig(
     core_memory_limit=2000,
     archive_memory_limit=50,
     retrieval_mode="always",
+    query_rewrite=False,
     consolidation_utility="none",
     count_candidate_search=False,
     chroma_path="/tmp/not-used",
@@ -286,10 +287,12 @@ class RunTest(unittest.TestCase):
                                return_value=MemoryConfig(retrieval_mode="decide",
                                                          eviction_time_decay_function="weibull",
                                                          maximum_historical_messages=5,
-                                                         count_candidate_search=True)):
+                                                         count_candidate_search=True,
+                                                         query_rewrite=True)):
             config = adapter.run_config(self.arguments())
 
         self.assertEqual(config.retrieval_mode, "always")
+        self.assertFalse(config.query_rewrite)
         self.assertEqual(config.eviction_time_decay_function, "power")
         self.assertEqual(config.maximum_historical_messages, 2)
         self.assertFalse(config.count_candidate_search)

@@ -116,8 +116,11 @@ service's response.
 
 When it runs
 ------------
-Only if MemoryConfig.eviction is on: it is changed only in the code, no
-environment variable reads it.
+The tombstones always: a superseded or deleted memory never outlives the insert
+that retired it, so a forgotten fact leaves the disk, and an id that still names
+a tombstone was retired in that same insert. The prune only if
+MemoryConfig.eviction is on: it is changed only in the code, no environment
+variable reads it.
 
 Once per insert, in the evict_archive node of the graph, where all the exits of
 the insert branch converge: after consolidation, which is where superseded and
@@ -321,12 +324,15 @@ def gain_term(gain: int) -> float:
 
 
 def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
-                   frequency_max: int, table: Optional[Sequence] = None) -> Dict[str, float]:
+                   frequency_max: int, table: Optional[Sequence] = None,
+                   given: Optional[Dict[str, float]] = None) -> Dict[str, float]:
     """The terms, by name: they are also the sub-scores the log reports.
 
     `frequency_max`, the highest count among the candidates on the field of
     frequency_field, depends on the other memories, so whoever has them all
-    computes it. `table` takes the place of the table of consolidation_utility.
+    computes it. `table` takes the place of the table of consolidation_utility;
+    `given` terms take the place of those of the same name the ratings give, as the
+    mean votes of test/eviction_replay.py.
     """
     terms = {}
     if config.consolidation_utility == "single":
@@ -347,6 +353,9 @@ def eviction_terms(metadata: dict, config: MemoryConfig, now: datetime,
         terms["frequency"] = rate_term(count, metadata.get("n_search", 0))
     else:
         terms["frequency"] = frequency_term(count, frequency_max)
+    for name, value in (given or {}).items():
+        if name in terms:
+            terms[name] = value
     return terms
 
 
@@ -377,13 +386,15 @@ def prune_count(active: int, fraction: float) -> int:
 
 
 def choose_prune_targets(active: List[Tuple[str, str, dict]], config: MemoryConfig,
-                         now: datetime, table: Optional[Sequence] = None
+                         now: datetime, table: Optional[Sequence] = None,
+                         given: Optional[Dict[str, Dict[str, float]]] = None
                          ) -> List[Tuple[float, str, str, Dict[str, float]]]:
     """(score, id, content, terms) of what leaves, lowest score first.
 
     `active` holds (id, content, metadata) of every active memory, the protected ones
     included: they count in the share but are never candidates. It removes nothing:
-    test/eviction_replay.py calls it too, with a calibrated `table` for the utility.
+    test/eviction_replay.py calls it too, with a calibrated `table` for the utility or,
+    by id, `given` terms for it.
     """
     candidates = [(doc_id, content, metadata) for doc_id, content, metadata in active
                   if not metadata.get("safety")]
@@ -391,7 +402,8 @@ def choose_prune_targets(active: List[Tuple[str, str, dict]], config: MemoryConf
                         default=0)
     scored = []
     for doc_id, content, metadata in candidates:
-        terms = eviction_terms(metadata, config, now, frequency_max, table)
+        terms = eviction_terms(metadata, config, now, frequency_max, table,
+                               (given or {}).get(doc_id))
         scored.append((combine_terms(terms, config.eviction_combination), doc_id, content, terms))
     leaving = prune_count(len(active), config.prune_fraction)
     return sorted(scored, key=lambda target: target[:2])[:leaving]

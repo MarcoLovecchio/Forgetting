@@ -168,9 +168,21 @@ def retrieve_memory(k: int = RETRIEVE_K,
     print(results)
     return results
 
+
+# query_rewrite: the same search, with the query the model writes.
+@tool("retrieve_memory")
+def retrieve_memory_with_query(query: str, k: int = RETRIEVE_K,
+                               stamp_retrieved_at: Annotated[bool, InjectedToolArg] = True,
+                               dated: Annotated[bool, InjectedToolArg] = False) -> str:
+    """Retrieve relevant memories from the archival vector store based on a query.
+    Returns up to k relevant memories.
+    Think about the best value of k based on the complexity of the query."""
+    return retrieve_memory.invoke({"query": query, "k": k,
+                                   "stamp_retrieved_at": stamp_retrieved_at, "dated": dated})
+
+
 # retrieval_mode "decide": the model chooses between searching and NoSearchNeeded.
-DECIDE_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You decide whether the assistant already has what it needs, and when
+DECIDE_SYSTEM = """You decide whether the assistant already has what it needs, and when
          it does not, you search its archival memory.
 
          Facts kept at hand: {core_memory}
@@ -184,27 +196,63 @@ DECIDE_PROMPT = ChatPromptTemplate.from_messages([
          retrieve_memory searches: calling it is what opens the archive, so calling it is
          not a failure. Replying "I don't know" is not an answer, it is a lookup that was
          not made. Call NoSearchNeeded only when the facts above already contain what the
-         query asks for."""),
-    ("human", """{input}
+         query asks for."""
+
+DECIDE_HUMAN = """{input}
 
 Do the facts kept at hand already contain what this asks for? If they do, call
 NoSearchNeeded. If they do not, or you are not sure, call retrieve_memory: the answer may
-be in the archive, and not looking is how it gets missed."""),
+be in the archive, and not looking is how it gets missed."""
+
+QUERY_LANGUAGE = """
+
+         Write the search query in the same language as the facts listed above: the
+         archive is written in that same language, which is not necessarily the one the
+         user is speaking right now. A query in the wrong language lands further from the
+         memory it should find."""
+
+DECIDE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", DECIDE_SYSTEM), ("human", DECIDE_HUMAN)])
+DECIDE_REWRITE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", DECIDE_SYSTEM + QUERY_LANGUAGE), ("human", DECIDE_HUMAN)])
+
+# retrieval_mode "always" with query_rewrite: the model writes query and k.
+SEARCH_ONLY_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """You search the assistant's archival memory.
+
+         Facts kept at hand: {core_memory}
+
+         Your previous interactions:
+
+         {previous_messages}
+
+         Those facts are only the memories kept always at hand. Everything older or less
+         frequently used lives in an ARCHIVE that is not listed above and that
+         retrieve_memory searches.""" + QUERY_LANGUAGE),
+    ("human", """{input}
+
+Call retrieve_memory to search the archive for what this asks for."""),
 ])
 
 
 # Define the retrieval node
 def retrieval_node(state: AgentState, runtime: Runtime[MemoryConfig]):
     print("\tRetrieval node activated")
-    if runtime.context.retrieval_mode == "always":
+    rewrite = runtime.context.query_rewrite
+    if runtime.context.retrieval_mode == "always" and not rewrite:
         # Nothing for the model to decide or write: the search is the user's words.
         search = AIMessage(content="", tool_calls=[
             {"name": "retrieve_memory", "args": {"k": RETRIEVE_K}, "id": "always"}])
         return {"tool_calls": state["tool_calls"] + [search]}
 
     user_query, history = query_and_history(state)
-    chain = DECIDE_PROMPT | get_llm("retrieval").bind_tools(
-        [retrieve_memory, NoSearchNeeded], tool_choice=REQUIRED)
+    search_tool = retrieve_memory_with_query if rewrite else retrieve_memory
+    if runtime.context.retrieval_mode == "always":
+        prompt, tools = SEARCH_ONLY_PROMPT, [search_tool]
+    else:
+        prompt = DECIDE_REWRITE_PROMPT if rewrite else DECIDE_PROMPT
+        tools = [search_tool, NoSearchNeeded]
+    chain = prompt | get_llm("retrieval").bind_tools(tools, tool_choice=REQUIRED)
     response = _timed("retrieval", lambda: chain.invoke(
         {"input": user_query,
          "core_memory": serialize_core_memory_for_prompt(state["core_memory"]),
@@ -226,8 +274,11 @@ def tool_node(state: AgentState, runtime: Runtime[MemoryConfig]):
         tool_args = tool_call["args"]
 
         if tool_name == "retrieve_memory":
-            # A query the model still writes is dropped: the user's words find more.
-            tool_args = {"query": query_and_history(state)[0],
+            # Without query_rewrite a query the model writes is dropped: the user's words
+            # find more. An empty one falls back on them too.
+            written = str(tool_args.get("query") or "").strip()
+            tool_args = {"query": (written if runtime.context.query_rewrite else "")
+                         or query_and_history(state)[0],
                          "k": tool_args.get("k") or RETRIEVE_K}
             if runtime.context.retrieve_k is not None:
                 tool_args["k"] = runtime.context.retrieve_k
@@ -548,9 +599,7 @@ def split_core_node(state: AgentState, runtime: Runtime[MemoryConfig]):
 
 
 def eviction_node(state: AgentState, runtime: Runtime[MemoryConfig]):
-    """End of the insert branch: the tombstones go."""
-    if not runtime.context.eviction:
-        return {}
+    """End of the insert branch: the tombstones go, whatever MemoryConfig.eviction says."""
     log = list(state["operation_log"])
     evict_archived_tombstones(log)
     return {"operation_log": log}

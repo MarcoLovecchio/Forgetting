@@ -23,14 +23,16 @@ sees the same memories, so a difference between two rules comes from the rules o
               CALIBRATION_FILE for simulate --calibration-trace
     compare   the trace's ratings against the same memories rated without context by
               calibration_ratings.py --trace: the levels of each, the shift and the
-              crossing of the two, their agreement, and the AUC of each on the same pairs
+              crossing of the two, their agreement, and the AUC of each on the same pairs;
+              with several series also their agreement and the AUC of their mean vote
     simulate  every rule at every limit of LIMITS, and the indicators
 
 What the replay does with the trace:
 
     create          a memory in the core
     update          the old one leaves, the new one enters the core with its counts
-    redundant       updated_at of the target is now; it stays where it is
+    redundant       updated_at of the target is now; from the archive it comes back to
+                    the core, as in the service
     delete          the target leaves
     end of insert   choose_core_split with the trace's core limit, then, over the archive
                     limit, choose_prune_targets or the reference rule
@@ -55,6 +57,11 @@ The rules, each once: two that would choose the same are one.
                     those traces together, of the same mode, model and sampling and with
                     no user of this trace; otherwise from the --ratings series of the
                     trace's model, their pairs together
+    votes           with --rerated, the series of calibration_ratings.py --trace of this
+                    trace: the trace's utility with the term of one vote without context
+                    (the first series) and of the mean vote of all of them, every
+                    combination at the trace's prune fraction; a memory the series did
+                    not rate keeps the trace's rating, and safety is always the trace's
     references      FIFO, LRU, LFU, utility alone, with the calibrated table too unless it
                     ranks the levels as the provisional one, random (RANDOM_SEEDS), with
                     the trace's prune fraction; the oracle, which knows the questions to
@@ -96,6 +103,7 @@ replayed.
                                                    --ratings FILE
     python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version NAME
                                                    [--calibration-trace CAL ...]
+                                                   [--rerated FILE ...]
                                                    [--ratings FILE ...]
 
 Everything lands in PATH/eval/results/memory_service-NAME/replay/.
@@ -133,7 +141,9 @@ from memory_service.consolidation import (  # noqa: E402
 from memory_service.eviction import (  # noqa: E402
     NEUTRAL_RATINGS,
     choose_prune_targets,
+    gain_term,
     need_gain_term,
+    need_term,
     prune_count,
     utility_term,
 )
@@ -253,23 +263,24 @@ class ScoreRule(Rule):
     """
 
     def __init__(self, config: MemoryConfig, table: Optional[Sequence] = None,
-                 **changes: Any):
+                 variant: Optional[str] = None,
+                 given: Optional[Dict[str, Dict[str, float]]] = None, **changes: Any):
         self.config = replace(config, **changes)
-        self.table = table
+        self.table, self.given = table, given
         utility = self.config.consolidation_utility
         combination = self.config.eviction_combination
         # The name says what the score does: equal names, equal choices.
         if utility == "single" and combination == "expected_gain":
             combination = "weighted_sum"
-        parts = ["score", utility] + (["calibrated"] if table is not None else [])
-        parts += ([] if utility == "none" else [combination])
+        kind = [variant] if variant else (["calibrated"] if table is not None else [])
+        parts = ["score", utility] + kind + ([] if utility == "none" else [combination])
         self.name = " ".join(parts + [f"{self.config.prune_fraction:.2f}"])
 
     def choose(self, replay: "Replay", now: datetime) -> List[str]:
         active = [(item_id, replay.items[item_id].content,
                    archive_metadata(replay.items[item_id])) for item_id in sorted(replay.archive)]
         return [item_id for _, item_id, _, _ in
-                choose_prune_targets(active, self.config, now, self.table)]
+                choose_prune_targets(active, self.config, now, self.table, self.given)]
 
 
 class KeyRule(Rule):
@@ -363,6 +374,40 @@ def score_rules(config: MemoryConfig, table: Optional[Sequence] = None) -> List[
     return list(unique.values())
 
 
+def vote_terms(judgments: Sequence[Optional[Dict[str, Any]]],
+               mode: str) -> Optional[Dict[str, float]]:
+    """The eviction terms of the mean vote of these judgments; None if none rated the fact."""
+    names = calibrate_utility.MODES[mode]
+    judged = [judgment for judgment in judgments if judgment and not judgment.get("safety")
+              and all(judgment.get(name) is not None for name in names)]
+    if not judged:
+        return None
+
+    def mean(term: Callable[[Dict[str, Any]], float]) -> float:
+        return sum(term(judgment) for judgment in judged) / len(judged)
+
+    if mode == "single":
+        return {"utility": mean(lambda judgment: utility_term(judgment["utility"]))}
+    return {"utility": mean(lambda judgment: need_gain_term(judgment["need"], judgment["gain"])),
+            "need": mean(lambda judgment: need_term(judgment["need"])),
+            "gain": mean(lambda judgment: gain_term(judgment["gain"]))}
+
+
+def given_rules(config: MemoryConfig, given: Dict[str, Dict[str, Dict[str, float]]]
+                ) -> List[Rule]:
+    """The trace's utility with the terms of the votes without context, variant by variant:
+    every combination at the trace's prune fraction."""
+    if config.consolidation_utility == "none":
+        return []
+    unique: Dict[str, Rule] = {}
+    for variant, terms in given.items():
+        for combination in dict.fromkeys(COMBINATIONS + (config.eviction_combination,)):
+            rule = ScoreRule(config, variant=variant, given=terms,
+                             eviction_combination=combination)
+            unique.setdefault(rule.name, rule)
+    return list(unique.values())
+
+
 # --------------------------------------------------------------------------- #
 # The replay
 # --------------------------------------------------------------------------- #
@@ -398,6 +443,7 @@ class Replay:
         self.core: set = set()
         self.archive: set = set()
         self.created: Dict[str, datetime] = {}
+        self.entered: Dict[str, datetime] = {}  # when it last entered the core
         self.born: Dict[str, int] = {}
         self.removed: Dict[str, CoreMemoryItem] = {}
         self.alias: Dict[str, str] = {}
@@ -440,6 +486,7 @@ class Replay:
                                              n_used=counts[1], n_search=counts[2], **fields)
         self.core.add(item_id)
         self.created[item_id] = time
+        self.entered[item_id] = time
         self.born.setdefault(item_id, self.session)
 
     def _drop(self, item_id: str) -> CoreMemoryItem:
@@ -522,6 +569,11 @@ class Replay:
         target = self.resolve(written)
         if target in self.items:
             self.items[target].updated_at = time
+            if target in self.archive:
+                self.archive.discard(target)
+                self.core.add(target)
+                self.entered[target] = time
+                self.counts["redundants from the archive"] += 1
         elif target in self.removed:
             self.counts["redundants on removed"] += 1
             fresh = f"{written}+{self.counts['redundants on removed']}"
@@ -642,9 +694,9 @@ def rating_level(ratings: Dict[str, Any], mode: str) -> str:
     return "2/2" if pair == (2, 2) else ("high" if pair[0] * pair[1] > 4 else "low")
 
 
-def rated_memories(result: Dict[str, Any], needs: Dict[str, List[str]], mode: str
-                   ) -> List[Tuple[Dict[str, Any], bool, str]]:
-    """(ratings, needed by a later session, level) of every memory rated in `mode` but safety.
+def written_memories(result: Dict[str, Any], needs: Dict[str, List[str]], mode: str
+                     ) -> Dict[str, Tuple[Dict[str, Any], bool]]:
+    """id -> (ratings, needed by a later session) of every memory rated in `mode` but safety.
 
     A twin merged into a memory logs it twice: the last entry holds the merged ratings.
     """
@@ -659,15 +711,36 @@ def rated_memories(result: Dict[str, Any], needs: Dict[str, List[str]], mode: st
             if operation["op_type"] in ("create", "update"):
                 born = written.get(operation["item_id"], (session_index,))[0]
                 written[operation["item_id"]] = (born, operation.get("ratings") or {})
-    rated = []
+    rated = {}
     for item_id, (born, ratings) in written.items():
         if not names or ratings.get("safety") or any(ratings.get(name) is None
                                                      for name in names):
             continue
-        kept = {name: ratings[name] for name in names}
-        needed = any(session > born for session in needed_in[item_id])
-        rated.append((kept, needed, rating_level(kept, mode)))
+        rated[item_id] = ({name: ratings[name] for name in names},
+                          any(session > born for session in needed_in[item_id]))
     return rated
+
+
+def rated_memories(result: Dict[str, Any], needs: Dict[str, List[str]], mode: str
+                   ) -> List[Tuple[Dict[str, Any], bool, str]]:
+    """(ratings, needed by a later session, level) of every memory rated in `mode` but safety."""
+    return [(ratings, needed, rating_level(ratings, mode))
+            for ratings, needed in written_memories(result, needs, mode).values()]
+
+
+def votes_compared(result: Dict[str, Any], needs: Dict[str, List[str]], mode: str,
+                   given: Dict[str, Dict[str, Dict[str, float]]]
+                   ) -> Dict[str, List[Tuple[float, bool]]]:
+    """(utility term, needed by a later session) with context and for every variant, on the
+    memories rated in all of them."""
+    written = written_memories(result, needs, mode)
+    common = [item_id for item_id in written if all(item_id in terms for terms in given.values())]
+    compared = {"with context": [(utility_value(written[item_id][0], mode), written[item_id][1])
+                                 for item_id in common]}
+    for variant, terms in given.items():
+        compared[variant] = [(terms[item_id]["utility"], written[item_id][1])
+                             for item_id in common]
+    return compared
 
 
 # --------------------------------------------------------------------------- #
@@ -992,7 +1065,8 @@ def labelled_questions(run_dir: str, uuid: str) -> Dict[str, set]:
 
 
 def context_counts(events: Sequence[Any], labelled: Dict[str, set], config: MemoryConfig,
-                   judgments: Optional[Dict[str, Dict[str, Any]]] = None
+                   judgments: Optional[Dict[str, Dict[str, Any]]] = None,
+                   names: Optional[Sequence[str]] = None
                    ) -> Dict[Tuple[Any, ...], List[int]]:
     """(ratings of the mode) -> [pairs, served] on one user of a trace.
 
@@ -1001,8 +1075,9 @@ def context_counts(events: Sequence[Any], labelled: Dict[str, set], config: Memo
     that question. A question the judge could not label stays out; one that needs nothing
     counts, with none of its pairs served. With `judgments` (id -> judgment) the ratings
     are those, and a memory without one stays out: two sets of ratings on the same pairs.
+    `names` are the ratings counted, those of the mode by default: the terms of a mean vote.
     """
-    names = calibrate_utility.MODES[config.consolidation_utility]
+    names = names or calibrate_utility.MODES[config.consolidation_utility]
     counts: Dict[Tuple[Any, ...], List[int]] = defaultdict(lambda: [0, 0])
 
     def rated(item_id: str, item: CoreMemoryItem) -> Optional[Tuple[Any, ...]]:
@@ -1111,33 +1186,78 @@ def crossing(first: Dict[Any, Optional[Dict[str, Any]]],
     return (sum(shifts) / len(shifts) if shifts else None), table
 
 
+def rerated_series(paths: Sequence[str], version: str, config: MemoryConfig,
+                   uuids: set) -> List[Dict[Tuple[str, str], Optional[Dict[str, Any]]]]:
+    """(uuid, id) -> judgment of every series of calibration_ratings.py --trace of `version`:
+    one per file, its last commit, with the trace's mode and model."""
+    mode, model = config.consolidation_utility, config.llm_config.get("model_name")
+    series = []
+    for path in paths:
+        records = calibrate_utility.latest([
+            record for record in calibrate_utility.load_ratings(path)
+            if (record.get("trace"), record.get("mode"), record.get("model"))
+            == (version, mode, model)])
+        if not records:
+            raise SystemExit(f"No ratings without context of {version} with {mode} and "
+                             f"{model} in {path}: launch calibration_ratings.py --trace first.")
+        series.append({(record["uuid"], item_id): judgment for record in records
+                       if record["uuid"] in uuids
+                       for item_id, judgment in record["memories"].items()})
+    return series
+
+
+def rerated_votes(paths: Sequence[str], version: str, config: MemoryConfig,
+                  uuids: set) -> Dict[str, Dict[str, Dict[str, Dict[str, float]]]]:
+    """uuid -> variant -> id -> the eviction terms of the votes without context: rerated,
+    one vote (the first series), and with two series or more mean-vote, all of them."""
+    mode = config.consolidation_utility
+    series = rerated_series(paths, version, config, uuids)
+    votes: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {
+        uuid: {"rerated": {}, **({"mean-vote": {}} if len(series) > 1 else {})}
+        for uuid in uuids}
+    for uuid, item_id in set().union(*series):
+        one = vote_terms([series[0].get((uuid, item_id))], mode)
+        if one is not None:
+            votes[uuid]["rerated"][item_id] = one
+        if len(series) > 1:
+            mean = vote_terms([votes_of.get((uuid, item_id)) for votes_of in series], mode)
+            if mean is not None:
+                votes[uuid]["mean-vote"][item_id] = mean
+    print(f"Votes without context: {len(series)} series of {version}")
+    return votes
+
+
+def term_auc_lines(entries: Sequence[Dict[str, Any]], terms: Sequence[str]) -> List[str]:
+    """The AUC of each term as it is, mean over the users: no table to estimate."""
+    pairs = calibration_pairs(entries, terms)
+    lines = []
+    for term in terms:
+        mean, by_user = calibrate_utility.held_out_auc(
+            pairs, lambda train, term=term: (lambda pair: pair.ratings[term]))
+        shown = "  ".join("-" if value is None else f"{value:.3f}"
+                          for _, value in sorted(by_user.items()))
+        lines.append(f"    {term:<11} {'-' if mean is None else f'{mean:.3f}'}   by user: {shown}")
+    return lines
+
+
 def compare(arguments: argparse.Namespace) -> int:
     """The ratings of a trace against the same memories rated without context."""
     run_dir = adapter.run_folder(arguments)
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
     config = MemoryConfig(**trace_manifest(run_dir)["config"])
-    mode, model = config.consolidation_utility, config.llm_config.get("model_name")
+    mode = config.consolidation_utility
     if mode == "none":
         raise SystemExit("The trace rates nothing: its utility is none.")
-    records = calibrate_utility.latest([
-        record for record in calibrate_utility.load_ratings(arguments.ratings)
-        if (record.get("trace"), record.get("mode"), record.get("model"))
-        == (arguments.version, mode, model)])
-    if not records:
-        raise SystemExit(f"No ratings without context of {arguments.version} with {mode} and "
-                         f"{model} in {arguments.ratings}: launch calibration_ratings.py "
-                         "--trace first.")
     results = trace_results(run_dir)[:arguments.users]
     uuids = {result["uuid"] for result in results}
-    without = {(record["uuid"], item_id): judgment for record in records
-               if record["uuid"] in uuids for item_id, judgment in record["memories"].items()}
+    series = rerated_series(arguments.ratings, arguments.version, config, uuids)
     within = {(result["uuid"], item_id): judgment for result in results
               for item_id, judgment in written_judgments(result).items()}
-    both = within.keys() & without.keys()
+    both = within.keys() & series[0].keys()
     print(f"{arguments.version}: {len(within)} memories written, {len(both)} rated again "
-          f"without context (commit {records[-1].get('commit') or '(unknown)'})")
+          f"without context, {len(series)} series")
     within = {key: within[key] for key in both}
-    without = {key: without[key] for key in both}
+    without = {key: series[0][key] for key in both}
     for label, judgments in (("with context, by memory", within),
                              ("without context, by memory", without)):
         print(calibrate_utility.shares_line(
@@ -1179,7 +1299,41 @@ def compare(arguments: argparse.Namespace) -> int:
         for line in calibrate_utility.auc_lines(
                 calibrate_utility.usable_pairs(calibration_pairs(entries, names), mode), mode):
             print(line)
+    if len(series) > 1:
+        compare_series(run_dir, results, dataset, config, series, both)
     return 0
+
+
+def compare_series(run_dir: str, results: Sequence[Dict[str, Any]],
+                   dataset: Dict[str, Dict[str, Any]], config: MemoryConfig,
+                   series: Sequence[Dict[Any, Optional[Dict[str, Any]]]], both: set) -> None:
+    """The series without context together: their agreement and the AUC of their mean vote."""
+    mode = config.consolidation_utility
+    print(f"\nAgreement of the {len(series)} series without context on the trace's memories:")
+    print(f"  {'rating':<12} {'points':>6}  {'alpha':>6}  {'95% interval':^15}  {'exact':>7}")
+    for rating in rating_alpha.RATINGS:
+        if rating.mode == mode:
+            print(rating_alpha.rating_line(
+                [{key: votes.get(key) for key in both} for votes in series], rating))
+    terms = [term for term, _ in calibrate_utility.CONSENSUS_TERMS[mode]]
+    entries = []
+    for index, result in enumerate(results):
+        means = {}
+        for uuid, item_id in both:
+            if uuid == result["uuid"]:
+                mean = calibrate_utility.mean_terms(
+                    [votes.get((uuid, item_id)) for votes in series], mode)
+                if mean is not None:
+                    means[item_id] = mean
+        counts = context_counts(trace_events(result, dataset[result["uuid"]]),
+                                labelled_questions(run_dir, result["uuid"]), config, means,
+                                terms)
+        entries += [{"user": index, "ratings": list(ratings), "pairs": pairs, "served": served}
+                    for ratings, (pairs, served) in counts.items()]
+    print(f"\nmean vote of the {len(series)} series without context, AUC mean over the users "
+          "(beside need, gain, provisional of one vote):")
+    for line in term_auc_lines(entries, terms):
+        print(line)
 
 
 def context_table(root: str, versions: Sequence[str], manifest: Dict[str, Any],
@@ -1262,8 +1416,13 @@ def trace_checks(replay: Replay, result: Dict[str, Any]) -> Dict[str, Optional[f
 
 
 def simulate_user(run_dir: str, result: Dict[str, Any], user: Dict[str, Any],
-                  table: Optional[Sequence] = None) -> Dict[str, Any]:
-    """Every rule at every limit on one user: the tallies by (rule, limit)."""
+                  table: Optional[Sequence] = None,
+                  given: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None
+                  ) -> Dict[str, Any]:
+    """Every rule at every limit on one user: the tallies by (rule, limit).
+
+    `given` is, by variant, the terms of the votes without context of this user's memories.
+    """
     config = trace_config(run_dir)
     uuid = result["uuid"]
     events = trace_events(result, user)
@@ -1273,7 +1432,7 @@ def simulate_user(run_dir: str, result: Dict[str, Any], user: Dict[str, Any],
 
     unlimited = Replay(config, None, None, closeness.rank, needs).run(events)
     tallies = {"unlimited": tally(unlimited)}
-    rules = (score_rules(config, table)
+    rules = (score_rules(config, table) + given_rules(config, given or {})
              + reference_rules(config.prune_fraction, config.consolidation_utility, table))
     for limit in LIMITS:
         for rule in rules:
@@ -1285,10 +1444,15 @@ def simulate_user(run_dir: str, result: Dict[str, Any], user: Dict[str, Any],
                                   closeness.rank, needs).run(events))
         tallies[f"random@{limit}"] = Counter({name: value / RANDOM_SEEDS
                                               for name, value in seeds.items()})
-    return {"uuid": uuid, "tallies": tallies, "checks": trace_checks(unlimited, result),
-            "rated": rated_memories(result, needs, config.consolidation_utility),
-            "unlabelled": sum(1 for outcome in stored["labels"].values() if "error" in outcome),
-            "labels": len(stored["labels"]), "model": stored.get("model")}
+    simulated = {"uuid": uuid, "tallies": tallies, "checks": trace_checks(unlimited, result),
+                 "rated": rated_memories(result, needs, config.consolidation_utility),
+                 "unlabelled": sum(1 for outcome in stored["labels"].values()
+                                   if "error" in outcome),
+                 "labels": len(stored["labels"]), "model": stored.get("model")}
+    if given:
+        simulated["votes compared"] = votes_compared(result, needs,
+                                                     config.consolidation_utility, given)
+    return simulated
 
 
 def percent(value: Optional[float]) -> str:
@@ -1359,6 +1523,12 @@ def summarize(users: List[Dict[str, Any]], config: MemoryConfig,
 
     summary["rating AUC"] = rating_auc(None)
     summary["rating AUC calibrated"] = None if table is None else rating_auc(table)
+    compared = [user["votes compared"] for user in users if "votes compared" in user]
+    if compared:
+        summary["rating AUC of the votes"] = {
+            variant: calibrate_utility.mean_auc({index: auc(votes[variant])
+                                                 for index, votes in enumerate(compared)})
+            for variant in compared[0]}
     summary["calibrated table"] = table
     summary["needed by level"] = {level: ratio(*levels[level]) for level in levels}
     summary["main rule"] = ScoreRule(config).name
@@ -1403,6 +1573,10 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
           f"{summary['rating AUC']}")
     if summary.get("calibrated table") is not None:
         print(f"Rating AUC with the calibrated table: {summary['rating AUC calibrated']}")
+    if summary.get("rating AUC of the votes"):
+        print("Rating AUC on the memories every vote rated: " + ", ".join(
+            f"{variant} {value if value is None else round(value, 3)}"
+            for variant, value in summary["rating AUC of the votes"].items()))
     levels = sorted(summary["needed by level"].items())
     print("Needed by a later session, by level: " + ", ".join(
         f"{level} {percent(value)}%" for level, value in levels))
@@ -1470,6 +1644,9 @@ def simulate(arguments: argparse.Namespace) -> int:
     if config.count_candidate_search:
         raise SystemExit("The trace counts the candidate searches, which the log does not "
                          "hold: it cannot be replayed.")
+    if config.query_rewrite:
+        raise SystemExit("The trace searched with the model's queries, the replay searches "
+                         "with the questions: it cannot be replayed.")
     results = trace_results(run_dir)[:arguments.users]
     unlabelled = [result["uuid"] for result in results
                   if not os.path.exists(labels_path(run_dir, result["uuid"]))]
@@ -1481,11 +1658,15 @@ def simulate(arguments: argparse.Namespace) -> int:
                               {result["uuid"] for result in results})
     else:
         table = calibration_table(root, arguments.ratings, config)
+    given = (rerated_votes(arguments.rerated, arguments.version, config,
+                           {result["uuid"] for result in results})
+             if arguments.rerated and config.consolidation_utility != "none" else {})
     context = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(max_workers=arguments.workers, mp_context=context) as pool:
         users = list(pool.map(simulate_user, [run_dir] * len(results), results,
                               [dataset[result["uuid"]] for result in results],
-                              [table] * len(results)))
+                              [table] * len(results),
+                              [given.get(result["uuid"]) for result in results]))
     summary = summarize(users, config, table)
     save_json(os.path.join(replay_folder(run_dir), "report.json"),
               {"summary": summary, "users": users})
@@ -1514,8 +1695,8 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     compared = steps.add_parser("compare", parents=[common],
                                 help="the trace's ratings against the same memories rated "
                                      "without context")
-    compared.add_argument("--ratings", required=True,
-                          help="the file of calibration_ratings.py --trace")
+    compared.add_argument("--ratings", required=True, nargs="+",
+                          help="the files of calibration_ratings.py --trace, one series each")
     compared.set_defaults(step_function=compare)
     replayed = steps.add_parser("simulate", parents=[common], help="every rule, every limit")
     replayed.add_argument("--workers", type=int, default=1, help="users at the same time")
@@ -1526,6 +1707,9 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                           dest="calibration_trace",
                           help="calibrated traces of the calibration users, in place of "
                                "--ratings: the table from the ratings given in context")
+    replayed.add_argument("--rerated", nargs="+",
+                          help="series of calibration_ratings.py --trace of this trace: the "
+                               "rules with one vote without context and with their mean")
     replayed.set_defaults(step_function=simulate)
     return parser.parse_args(argv)
 

@@ -13,8 +13,9 @@ operation    meaning                                        effect
 ===========  =============================================  =======================
 new          nothing in memory says it, even on the same    a new item is created
              topic
-redundant    the same information is already stored         the existing item is
-                                                            reinforced (updated_at)
+redundant    the same information is already stored         the item is reinforced
+                                                            (updated_at) and, if
+                                                            archived, back in core
 update       it makes part of a stored fact false: it       the old item becomes
              changed, ended, or was wrong                   "superseded", a new item
                                                             takes its place, and the
@@ -30,15 +31,17 @@ a single utility rating from 1 to 5 (single) or need and gain from 1 to 3
 
 Items that stop being active (superseded or deleted) are written to the archive
 as tombstones and dropped from core memory: ``core_memory`` in the agent state
-only ever holds active items, while the history survives a restart. The same is
-true when an item is moved to the archive by the core/archival split - the whole
-item is archived, so status, lineage and timestamps are never lost. The one
-exception is MemoryConfig.eviction: when it is on, the tombstones leave the
-archive at the end of every insert, and so do the active memories with the
-lowest score when the archive is over its limit (see eviction.py).
+only ever holds active items. When an item is moved to the archive by the
+core/archival split the whole item is archived, so status, lineage and timestamps
+are never lost. The tombstones leave the archive at the end of every insert, and
+with MemoryConfig.eviction on so do the active memories with the lowest score when
+the archive is over its limit (see eviction.py): what a memory was stays in the
+operation log.
 
 When the character budget of core memory is exceeded, split_core_by_recency moves
 the least recently written or confirmed memories to the archive: no model decides it.
+A redundant brings an archived memory back, so the core always holds the most recently
+written or confirmed ones.
 """
 
 import time
@@ -765,18 +768,39 @@ def reinforce_archived_item(
     item_id: str,
     log: List[OperationLogEntry],
     content: Optional[str] = None,
-) -> bool:
+) -> Optional[CoreMemoryItem]:
     """Same as reinforce_item, for a memory that already moved to the archive.
 
-    The item stays archived: being mentioned again is not a reason to bring it
-    back into the core memory budget.
+    Mentioned again, it comes back to core memory, as a rehearsed item returns to
+    working memory: the core then holds exactly the most recently written or
+    confirmed memories, and the split sends it back when newer ones push it out. It
+    leaves the archive with its counts and ratings. None for a memory that is not
+    active in the archive, which is no target, and for one the archive cannot let go,
+    which stays there with its updated_at refreshed.
     """
-    archived = _rewrite_archive_metadata(item_id)
-    if archived is None:
-        return False
-    log.append(OperationLogEntry(
-        op_type="redundant", item_id=item_id, content=content or archived["content"]))
-    return True
+    archived = get_archive_item(item_id)
+    if archived is None or archived["metadata"].get("status", "active") != "active":
+        print(f"\tNo active archived item: {item_id}")
+        return None
+    entry = OperationLogEntry(op_type="redundant", item_id=item_id,
+                              content=content or archived["content"])
+    metadata = archived["metadata"]
+    item = CoreMemoryItem(
+        id=item_id, content=archived["content"], updated_at=backends.now(),
+        n_retrieve=metadata.get("n_retrieve", 0), n_used=metadata.get("n_used", 0),
+        n_search=metadata.get("n_search", 0),
+        **({"retrieved_at": metadata["retrieved_at"]} if metadata.get("retrieved_at") else {}),
+        **{name: metadata[name] for name in ("safety", *RATING_SCALES) if name in metadata})
+    try:
+        backends.get_vector_store().delete(ids=[item_id])
+    except Exception as error:
+        print(f"\tCould not take {item_id} out of the archive, it stays there: {error}")
+        _rewrite_archive_metadata(item_id)
+        log.append(entry)
+        return None
+    print(f"\t[redundant] {item_id} back from the archive to the core")
+    log.append(entry)
+    return item
 
 
 def supersede_archived_item(
@@ -943,6 +967,12 @@ def apply_memory_operations(
         archived_target = None
         if operation != "new" and target_item is None:
             archived_target = get_archive_item(target_id) if target_id else None
+            if archived_target and archived_target["metadata"].get("status", "active") != "active":
+                # Tombstones leave at the end of every insert: this call just retired it.
+                if operation == "redundant":
+                    print(f"\t[redundant] {target_id} was just superseded or deleted: dropped")
+                    continue
+                archived_target = None
             if archived_target is None:
                 # The classifier forgot the id, or invented one: try the text.
                 match = _match_by_content(fact, active_by_id.values())
@@ -1004,9 +1034,12 @@ def apply_memory_operations(
             counters[operation] += 1
 
         else:
-            # The target already lives in the archive and stays there.
+            # The target lives in the archive: a redundant brings it back to the core,
+            # an update or a delete leaves its tombstone there.
             if operation == "redundant":
-                reinforce_archived_item(target_id, log, fact)
+                restored = reinforce_archived_item(target_id, log, fact)
+                if restored is not None:
+                    items.append(restored)
             elif operation == "delete":
                 delete_archived_item(target_id, log)
             else:  # update
@@ -1029,7 +1062,7 @@ def choose_core_split(
     fits within `limit` characters. It moves nothing: test/eviction_replay.py calls it too.
 
     Recent is updated_at, the last write or confirmation: a redundant keeps a memory in
-    core.
+    core, or brings it back from the archive.
     """
     remaining = get_active_items(core_memory)
     to_archive: List[CoreMemoryItem] = []

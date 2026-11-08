@@ -915,6 +915,7 @@ def _save_run(config, records, elapsed):
         "window": config.maximum_historical_messages,
         "core_memory_limit": config.core_memory_limit,
         "retrieval_mode": config.retrieval_mode,
+        "query_rewrite": config.query_rewrite,
         "track_used": config.counts_used,
         "consolidation_utility": config.consolidation_utility,
         "archive_candidates_k": ARCHIVE_CANDIDATES_K,
@@ -939,7 +940,8 @@ def _print_final_report(state, vector_store, config, injected, failures, elapsed
                f"of which {len(answers)} questions")
     safe_print(f"Duration: {elapsed:.1f}s")
     safe_print(f"Model: {config.llm_config.get('model_name')}")
-    safe_print(f"Retrieval: {config.retrieval_mode} | uses counted: {config.counts_used}"
+    safe_print(f"Retrieval: {config.retrieval_mode} | query rewritten: {config.query_rewrite}"
+               f" | uses counted: {config.counts_used}"
                f" | utility: {config.consolidation_utility}")
     safe_print(f"Archive: {config.chroma_path} / {config.collection_name}")
     if inherited:

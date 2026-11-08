@@ -392,6 +392,19 @@ class UtilityTermTest(unittest.TestCase):
         self.assertEqual(eviction_terms(self.METADATA, need_gain, NOW, 0, asymmetric)["utility"],
                          0.3)
 
+    def test_given_terms_take_the_place_of_those_of_the_ratings(self):
+        need_gain = dataclasses.replace(EVICTION_CONFIG, consolidation_utility="need_gain")
+        expected = dataclasses.replace(need_gain, eviction_combination="expected_gain")
+
+        summed = eviction_terms(self.METADATA, need_gain, NOW, 0, given={"utility": 0.95,
+                                                                         "need": 0.1})
+        split = eviction_terms(self.METADATA, expected, NOW, 0, given={"need": 0.5,
+                                                                       "gain": 0.6})
+
+        self.assertEqual(summed["utility"], 0.95)
+        self.assertNotIn("need", summed, "a term the combination does not use stays out")
+        self.assertEqual((split["need"], split["gain"]), (0.5, 0.6))
+
     def test_without_utility_the_three_combinations_are_the_same_mean(self):
         terms = {"time_decay": 0.4, "frequency": 0.2}
 
@@ -566,7 +579,7 @@ class SafetyTest(EvictionTestCase):
 
 
 class WiredIntoTheAgentTest(EvictionTestCase):
-    """Tombstones and prune in the insert branch, switch on; the prune only over the limit."""
+    """Tombstones always in the insert branch; the prune with the switch on, over the limit."""
 
     def setUp(self):
         super().setUp()
@@ -632,16 +645,16 @@ class WiredIntoTheAgentTest(EvictionTestCase):
 
                 self.assertIsNone(self.store.status_of(gone.id))
 
-    def test_with_the_switch_off_nothing_leaves(self):
+    def test_with_the_switch_off_the_tombstones_leave_but_nothing_is_pruned(self):
         self.use_agent(eviction=False, archive_memory_limit=0)
         old = self.archive("ha un cane di nome Argo", days_old=30, now=datetime.now())
 
         item = self.remember_then_forget()
 
-        self.assertEqual(self.store.status_of(item.id), "deleted")
-        self.assertEqual(self.store.status_of(old), "active", "over the limit, but switched off")
+        self.assertIsNone(self.store.status_of(item.id), "a forgotten fact leaves anyway")
+        self.assertEqual(self.store.status_of(old), "active", "over the limit, but no prune")
         self.assertEqual([entry.op_type for entry in self.agent.state["operation_log"]],
-                         ["create", "delete"])
+                         ["create", "delete", "evict"])
 
     def test_a_retrieve_removes_nothing(self):
         self.use_agent(eviction=True, archive_memory_limit=0)

@@ -26,6 +26,7 @@ import sys
 import time
 import unittest
 from datetime import datetime, timedelta
+from unittest import mock
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
@@ -68,8 +69,9 @@ LIFECYCLE_CONFIG = MemoryConfig(
     generate_answer=True,  # turn 7 looks at the answer of the retrieve branch
     maximum_historical_messages=1,
     core_memory_limit=2000,
-    eviction=False,  # these tests look at the tombstones in the archive
+    eviction=False,  # no prune: the archive keeps every active memory
     retrieval_mode="decide",
+    query_rewrite=False,
     consolidation_utility="none",
     chroma_path="/tmp/not-used",
     collection_name="test_archive",
@@ -173,11 +175,11 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         self.assertEqual(len(items), 3, "the old one leaves, the new one enters")
         find_item(items, "2200 calorie")
         self.assertNotIn(goal_item.id, [item.id for item in items], "the old one leaves core")
-        self.assertEqual(self.store.status_of(goal_item.id), "superseded")
-        self.assertEqual(self.store.documents[goal_item.id], goal_item.content,
-                         "the original content stays in the archive")
-        last = state["operation_log"][-1]
-        self.assertEqual((last.op_type, last.related_item_id), ("update", goal_item.id))
+        self.assertIsNone(self.store.status_of(goal_item.id),
+                          "its tombstone leaves the archive in the same insert")
+        self.assertEqual([(entry.op_type, entry.related_item_id or entry.item_id)
+                          for entry in state["operation_log"][-2:]],
+                         [("update", goal_item.id), ("evict", goal_item.id)])
 
         # --- TURN 4: contradict ------------------------------------------- #
         state = self.consolidate(
@@ -190,9 +192,10 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         items = self.active(state)
         self.assertEqual(len(items), 3)
         find_item(items, "pesce")
-        self.assertEqual(self.store.status_of(veg_item.id), "superseded")
-        last = state["operation_log"][-1]
-        self.assertEqual((last.op_type, last.related_item_id), ("update", veg_item.id))
+        self.assertIsNone(self.store.status_of(veg_item.id))
+        self.assertEqual([(entry.op_type, entry.related_item_id or entry.item_id)
+                          for entry in state["operation_log"][-2:]],
+                         [("update", veg_item.id), ("evict", veg_item.id)])
 
         # --- TURN 5: delete ----------------------------------------------- #
         state = self.consolidate(
@@ -205,9 +208,9 @@ class ConsolidationLifecycleTest(unittest.TestCase):
         items = self.active(state)
         self.assertEqual(len(items), 2, "the deleted item leaves core memory")
         self.assertNotIn(name_item.id, [item.id for item in items])
-        self.assertEqual(self.store.status_of(name_item.id), "deleted",
-                         "it stays in the archive as a tombstone")
-        self.assertEqual(state["operation_log"][-1].op_type, "delete")
+        self.assertIsNone(self.store.status_of(name_item.id), "a forgotten fact leaves the disk")
+        self.assertEqual([(entry.op_type, entry.item_id) for entry in state["operation_log"][-2:]],
+                         [("delete", name_item.id), ("evict", name_item.id)])
 
         # --- TURN 6: archive (split core -> archive) ----------------------- #
         survivor = find_item(items, "pesce")
@@ -317,7 +320,7 @@ class TargetResolutionTest(unittest.TestCase):
         state = self.consolidate([{"fact": "L'utente ha un cane di nome Argo, un labrador",
                                    "operation": "update"}])
 
-        self.assertEqual(state["operation_log"][-1].related_item_id, dog.id)
+        self.assertEqual(state["operation_log"][-2].related_item_id, dog.id)
         self.assertEqual([item.content for item in state["core_memory"]],
                          ["L'utente ha un cane di nome Argo, un labrador"])
 
@@ -329,19 +332,22 @@ class TargetResolutionTest(unittest.TestCase):
                                    "operation": "redundant",
                                    "target_item_id": "id-inventato-dal-modello"}])
 
-        self.assertEqual(state["core_memory"], [], "no duplicate")
+        self.assertEqual([item.id for item in state["core_memory"]], [yoga.id],
+                         "no duplicate: the same memory, back in core")
         self.assertEqual((state["operation_log"][-1].op_type,
                           state["operation_log"][-1].item_id), ("redundant", yoga.id))
-        self.assertEqual(self.store.metadatas[yoga.id]["n_retrieve"], 0,
+        self.assertEqual(state["core_memory"][0].n_retrieve, 0,
                          "looking for a target is not a retrieval")
 
     def test_a_delete_without_id_finds_its_archived_memory_by_content(self):
         garden = CoreMemoryItem(content="L'utente ha un orto sul balcone.")
         archive_items([garden])
 
-        self.consolidate([{"fact": "L'utente ha un orto sul balcone.", "operation": "delete"}])
+        state = self.consolidate([{"fact": "L'utente ha un orto sul balcone.",
+                                   "operation": "delete"}])
 
-        self.assertEqual(self.store.status_of(garden.id), "deleted")
+        self.assertEqual([(entry.op_type, entry.item_id) for entry in state["operation_log"]],
+                         [("delete", garden.id), ("evict", garden.id)])
 
     def test_several_different_matches_are_no_target(self):
         allergy = CoreMemoryItem(content="Il cane Argo e' allergico al pollo.")
@@ -365,6 +371,46 @@ class TargetResolutionTest(unittest.TestCase):
         self.assertEqual((state["operation_log"][-1].op_type,
                           state["operation_log"][-1].item_id), ("redundant", in_core.id))
 
+    def test_a_redundant_on_a_memory_deleted_in_the_same_call_brings_nothing_back(self):
+        allergy = self.consolidate([{"fact": "L'utente e' allergico alle arachidi",
+                                     "operation": "new"}])["core_memory"][0]
+
+        state = self.consolidate([
+            {"fact": allergy.content, "operation": "delete", "target_item_id": allergy.id},
+            {"fact": allergy.content, "operation": "redundant", "target_item_id": allergy.id}])
+
+        self.assertEqual(state["core_memory"], [], "forgotten, and not stored again")
+        self.assertEqual([entry.op_type for entry in state["operation_log"]],
+                         ["create", "delete", "evict"])
+
+    def test_a_redundant_on_a_memory_updated_in_the_same_call_is_dropped(self):
+        city = self.consolidate([{"fact": "L'utente vive a Palermo",
+                                  "operation": "new"}])["core_memory"][0]
+
+        state = self.consolidate([
+            {"fact": "L'utente vive a Catania", "operation": "update", "target_item_id": city.id},
+            {"fact": "L'utente vive a Palermo", "operation": "redundant",
+             "target_item_id": city.id}])
+
+        self.assertEqual([item.content for item in state["core_memory"]],
+                         ["L'utente vive a Catania"], "the old value is not stored again")
+        self.assertEqual([entry.op_type for entry in state["operation_log"]],
+                         ["create", "update", "evict"])
+
+    def test_a_second_update_of_a_retired_memory_is_kept_as_new(self):
+        job = self.consolidate([{"fact": "L'utente fa l'infermiere",
+                                 "operation": "new"}])["core_memory"][0]
+
+        state = self.consolidate([
+            {"fact": "L'utente fa il medico", "operation": "update", "target_item_id": job.id},
+            {"fact": "L'utente lavora di notte", "operation": "update",
+             "target_item_id": job.id}])
+
+        self.assertEqual([item.content for item in state["core_memory"]],
+                         ["L'utente fa il medico", "L'utente lavora di notte"])
+        self.assertEqual([entry.op_type for entry in state["operation_log"]],
+                         ["create", "update", "create", "evict"])
+
     def test_an_archived_memory_that_only_resembles_the_fact_is_not_a_target(self):
         archive_items([CoreMemoryItem(content="L'utente corre tre volte a settimana.")])
 
@@ -374,13 +420,59 @@ class TargetResolutionTest(unittest.TestCase):
         self.assertEqual(state["operation_log"][-1].op_type, "create")
 
 
+class BackFromTheArchiveTest(unittest.TestCase):
+    """A redundant on an archived memory brings it back to the core, newer, with its own."""
+
+    def setUp(self):
+        self.store = FakeVectorStore()
+        backends.reset()
+        backends.configure(llm=ScriptedChatModel(tool_responses={}),
+                           vector_store=self.store, config=LIFECYCLE_CONFIG)
+        self.addCleanup(backends.reset)
+        self.written = datetime.now() - timedelta(days=30)
+        self.item = CoreMemoryItem(content="L'utente e' allergico alle arachidi",
+                                   updated_at=self.written, safety=True, n_retrieve=2,
+                                   n_search=9)
+        archive_items([self.item])
+
+    def test_it_leaves_the_archive_newer_with_its_counts_and_judgment(self):
+        log = []
+
+        restored = reinforce_archived_item(self.item.id, log)
+
+        self.assertEqual((restored.id, restored.content, restored.safety, restored.n_retrieve,
+                          restored.n_search), (self.item.id, self.item.content, True, 2, 9))
+        self.assertGreater(restored.updated_at, self.written)
+        self.assertNotIn(self.item.id, self.store.metadatas, "one memory, in one place")
+        self.assertEqual([(entry.op_type, entry.item_id) for entry in log],
+                         [("redundant", self.item.id)])
+
+    def test_a_tombstone_is_no_target(self):
+        delete_archived_item(self.item.id, [])
+        log = []
+
+        self.assertIsNone(reinforce_archived_item(self.item.id, log))
+        self.assertEqual(log, [])
+        self.assertEqual(self.store.status_of(self.item.id), "deleted")
+
+    def test_an_archive_that_cannot_let_it_go_keeps_it(self):
+        log = []
+
+        with mock.patch.object(self.store, "delete", side_effect=RuntimeError("store down")):
+            self.assertIsNone(reinforce_archived_item(self.item.id, log))
+
+        self.assertEqual(self.store.status_of(self.item.id), "active")
+        self.assertGreater(self.store.metadatas[self.item.id]["updated_at"],
+                           self.written.isoformat())
+        self.assertEqual([entry.op_type for entry in log], ["redundant"])
+
+
 class MetadataRewriteTest(unittest.TestCase):
     """Changing the status of an archived item must not recompute the vector.
 
     Rewriting the document with add_texts would recompute the embedding: a
     network call to the model, on the cluster, to change a scalar field. And it
-    happens at every redundant, update or delete that hits an item already in
-    the archive.
+    happens at every update or delete that hits an item already in the archive.
     """
 
     def setUp(self):
@@ -521,14 +613,16 @@ class RetrievalCountTest(unittest.TestCase):
         self.assertEqual(self.store.metadatas[cat]["updated_at"], updated_at)
         self.assertEqual(len(self.store.writes), writes)
 
-    def test_a_reinforcement_leaves_the_counters_alone(self):
+    def test_a_reinforcement_brings_the_counters_back_to_the_core(self):
         cat, = self.archive("il gatto Milo")
         retrieve_active_archival_memories("gatto", k=1)
-        before = self.counters(cat)
+        stored = dict(self.store.metadatas[cat])
 
-        reinforce_archived_item(cat, [])
+        restored = reinforce_archived_item(cat, [])
 
-        self.assertEqual(self.counters(cat), before)
+        self.assertEqual((restored.n_retrieve, restored.n_search,
+                          restored.retrieved_at.isoformat()),
+                         (stored["n_retrieve"], stored["n_search"], stored["retrieved_at"]))
 
     def test_an_update_of_a_core_memory_inherits_the_counters(self):
         old = CoreMemoryItem(content="obiettivo 2000 calorie", n_retrieve=3, n_used=1, n_search=8)
@@ -593,8 +687,8 @@ class IdenticalTextTest(unittest.TestCase):
         core = self.apply([{"fact": "L'utente ha un gatto di nome Milo", "operation": "update",
                             "target_item_id": cat.id}], [])
 
-        self.assertEqual(core, [])
-        self.assertEqual(self.store.status_of(cat.id), "active")
+        self.assertEqual([item.id for item in core], [cat.id], "a redundant: back in core")
+        self.assertNotIn(cat.id, self.store.metadatas)
         self.assertEqual([entry.op_type for entry in self.log], ["redundant"])
 
     def test_updates_writing_one_text_are_one_memory_that_supersedes_every_target(self):
@@ -755,7 +849,8 @@ class JudgmentTest(unittest.TestCase):
 
         self.assertEqual([self.judgment(item) for item in state["core_memory"]],
                          [(False, None, 3, 2), (False, 4, None, None)])
-        self.assertEqual(state["operation_log"][-2].ratings, {"need": 3, "gain": 2})
+        updates = [entry for entry in state["operation_log"] if entry.op_type == "update"]
+        self.assertEqual(updates[0].ratings, {"need": 3, "gain": 2})
 
     def test_a_safety_fact_drops_its_ratings(self):
         # It is protected anyway: a rating given all the same must not stay.
@@ -784,7 +879,7 @@ class JudgmentTest(unittest.TestCase):
                                    "utility": 4}])
 
         self.assertEqual(self.judgment(state["core_memory"][0]), (False, 4, None, None))
-        self.assertEqual(state["operation_log"][-1].ratings, {"utility": 4})
+        self.assertEqual(state["operation_log"][-2].ratings, {"utility": 4})
 
     def test_a_redundant_keeps_the_ratings_it_had(self):
         item = self.consolidate([{"fact": "ha un cane", "operation": "new",
@@ -799,9 +894,8 @@ class JudgmentTest(unittest.TestCase):
              "target_item_id": archived.id, "safety": True, "utility": 5},
         ])
 
-        self.assertEqual(self.judgment(state["core_memory"][0]), (False, 2, None, None))
-        metadata = self.store.metadatas[archived.id]
-        self.assertEqual((metadata["safety"], metadata["utility"]), (False, 2))
+        self.assertEqual([self.judgment(memory) for memory in state["core_memory"]],
+                         [(False, 2, None, None)] * 2, "the archived one comes back with its own")
 
     def test_the_log_shows_the_judgment_of_new_and_update_with_safety_only_when_true(self):
         state = self.consolidate([
@@ -818,7 +912,7 @@ class JudgmentTest(unittest.TestCase):
 
         self.assertEqual([(entry.op_type, entry.ratings) for entry in state["operation_log"]],
                          [("create", {"utility": 4}), ("create", {"safety": True}),
-                          ("update", {"utility": 5}), ("redundant", None)])
+                          ("update", {"utility": 5}), ("redundant", None), ("evict", None)])
         published = json.loads(serialize_operation_log_for_response(state["operation_log"])[2])
         self.assertEqual(published["ratings"], {"utility": 5})
 

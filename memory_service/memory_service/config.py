@@ -120,6 +120,7 @@ class MemoryConfig:
     answer_with_dates: bool = True
     eviction_combination: Literal["weighted_sum", "product", "expected_gain"] = "weighted_sum"
     retrieval_mode: Literal["decide", "always"] = "decide"
+    query_rewrite: bool = False
     generate_answer: bool = True
     track_used: bool = False
     consolidation_utility: Literal["none", "single", "need_gain"] = "need_gain"
