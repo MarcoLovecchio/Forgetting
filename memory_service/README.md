@@ -610,6 +610,18 @@ A few things worth knowing, checked against the sources:
   variable is not needed anyway: the
   provider does the lookup itself, which is why `backends.py` never passes
   `api_key=None` explicitly (it would suppress it).
+- **How many workers the server takes.** vLLM's `/metrics`, on the port of the API
+  without `/v1`, shows the requests running and waiting, the share of the KV cache in
+  use and the preemptions. A queue or growing preemptions mean the server is full.
+  `test/load_probe.py` measures the rest: it sends the consolidation model requests
+  built from HaluMem dialogues, at each concurrency level, and prints the seconds per
+  call and the output tokens per second of one call and of the whole server. More
+  workers pay while the server's throughput grows with them. Launch it with nothing
+  else running, and again for each model.
+
+```bash
+python3 memory_service/test/load_probe.py --halumem PATH --levels 1 5 10 15
+```
 
 ## The core memory limit
 
