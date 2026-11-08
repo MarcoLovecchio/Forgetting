@@ -6,6 +6,8 @@ From one or more runs of halumem_adapter.py; the judged sections after its evalu
     fidelity       HaluMem's judgments: recall and weighted recall of the memory points,
                    the interference points kept out, target and weighted accuracy of what
                    was extracted, their F1, the updates correct, hallucinated, omitted
+    answers        the answers correct, hallucinated and omitted, and correct by question
+                   type: what the whole service gives back, consolidation to answer
     by type        recall and updates correct of persona, event and relationship points
     by session     recall, target accuracy and updates correct by the session's place in
                    the user's history: whether consolidation holds as the memory grows
@@ -14,6 +16,9 @@ From one or more runs of halumem_adapter.py; the judged sections after its evalu
                    exchanges that wrote nothing; the memories written per memory point
     cost           the consolidation calls: per exchange, seconds and tokens per call,
                    their share of the time the dialogue took
+    answer cost    the answer calls, seconds and tokens each, and per question the ms of
+                   the archive search and of the whole retrieve branch: what the user
+                   waits for
 
 Every figure is the mean over users of the user's own figure; a user with nothing to
 count in a cell stays out of it. A judgment HaluMem could not use is left out, as in its
@@ -39,12 +44,15 @@ import halumem_adapter as adapter
 
 CONSOLIDATION_OPERATIONS = ("create", "update", "redundant", "delete")
 UPDATE_LABELS = ("Correct", "Hallucination", "Omission", "Other")
+ANSWER_LABELS = ("Correct", "Hallucination", "Omission")
+QUESTION_TYPES = ("Basic Fact Recall", "Memory Boundary", "Memory Conflict",
+                  "Generalization & Application", "Multi-hop Inference", "Dynamic Update")
 TYPES = (("persona", "Persona Memory"), ("event", "Event Memory"),
          ("relationship", "Relationship Memory"))
 SESSION_BUCKETS = ((1, 10), (11, 25), (26, 50), (51, None))
 BOOTSTRAP_SAMPLES = 1000
 LABEL_WIDTH = 34
-SHARE, NUMBER, TOKENS = "share", "number", "tokens"
+SHARE, NUMBER, TOKENS, MILLISECONDS = "share", "number", "tokens", "ms"
 
 Record = Dict[str, Any]
 Value = Tuple[str, str, Optional[float]]
@@ -57,6 +65,7 @@ class Judged(NamedTuple):
     interference: List[Record]
     extracted: List[Record]
     updates: List[Record]
+    answers: List[Record]
 
 
 def judged_records(judged: Dict[str, Any]) -> Judged:
@@ -68,7 +77,9 @@ def judged_records(judged: Dict[str, Any]) -> Judged:
         [record for record in judged.get("memory_accuracy_records", [])
          if record.get("memory_accuracy_score") is not None],
         [record for record in judged.get("memory_update_records", [])
-         if record.get("memory_update_type") in UPDATE_LABELS])
+         if record.get("memory_update_type") in UPDATE_LABELS],
+        [record for record in judged.get("question_answering_records", [])
+         if record.get("result_type") in ANSWER_LABELS])
 
 
 def ratio(part: float, whole: float) -> Optional[float]:
@@ -230,13 +241,48 @@ def cost(result: Record) -> List[Value]:
     ]
 
 
+def answered(answers: Sequence[Record], label: str) -> Optional[float]:
+    return share(answers, lambda record: record["result_type"] == label)
+
+
+def answers(judged: Judged) -> List[Value]:
+    return ([("correct", SHARE, answered(judged.answers, "Correct")),
+             ("hallucinated", SHARE, answered(judged.answers, "Hallucination")),
+             ("omitted", SHARE, answered(judged.answers, "Omission"))]
+            + [(f"correct, {kind}", SHARE,
+                answered([record for record in judged.answers
+                          if record.get("question_type") == kind], "Correct"))
+               for kind in QUESTION_TYPES])
+
+
+def answer_cost(result: Record) -> List[Value]:
+    stats = result.get("node_stats", {}).get("generate_answer", {})
+    calls = stats.get("calls", 0)
+    questions = [question for session in result["sessions"]
+                 for question in session.get("questions", [])]
+
+    def milliseconds(name: str) -> Optional[float]:
+        found = [question[name] for question in questions if question.get(name) is not None]
+        return ratio(sum(found), len(found))
+
+    return [
+        ("seconds per answer", NUMBER, ratio(stats.get("seconds", 0.0), calls)),
+        ("input tokens per answer", TOKENS, ratio(stats.get("input_tokens", 0), calls)),
+        ("output tokens per answer", TOKENS, ratio(stats.get("output_tokens", 0), calls)),
+        ("archive search per question", MILLISECONDS, milliseconds("vector_search_ms")),
+        ("retrieve branch per question", MILLISECONDS, milliseconds("search_duration_ms")),
+    ]
+
+
 # (title, whether it reads HaluMem's judgments, the values of a user)
 SECTIONS = (
     ("fidelity", True, fidelity),
+    ("answers", True, answers),
     ("by type", True, by_type),
     ("by session", True, by_session),
     ("operations", False, operations),
     ("cost", False, cost),
+    ("answer cost", False, answer_cost),
 )
 
 
@@ -345,7 +391,7 @@ def shown(value: Optional[float], kind: str, signed: bool = False) -> str:
     sign = "+" if signed else ""
     if kind == SHARE:
         return f"{100 * value:{sign}.1f}" + ("" if signed else "%")
-    return f"{value:{sign}.0f}" if kind == TOKENS else f"{value:{sign}.2f}"
+    return f"{value:{sign}.0f}" if kind in (TOKENS, MILLISECONDS) else f"{value:{sign}.2f}"
 
 
 def difference_text(values: Sequence[float], kind: str) -> str:

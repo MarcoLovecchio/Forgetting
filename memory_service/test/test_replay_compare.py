@@ -1,0 +1,97 @@
+"""The rules of two invented replays side by side, user by user.
+
+Run: python memory_service/run_tests.py -v
+"""
+
+import contextlib
+import dataclasses
+import io
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+import replay_compare as rc  # noqa: E402
+from memory_service.config import MemoryConfig  # noqa: E402
+
+CONFIG = MemoryConfig(
+    node_name="memory_agent",
+    consolidation_utility="need_gain",
+    eviction_combination="weighted_sum",
+    prune_fraction=0.10,
+    eviction=True,
+    count_candidate_search=False,
+    query_rewrite=False,
+    chroma_path="/tmp/not-used",
+    collection_name="test_archive",
+    llm_config={"model_name": "fake", "model_provider": "fake", "temperature": 0.0},
+)
+OWN, NONE = "score need_gain weighted_sum 0.10", "score none 0.10"
+
+
+def tallies(own, none, limit=50):
+    """Out of 10 needed memories, how many each rule kept; found is half of it."""
+    kept = {OWN: own, NONE: none, "lru": 4, "random": 3, "oracle": 9}
+    return {f"{rule}@{limit}": {"needed": 10, "kept": count, "found": count / 2}
+            for rule, count in kept.items()}
+
+
+class ReplayCompareTest(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = folder.name
+
+    def write(self, name, users, config=CONFIG):
+        run_dir = os.path.join(self.root, "eval", "results", f"memory_service-{name}")
+        os.makedirs(os.path.join(run_dir, "replay"))
+        with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as handle:
+            json.dump({"config": dataclasses.asdict(config)}, handle)
+        with open(os.path.join(run_dir, "replay", "report.json"), "w",
+                  encoding="utf-8") as handle:
+            json.dump({"summary": {}, "users": [{"uuid": uuid, "tallies": found}
+                                                for uuid, found in users.items()]}, handle)
+
+    def test_the_roles_name_the_rules_of_the_trace(self):
+        named = rc.roles(CONFIG)
+
+        self.assertEqual((named["own score"], named["own score, calibrated"],
+                          named["own score, mean vote"], named["score none"]),
+                         (OWN, "score need_gain calibrated weighted_sum 0.10",
+                          "score need_gain mean-vote weighted_sum 0.10", NONE))
+        self.assertNotIn("own score", rc.roles(dataclasses.replace(
+            CONFIG, consolidation_utility="none")))
+
+    def test_the_gain_is_the_own_score_minus_the_score_without_utility(self):
+        found = rc.user_values(tallies(own=7, none=5), rc.roles(CONFIG), 50, "kept")
+
+        self.assertAlmostEqual(found["judgment gain"], 0.2)
+        self.assertIsNone(found["own score, calibrated"], "the replay had no calibrated table")
+        self.assertNotIn("judgment gain, calibrated", found)
+
+    def test_two_traces_are_compared_on_the_users_both_hold(self):
+        self.write("small", {"u1": tallies(6, 5), "u2": tallies(8, 6)})
+        self.write("large", {"u1": tallies(7, 5), "u2": tallies(9, 6), "u3": tallies(9, 1)})
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(rc.main(["--halumem", self.root, "--versions", "small",
+                                      "large"]), 0)
+
+        printed = output.getvalue()
+        self.assertIn("2 users in every version", printed)
+        self.assertNotIn("calibrated", printed.split("users in every version")[1],
+                         "no row for a rule the replays did not have")
+        gain = next(line for line in printed.splitlines()
+                    if line.strip().startswith("judgment gain ") and "+" in line)
+        self.assertIn("+10.0 [+10.0, +10.0]", gain, "both users gain ten points more")
+
+
+if __name__ == "__main__":
+    unittest.main()

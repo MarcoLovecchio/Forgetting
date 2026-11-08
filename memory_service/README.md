@@ -425,12 +425,34 @@ same session, goes to `replay/frontier.csv` for the plots.
 python3 memory_service/test/resource_frontier.py --halumem PATH --version trace
 ```
 
+**The rules of several traces side by side.** Every trace has memories of its own, so two
+replays are compared user by user rather than pooled. `test/replay_compare.py` reads the
+`replay/report.json` of each trace. At every limit they share it prints the retention and
+the retrievable share, user by user, of the rules each trace plays in the same role:
+- its own score;
+- the same with the calibrated table, with one vote without context and with the mean
+  vote, when its replay had them;
+- the score without utility;
+- LRU, random and the oracle.
+
+It also prints the gain of the judgment, the own score minus the score without utility.
+Each version after the first is set against it with the 95% bootstrap interval over the
+users. The roles are printed with the rule each stands for, so traces of different modes
+line up: it is the comparison of the models, the sampling or the core limit on what the
+judgment gives the eviction.
+
+```bash
+python3 memory_service/test/replay_compare.py --halumem PATH --versions trace-ng-4b trace-ng-9b
+```
+
 **What consolidation writes.** `test/consolidation_report.py` reads one run or several
 and prints what consolidation made of the dialogue. From HaluMem's judgments in `tmp2/`,
 after `evaluate`, it prints:
 - recall and weighted recall of the memory points, and the interference points kept out;
 - target and weighted accuracy of what was extracted, and their F1;
 - the updates that were correct, hallucinated or omitted;
+- the answers that were correct, hallucinated or omitted, overall and correct by question
+  type: what the whole service gives back;
 - the same broken down by type of point (persona, event, relationship) and by the
   session's place in the user's history (1-10, 11-25, 26-50, 51 on), to see whether
   consolidation holds as the memory grows.
@@ -441,7 +463,10 @@ From the run alone, before `evaluate` too, it prints:
 - the share of exchanges that wrote nothing;
 - the memories written per memory point;
 - the cost of the consolidation calls: per exchange, the seconds and tokens of a call,
-  and their share of the time the dialogue took.
+  and their share of the time the dialogue took;
+- the cost of the answer: the seconds and tokens of an answer call, and per question the
+  ms of the archive search and of the whole retrieve branch, which is what the user waits
+  for.
 
 Every figure is the mean over users of the user's own figure, and the judgments HaluMem
 could not use are left out, so the figures are not the pooled scores `evaluate` prints.

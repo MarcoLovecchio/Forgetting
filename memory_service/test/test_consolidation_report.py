@@ -37,9 +37,9 @@ def update(label, memory_type="Event Memory", session=0):
             "importance": 0.75, "ssession_id": session, "memory_update_type": label}
 
 
-def judgments(points=(), memories=(), updates=()):
+def judgments(points=(), memories=(), updates=(), answers=()):
     return {"memory_integrity_records": list(points), "memory_accuracy_records": list(memories),
-            "memory_update_records": list(updates), "question_answering_records": []}
+            "memory_update_records": list(updates), "question_answering_records": list(answers)}
 
 
 def operation(op_type, insert):
@@ -173,6 +173,40 @@ class OperationsTest(unittest.TestCase):
                           found["input tokens per call"], found["output tokens per call"],
                           found["seconds per exchange"]), (1.0, 2.0, 1000, 200, 2.0))
         self.assertEqual(found["share of the dialogue time"], 0.5)
+
+
+class AnswersTest(unittest.TestCase):
+    """The answers HaluMem judged, and what they cost the user in time."""
+
+    def test_the_three_verdicts_with_the_unusable_one_left_out(self):
+        records = [{"result_type": verdict, "question_type": kind} for verdict, kind in (
+            ("Correct", "Memory Boundary"), ("Omission", "Basic Fact Recall"),
+            ("Hallucination", "Basic Fact Recall"), ("Correct", "Basic Fact Recall"),
+            (None, "Basic Fact Recall"))]
+
+        found = values(cr.answers(cr.judged_records(judgments(answers=records))))
+
+        self.assertEqual((found["correct"], found["hallucinated"], found["omitted"]),
+                         (0.5, 0.25, 0.25))
+        self.assertAlmostEqual(found["correct, Basic Fact Recall"], 1 / 3)
+        self.assertEqual(found["correct, Memory Boundary"], 1.0)
+        self.assertIsNone(found["correct, Dynamic Update"])
+
+    def test_the_answer_costs_per_call_and_per_question(self):
+        user = {"sessions": [{"questions": [
+            {"question": "Dove vive Mario?", "vector_search_ms": 40.0,
+             "search_duration_ms": 900.0},
+            {"question": "Cosa beve Mario?", "vector_search_ms": 60.0,
+             "search_duration_ms": 1100.0}]}],
+            "node_stats": {"generate_answer": {"calls": 2, "seconds": 1.2, "input_tokens": 3000,
+                                               "output_tokens": 100}}}
+
+        found = values(cr.answer_cost(user))
+
+        self.assertEqual((found["seconds per answer"], found["input tokens per answer"],
+                          found["output tokens per answer"]), (0.6, 1500, 50))
+        self.assertEqual((found["archive search per question"],
+                          found["retrieve branch per question"]), (50.0, 1000.0))
 
 
 class ComparisonTest(unittest.TestCase):

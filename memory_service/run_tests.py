@@ -40,6 +40,7 @@ TEST_MODULES = (
     "test_consolidation_report",  # what consolidation wrote and what it cost, by run
     "test_followup_questions",  # follow-up questions, with and without the model's query
     "test_error_analysis",  # where each answer of a trace failed: stored, found, answered
+    "test_replay_compare",  # the eviction rules of several traces, user by user
     "test_memory_server",  # skipped when rclpy is not available
 )
 
