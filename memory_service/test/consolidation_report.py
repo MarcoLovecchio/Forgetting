@@ -14,7 +14,10 @@ From one or more runs of halumem_adapter.py; the judged sections after its evalu
     operations     per exchange, the creates, updates, redundants and deletes; the share
                    of redundants that brought an archived memory back to the core; the
                    exchanges that wrote nothing; the memories written per memory point
-    cost           the consolidation calls: per exchange, seconds and tokens per call,
+    safety         the active memories of the archive flagged safety, which no prune can
+                   take: their share at the questions and at the end, and their number at
+                   the end, the slots an archive limit would have to leave them
+    cost         the consolidation calls: per exchange, seconds and tokens per call,
                    their share of the time the dialogue took
     answer cost    the answer calls, seconds and tokens each, and per question the ms of
                    the archive search and of the whole retrieve branch: what the user
@@ -225,6 +228,38 @@ def operations(result: Record) -> List[Value]:
                 ratio(kinds["create"] + kinds["update"], points))])
 
 
+def protected(result: Record) -> List[Value]:
+    """The archive's share held by safety memories, following the log: the archive limit
+    counts them, the core has a budget of its own."""
+    core: Dict[str, bool] = {}
+    archive: Dict[str, bool] = {}
+    at_questions: List[float] = []
+    for session in result["sessions"]:
+        for operation in session["operations"]:
+            kind, item_id = operation["op_type"], operation["item_id"]
+            if kind in ("create", "update"):
+                for store in (core, archive):
+                    store.pop(operation.get("related_item_id"), None)
+                core[item_id] = bool((operation.get("ratings") or {}).get("safety"))
+            elif kind == "archive":
+                archive[item_id] = core.pop(item_id, False)
+            elif kind == "redundant" and item_id in archive:
+                core[item_id] = archive.pop(item_id)
+            elif kind in ("delete", "evict", "prune"):
+                core.pop(item_id, None)
+                archive.pop(item_id, None)
+        if archive:
+            at_questions += ([sum(archive.values()) / len(archive)]
+                             * len(session.get("questions", [])))
+    return [
+        ("protected share of the archive, at the questions", SHARE,
+         ratio(sum(at_questions), len(at_questions))),
+        ("protected share of the archive, at the end", SHARE,
+         ratio(sum(archive.values()), len(archive))),
+        ("protected memories in the archive, at the end", NUMBER, float(sum(archive.values()))),
+    ]
+
+
 def cost(result: Record) -> List[Value]:
     stats = result.get("node_stats", {}).get("consolidation", {})
     calls, seconds = stats.get("calls", 0), stats.get("seconds", 0.0)
@@ -281,6 +316,7 @@ SECTIONS = (
     ("by type", True, by_type),
     ("by session", True, by_session),
     ("operations", False, operations),
+    ("safety", False, protected),
     ("cost", False, cost),
     ("answer cost", False, answer_cost),
 )

@@ -462,6 +462,9 @@ From the run alone, before `evaluate` too, it prints:
 - the share of redundants that brought an archived memory back to the core;
 - the share of exchanges that wrote nothing;
 - the memories written per memory point;
+- the active memories of the archive flagged safety, which no prune can take: their share
+  at the questions and at the end, and their number at the end, the slots an archive
+  limit would have to leave them;
 - the cost of the consolidation calls: per exchange, the seconds and tokens of a call,
   and their share of the time the dialogue took;
 - the cost of the answer: the seconds and tokens of an answer call, and per question the

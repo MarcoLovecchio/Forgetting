@@ -163,6 +163,30 @@ class OperationsTest(unittest.TestCase):
 
         self.assertEqual(cr.from_archive(result), (2, 3))
 
+    def test_the_protected_share_follows_the_memories_in_and_out_of_the_archive(self):
+        def entry(kind, item_id, safety=False, related=None):
+            return {"op_type": kind, "item_id": item_id, "insert": 1,
+                    "ratings": {"safety": True} if safety else None,
+                    "related_item_id": related}
+
+        result = {"sessions": [
+            {"operations": [entry("create", "a", safety=True), entry("create", "b"),
+                            entry("create", "c"), entry("archive", "a"), entry("archive", "b"),
+                            entry("archive", "c")],
+             "questions": [{}]},
+            {"operations": [entry("update", "d", related="b"), entry("redundant", "a"),
+                            entry("create", "e", safety=True), entry("archive", "d"),
+                            entry("archive", "e"), entry("prune", "c")],
+             "questions": [{}, {}]},
+            {"operations": [entry("archive", "a")]}]}
+
+        found = values(cr.protected(result))
+
+        self.assertAlmostEqual(found["protected share of the archive, at the questions"],
+                               (1 / 3 + 1 / 2 + 1 / 2) / 3)
+        self.assertAlmostEqual(found["protected share of the archive, at the end"], 2 / 3)
+        self.assertEqual(found["protected memories in the archive, at the end"], 2)
+
     def test_written_per_point_leaves_interference_out(self):
         self.assertEqual(values(cr.operations(result()))["written per memory point"], 1.0)
 
