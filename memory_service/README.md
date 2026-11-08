@@ -455,6 +455,28 @@ version, for the plots.
 python3 memory_service/test/consolidation_report.py --halumem PATH --versions trace-ng trace-none trace-single --csv consolidation.csv
 ```
 
+**Where an answer failed.** `test/error_analysis.py` splits the answers of a trace as
+EvalMem (arXiv:2609.22231) does, after `evaluate` and `label`, with no model call:
+- **not stored:** `label` found no active memory that holds the information, which means
+  it was never extracted or was lost in an update;
+- **not found:** none of the needed memories was in the answer's context, that is the core
+  at that question, as the replay rebuilds it, plus the ids the search returned;
+- **found in part:** some of the needed memories were in that context, but not all;
+- **found:** all of them were.
+
+Each class is crossed with HaluMem's verdict. The report prints how the wrong answers with
+evidence split between the classes, overall and by question type, and the questions with
+no evidence apart, where the only error is to make up an answer. It also prints the
+correct answers with no needed memory in context, which the labels cannot explain. EvalMem's
+third examiner, the answer given again from the gold evidence, is not there, so a wrong
+answer with the memory in context may come from the answer or from a memory that holds
+only part of the fact. Only traces have labels; for a run with eviction the replay gives
+the memory side. Counts are pooled over the users, and `--csv` writes them.
+
+```bash
+python3 memory_service/test/error_analysis.py --halumem PATH --versions trace-ng trace-single --csv errors.csv
+```
+
 **Questions that lean on the last exchange.** HaluMem's questions name what they ask
 about, and the adapter asks them with an empty window, so `query_rewrite` has nothing to
 resolve there. `test/followup_questions.py` builds that case offline, on a trace already

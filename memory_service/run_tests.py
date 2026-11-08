@@ -39,6 +39,7 @@ TEST_MODULES = (
     "test_resource_frontier",  # what the memory costs at each limit, and the frontier
     "test_consolidation_report",  # what consolidation wrote and what it cost, by run
     "test_followup_questions",  # follow-up questions, with and without the model's query
+    "test_error_analysis",  # where each answer of a trace failed: stored, found, answered
     "test_memory_server",  # skipped when rclpy is not available
 )
 
