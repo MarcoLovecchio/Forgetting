@@ -651,10 +651,12 @@ A few things worth knowing, checked against the sources:
   them. With 1 as the first level, "s vs first" is how much slower a call is than on a
   robot with one user: it turns the seconds of a run into those of the robot, for the
   consolidation and for the answer apart. Launch it with nothing else running, and again
-  for each model; `--part` sends one part only.
+  for each model; `--part` sends one part only, and `--csv` also writes every level of
+  both tables, with the time the probe started, so that probes of different moments can
+  be set side by side.
 
 ```bash
-python3 memory_service/test/load_probe.py --halumem PATH --levels 1 15
+python3 memory_service/test/load_probe.py --halumem PATH --levels 1 15 --csv load_probe.csv
 ```
 
 ## The core memory limit

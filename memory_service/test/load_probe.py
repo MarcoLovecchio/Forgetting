@@ -26,9 +26,14 @@ of what is already running there.
                                               [--levels 1 5 10 15] [--rounds 2]
                                               [--answer-rounds 10]
                                               [--part consolidation|answer|both]
+                                              [--csv FILE]
+
+--csv also writes one row per part and level, with the time the probe started: the
+numbers of each table, for the plots and to set probes of different moments side by side.
 """
 
 import argparse
+import csv
 import dataclasses
 import math
 import os
@@ -194,6 +199,30 @@ def print_levels(title: str, levels: Sequence[Dict[str, Any]]) -> None:
             print(f"      {len(found['errors'])} failed, the first: {found['errors'][0]}")
 
 
+CSV_HEADER = ["started", "part", "model", "level", "calls", "errors", "wall s", "median s",
+              "p90 s", "tokens per call", "tokens/s per call", "tokens/s in all",
+              "all vs first", "s vs first"]
+
+
+def csv_rows(started: str, part: str, model: str, levels: Sequence[Dict[str, Any]]
+             ) -> List[List[Any]]:
+    """One row per level, as print_levels shows it; empty cells for a level that failed."""
+    first = next((found for found in levels if found["calls"]), None)
+    rows = []
+    for found in levels:
+        row = [started, part, model, found["level"], found["calls"], len(found["errors"]),
+               found["wall s"]]
+        if found["calls"]:
+            row += [found["median s"], found["p90 s"], found["tokens per call"],
+                    found["tokens/s per call"], found["tokens/s in all"],
+                    found["tokens/s in all"] / first["tokens/s in all"],
+                    found["median s"] / first["median s"]]
+        else:
+            row += [""] * 7
+        rows.append(row)
+    return rows
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="How many calls at once the model server "
                                                  "takes before each call slows down.")
@@ -210,6 +239,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                              "short, so more of them")
     parser.add_argument("--part", choices=("consolidation", "answer", "both"), default="both",
                         help="which calls to send")
+    parser.add_argument("--csv", help="also write every level, part by part, to this file")
     arguments = parser.parse_args(argv)
     if min(arguments.levels) < 1 or min(arguments.rounds, arguments.answer_rounds) < 1:
         parser.error("--levels, --rounds and --answer-rounds must be at least 1")
@@ -233,6 +263,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
     users = adapter.dataset_users(root)
     model = config.llm_config.get("model_name")
+    started = datetime.now().isoformat(timespec="seconds")
     parts = []
     if arguments.part in ("consolidation", "both"):
         needed = sum(level * arguments.rounds for level in arguments.levels)
@@ -252,6 +283,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print_levels(title, levels)
     print("\nA level is worth it while 'all vs first' grows with it; when it stops, the "
           "calls added only queue and 's vs first' grows instead.")
+    if arguments.csv:
+        with open(arguments.csv, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(CSV_HEADER)
+            for title, levels in parts:
+                writer.writerows(csv_rows(started, title.lower(), model, levels))
+        print(f"\nEvery level, part by part: {arguments.csv}")
     return 0
 
 

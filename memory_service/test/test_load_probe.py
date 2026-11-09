@@ -126,6 +126,21 @@ class LoadProbeTest(unittest.TestCase):
         self.assertEqual(len(asked[0]["core_memory"]), 1)
         self.assertEqual(asked[2], asked[0])
 
+    def test_a_csv_row_per_level_with_the_ratios_to_the_first(self):
+        levels = [probe.probe_level(CountingModel(), ["a"] * 2, level=1),
+                  probe.probe_level(CountingModel(), ["a"] * 4, level=2),
+                  probe.probe_level(CountingModel(fail_every=1), ["a"] * 2, level=3)]
+
+        rows = probe.csv_rows("2026-11-09T11:00:00", "answer", "qwen3.5-9b", levels)
+
+        named = [dict(zip(probe.CSV_HEADER, row)) for row in rows]
+        self.assertEqual([row["level"] for row in named], [1, 2, 3])
+        self.assertEqual((named[0]["all vs first"], named[0]["s vs first"]), (1.0, 1.0))
+        self.assertEqual(named[1]["tokens per call"], 40)
+        self.assertEqual((named[2]["calls"], named[2]["errors"], named[2]["median s"]),
+                         (0, 2, ""))
+        self.assertEqual(len(rows[2]), len(probe.CSV_HEADER))
+
     def test_the_stats_of_a_level(self):
         found = probe.level_stats([1.0, 2.0, 4.0], [10, 20, 40], wall=5.0)
 
