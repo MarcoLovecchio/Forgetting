@@ -25,6 +25,23 @@ USERS = [{"sessions": [{"dialogue": [
     {"role": "assistant", "content": "Allora avrà bisogno di lunghe passeggiate"}]}]}]
 
 
+def point(text, hour):
+    return {"memory_content": text, "timestamp": f"Sep 04, 2025, {hour:02d}:00:00"}
+
+
+ASKED = [{"sessions": [
+    {"dialogue": [{"role": "user", "content": "Ciao"}, {"role": "assistant", "content": "Ciao"}],
+     "memory_points": [point("L'utente vive a Palermo", 9)],
+     "questions": [{"question": "Dove vive l'utente?"}]},
+    {"dialogue": [{"role": "user", "content": "Ho cambiato lavoro"},
+                  {"role": "assistant", "content": "Racconta"},
+                  {"role": "user", "content": "Ora insegno matematica"},
+                  {"role": "assistant", "content": "Bello, in che scuola"}],
+     "memory_points": [point(f"L'utente ha un ricordo numero {number:02d}", 10)
+                       for number in range(40)],
+     "questions": [{"question": "Che lavoro fa l'utente?"}]}]}]
+
+
 class CountingModel:
     """Answers 40 tokens after a short wait, and records how many calls overlapped."""
 
@@ -78,6 +95,36 @@ class LoadProbeTest(unittest.TestCase):
         self.assertEqual(found["calls"], 2)
         self.assertEqual(len(found["errors"]), 2)
         self.assertIn("TimeoutError", found["errors"][0])
+
+    def test_each_level_sends_requests_of_its_own(self):
+        model = CountingModel()
+
+        found = probe.probe_levels(model, ["a"] * 6, levels=[1, 2], rounds=2)
+
+        self.assertEqual([level["calls"] for level in found], [2, 4])
+        self.assertEqual(model.calls, 6)
+
+    def test_an_answer_has_the_latest_memories_as_core_and_the_older_as_recalled(self):
+        asked = probe.answer_inputs(ASKED, count=2, dates="")[1]
+
+        contents = [line.split("Content: ")[1] for line in asked["core_memory"]]
+        recalled = asked["retrieved_memory"].split("\n")
+        self.assertEqual(asked["input"], "Che lavoro fa l'utente?")
+        self.assertTrue(contents[-1].endswith("39"))
+        self.assertLessEqual(len("\n".join(contents)), probe.CORE_CHARS)
+        self.assertEqual(len(recalled), 20)
+        self.assertTrue(all(line.startswith("ID: ") and "Date: 2025-09-04" in line
+                            for line in recalled))
+        self.assertTrue(recalled[-1].endswith(f"{39 - len(contents):02d}"))
+        self.assertEqual(asked["messages"], "Human: Ora insegno matematica\n"
+                                            "AI: Bello, in che scuola")
+
+    def test_the_first_question_recalls_nothing_and_questions_are_reused(self):
+        asked = probe.answer_inputs(ASKED, count=3, dates="")
+
+        self.assertEqual(asked[0]["retrieved_memory"], probe.NO_ARCHIVAL_RESULTS)
+        self.assertEqual(len(asked[0]["core_memory"]), 1)
+        self.assertEqual(asked[2], asked[0])
 
     def test_the_stats_of_a_level(self):
         found = probe.level_stats([1.0, 2.0, 4.0], [10, 20, 40], wall=5.0)

@@ -445,6 +445,27 @@ judgment gives the eviction.
 python3 memory_service/test/replay_compare.py --halumem PATH --versions trace-ng-4b trace-ng-9b
 ```
 
+**Whether the replay foresaw a real eviction.** A run with a real archive limit prunes as
+it goes, and its answers are judged; the replay of the trace already said what the same
+rule keeps at that limit. `test/replay_check.py` sets the two side by side for each run,
+user by user:
+- the retention and the retrievable share of the run's rule at the run's limit, replayed
+  on the trace: the trace's own score with the run's mode, combination and prune
+  fraction, calibrated with `--calibrated` when the runs used the tables pasted into
+  `eviction.py`;
+- the run's correct answers, and the same minus the trace's, which is what the real
+  eviction cost.
+
+Each run after the first is set against it, with the 95% interval over the users, and
+with the users on which the real difference in correct answers has the sign of the
+replayed one. A run must be the trace with another eviction only: a different core
+limit, frequency, model or a mode other than the trace's or none is refused. The replay
+keeps the trace's writing, so what a run wrote differently stays in the gap.
+
+```bash
+python3 memory_service/test/replay_check.py --halumem PATH --trace trace-ng-4b --runs ng-weighted_sum-a50 none-a50 --calibrated
+```
+
 **What consolidation writes.** `test/consolidation_report.py` reads one run or several
 and prints what consolidation made of the dialogue. From HaluMem's judgments in `tmp2/`,
 after `evaluate`, it prints:
@@ -619,14 +640,21 @@ A few things worth knowing, checked against the sources:
 - **How many workers the server takes.** vLLM's `/metrics`, on the port of the API
   without `/v1`, shows the requests running and waiting, the share of the KV cache in
   use and the preemptions. A queue or growing preemptions mean the server is full.
-  `test/load_probe.py` measures the rest: it sends the consolidation model requests
-  built from HaluMem dialogues, at each concurrency level, and prints the seconds per
-  call and the output tokens per second of one call and of the whole server. More
-  workers pay while the server's throughput grows with them. Launch it with nothing
-  else running, and again for each model.
+  `test/load_probe.py` measures the rest, in two parts, at each concurrency level:
+  - consolidation: the consolidation model on stretches of HaluMem dialogue;
+  - answer: the service's answer prompt with the settings of `generate_answer`, on
+    HaluMem's questions, with the latest memory points as the core, the 20 before them
+    as the memories recalled and the last two messages of the session.
+
+  Each part prints the seconds per call and the output tokens per second of one call
+  and of the whole server. More workers pay while the server's throughput grows with
+  them. With 1 as the first level, "s vs first" is how much slower a call is than on a
+  robot with one user: it turns the seconds of a run into those of the robot, for the
+  consolidation and for the answer apart. Launch it with nothing else running, and again
+  for each model; `--part` sends one part only.
 
 ```bash
-python3 memory_service/test/load_probe.py --halumem PATH --levels 1 5 10 15
+python3 memory_service/test/load_probe.py --halumem PATH --levels 1 15
 ```
 
 ## The core memory limit
