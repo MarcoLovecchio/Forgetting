@@ -199,6 +199,76 @@ class OperationsTest(unittest.TestCase):
         self.assertEqual(found["share of the dialogue time"], 0.5)
 
 
+def judged_user(ratings, operations):
+    return {"sessions": [{"operations": operations}], "ratings": ratings}
+
+
+def written(op_type, content, ratings):
+    return {"op_type": op_type, "item_id": content[:8], "insert": 1, "content": content,
+            "ratings": ratings}
+
+
+def tool_call(memories):
+    return f"Invoking InsertCoreMemories with args: {dict(memories=memories)}\n"
+
+
+class JudgmentTest(unittest.TestCase):
+    """The ratings of what consolidation wrote, and the calls the service could not read."""
+
+    def test_a_fact_without_ratings_counts_under_its_cause(self):
+        stored = "L'utente ha un gatto di nome Micio"
+        user = judged_user(
+            {"need": {"1": 0, "2": 1, "3": 0}, "gain": {"1": 0, "2": 0, "3": 2}},
+            [written("create", "L'utente vive a Palermo", {"need": 2, "gain": 3}),
+             written("create", stored, None),
+             written("create", "L'utente beve il caffè amaro", None),
+             written("update", "L'utente lavora a Catania", {"gain": 3}),
+             written("create", "L'utente è allergico alle arachidi", {"safety": True})])
+        lines = ["\tTool node activated\n",
+                 f"\tNo target for 'redundant', storing {stored!r} as a new memory\n"]
+
+        found = values(cr.judgment((user, lines)))
+
+        self.assertEqual(found["written without ratings"], 0.75)
+        self.assertEqual(found["without ratings, a redundant stored as new"], 0.25)
+        self.assertEqual(found["without ratings, left out by the model"], 0.5)
+
+    def test_each_level_is_a_share_of_the_facts_given_that_rating(self):
+        user = judged_user({"need": {"1": 1, "2": 3, "3": 0}}, [])
+
+        found = values(cr.judgment((user, None)))
+
+        self.assertEqual((found["need 1"], found["need 2"], found["need 3"]), (0.25, 0.75, 0.0))
+
+    def test_a_call_whose_facts_came_as_a_string_is_lost(self):
+        lines = [tool_call([{"fact": "L'utente ama il mare", "operation": "new"},
+                            {"fact": "L'utente nuota", "operation": "new"}]),
+                 tool_call('[{"fact": "L\'utente corre", "operation": "new"}]'),
+                 tool_call('[{"fact": "L\'utente scia", "target_item_id": 850ef5a4}, '
+                           '{"fact": "L\'utente leg'),
+                 "Invoking InsertCoreMemories with args: {'memories': [{'fact'\n"]
+
+        found = values(cr.judgment((judged_user({}, []), lines)))
+
+        self.assertAlmostEqual(found["consolidation calls lost"], 2 / 3)
+        self.assertAlmostEqual(found["facts lost with them"], 3 / 5)
+
+    def test_without_the_log_only_what_the_run_counted(self):
+        user = judged_user({"utility": {"1": 0, "2": 0, "3": 1, "4": 0, "5": 0}},
+                           [written("create", "L'utente vive a Palermo", None)])
+
+        found = values(cr.judgment((user, None)))
+
+        self.assertEqual(found["written without ratings"], 1.0)
+        self.assertNotIn("without ratings, left out by the model", found)
+        self.assertNotIn("consolidation calls lost", found)
+
+    def test_a_mode_that_rates_nothing_has_only_the_calls(self):
+        found = values(cr.judgment((judged_user({}, []), [tool_call([])])))
+
+        self.assertEqual(set(found), {"consolidation calls lost", "facts lost with them"})
+
+
 class AnswersTest(unittest.TestCase):
     """The answers HaluMem judged, and what they cost the user in time."""
 
@@ -240,14 +310,20 @@ class ComparisonTest(unittest.TestCase):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
 
-    def write_version(self, name, scores):
-        """A run of the users in `scores`, judged when the score is not None."""
+    def write_version(self, name, scores, log=()):
+        """A run of the users in `scores`, judged when the score is not None; each user
+        with the agent's `log`, if one is given."""
         run_dir = os.path.join(self.folder.name, "eval", "results", f"memory_service-{name}")
         os.makedirs(os.path.join(run_dir, "tmp2"))
+        os.makedirs(os.path.join(run_dir, "logs"))
         with open(os.path.join(run_dir, "memory_service_eval_results.jsonl"), "w",
                   encoding="utf-8") as handle:
             for uuid in scores:
                 handle.write(json.dumps(result(uuid)) + "\n")
+        for uuid in scores if log else ():
+            with open(os.path.join(run_dir, "logs", f"{uuid}.log"), "w",
+                      encoding="utf-8") as handle:
+                handle.writelines(log)
         for uuid, score in scores.items():
             if score is not None:
                 with open(os.path.join(run_dir, "tmp2", f"{uuid}.json"), "w",
@@ -290,6 +366,15 @@ class ComparisonTest(unittest.TestCase):
 
         self.assertNotIn(("recall", "judged"), rows)
         self.assertEqual(rows[("seconds per call", "replayed")]["mean"], "2.0")
+
+    def test_the_judgment_reads_the_log_of_each_user(self):
+        self.write_version("logged", {"u1": None}, log=[tool_call("[{\"fact\": ")])
+        self.write_version("unlogged", {"u1": None})
+
+        rows = self.report("logged", "unlogged")
+
+        self.assertEqual(rows[("consolidation calls lost", "logged")]["mean"], "1.0")
+        self.assertEqual(rows[("consolidation calls lost", "unlogged")]["users"], "0")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,12 @@ From one or more runs of halumem_adapter.py; the judged sections after its evalu
     safety         the active memories of the archive flagged safety, which no prune can
                    take: their share at the questions and at the end, and their number at
                    the end, the slots an archive limit would have to leave them
+    judgment       the new and updated facts without the ratings of the mode, by cause:
+                   a redundant whose target was not found, stored as new with no ratings,
+                   or ratings the model left out or wrote off the scale; the share of
+                   each level of each rating; the consolidation calls whose facts came
+                   as a string, which the service cannot read, and the facts lost with
+                   them. The causes and the calls come from logs/<uuid>.log
     cost         the consolidation calls: per exchange, seconds and tokens per call,
                    their share of the time the dialogue took
     answer cost    the answer calls, seconds and tokens each, and per question the ms of
@@ -35,10 +41,12 @@ runs launched with the same --workers.
 """
 
 import argparse
+import ast
 import csv
 import json
 import os
 import random
+import re
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
@@ -56,6 +64,10 @@ SESSION_BUCKETS = ((1, 10), (11, 25), (26, 50), (51, None))
 BOOTSTRAP_SAMPLES = 1000
 LABEL_WIDTH = 34
 SHARE, NUMBER, TOKENS, MILLISECONDS = "share", "number", "tokens", "ms"
+JUDGED, RESULT, LOGGED = "judged", "result", "logged"
+# The lines the service prints, in memory_manager_llm.py and consolidation.py.
+TOOL_CALL = "Invoking InsertCoreMemories with args: "
+STORED_AS_NEW = re.compile(r"No target for 'redundant', storing (.*) as a new memory$")
 
 Record = Dict[str, Any]
 Value = Tuple[str, str, Optional[float]]
@@ -260,6 +272,90 @@ def protected(result: Record) -> List[Value]:
     ]
 
 
+def literal(text: str) -> Any:
+    """A Python value as the log printed it, None when the line was cut."""
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return None
+
+
+def stored_as_new(lines: Sequence[str]) -> set:
+    """The facts of the redundants whose target was not found: the service stored them."""
+    facts = set()
+    for line in lines:
+        match = STORED_AS_NEW.search(line.strip())
+        fact = literal(match.group(1)) if match else None
+        if isinstance(fact, str):
+            facts.add(fact.strip())
+    return facts
+
+
+def facts_in(text: str) -> int:
+    try:
+        found = json.loads(text)
+    except ValueError:
+        return text.count('"fact"')
+    return len(found) if isinstance(found, list) else 1
+
+
+def consolidation_calls(lines: Sequence[str]) -> Tuple[int, int, int, int]:
+    """(calls, calls lost, facts, facts lost): a call whose facts came as a string is
+    lost, since the service reads the string one character at a time."""
+    calls = lost = facts = facts_lost = 0
+    for line in lines:
+        line = line.strip()
+        args = literal(line[len(TOOL_CALL):]) if line.startswith(TOOL_CALL) else None
+        if not isinstance(args, dict):
+            continue
+        calls += 1
+        memories = args.get("memories") or []
+        if isinstance(memories, str):
+            count = facts_in(memories)
+            lost, facts_lost = lost + 1, facts_lost + count
+            facts += count
+        elif isinstance(memories, list):
+            facts += len(memories)
+    return calls, lost, facts, facts_lost
+
+
+def judgment(found: Tuple[Record, Optional[List[str]]]) -> List[Value]:
+    """The ratings of the facts consolidation wrote, and the calls it lost.
+
+    The ratings are those of the mode, as the run counted them; a safety fact is never
+    rated and stays out. Without the agent's log there are no causes and no calls.
+    """
+    result, lines = found
+    levels = result.get("ratings") or {}
+    written = [operation for session in result["sessions"]
+               for operation in session["operations"]
+               if operation["op_type"] in ("create", "update")
+               and not (operation.get("ratings") or {}).get("safety")]
+    values: List[Value] = []
+    if levels:
+        unrated = [operation for operation in written
+                   if any((operation.get("ratings") or {}).get(name) is None
+                          for name in levels)]
+        values.append(("written without ratings", SHARE, ratio(len(unrated), len(written))))
+        if lines is not None:
+            redundants = stored_as_new(lines)
+            from_redundant = sum(1 for operation in unrated if operation["op_type"] == "create"
+                                 and operation["content"].strip() in redundants)
+            values += [("without ratings, a redundant stored as new", SHARE,
+                        ratio(from_redundant, len(written))),
+                       ("without ratings, left out by the model", SHARE,
+                        ratio(len(unrated) - from_redundant, len(written)))]
+        for name, counts in levels.items():
+            given = sum(counts.values())
+            values += [(f"{name} {level}", SHARE, ratio(count, given))
+                       for level, count in sorted(counts.items(), key=lambda item: int(item[0]))]
+    if lines is not None:
+        calls, lost, facts, facts_lost = consolidation_calls(lines)
+        values += [("consolidation calls lost", SHARE, ratio(lost, calls)),
+                   ("facts lost with them", SHARE, ratio(facts_lost, facts))]
+    return values
+
+
 def cost(result: Record) -> List[Value]:
     stats = result.get("node_stats", {}).get("consolidation", {})
     calls, seconds = stats.get("calls", 0), stats.get("seconds", 0.0)
@@ -309,16 +405,18 @@ def answer_cost(result: Record) -> List[Value]:
     ]
 
 
-# (title, whether it reads HaluMem's judgments, the values of a user)
+# (title, what it reads: HaluMem's judgments, the result, or the result and the agent's
+# log, the values of a user)
 SECTIONS = (
-    ("fidelity", True, fidelity),
-    ("answers", True, answers),
-    ("by type", True, by_type),
-    ("by session", True, by_session),
-    ("operations", False, operations),
-    ("safety", False, protected),
-    ("cost", False, cost),
-    ("answer cost", False, answer_cost),
+    ("fidelity", JUDGED, fidelity),
+    ("answers", JUDGED, answers),
+    ("by type", JUDGED, by_type),
+    ("by session", JUDGED, by_session),
+    ("operations", RESULT, operations),
+    ("safety", RESULT, protected),
+    ("judgment", LOGGED, judgment),
+    ("cost", RESULT, cost),
+    ("answer cost", RESULT, answer_cost),
 )
 
 
@@ -377,7 +475,23 @@ def common_users(versions: Sequence[Version], held: Callable[[Version], Dict[str
 Table = Tuple[List[Tuple[str, str]], List[Dict[str, Dict[str, Optional[float]]]]]
 
 
-def section_table(versions: Sequence[Version], users: Sequence[str], judgments: bool,
+def agent_log(run_dir: str, uuid: str) -> Optional[List[str]]:
+    path = os.path.join(run_dir, "logs", f"{uuid}.log")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as handle:
+        return handle.readlines()
+
+
+def user_source(version: Version, uuid: str, source: str) -> Any:
+    if source == JUDGED:
+        return judged_records(version.judged[uuid])
+    if source == LOGGED:
+        return version.results[uuid], agent_log(version.run_dir, uuid)
+    return version.results[uuid]
+
+
+def section_table(versions: Sequence[Version], users: Sequence[str], source: str,
                   compute: Callable[[Any], List[Value]]) -> Table:
     """(label, format) of every row, and for each version: label -> uuid -> value."""
     rows: List[Tuple[str, str]] = []
@@ -385,9 +499,7 @@ def section_table(versions: Sequence[Version], users: Sequence[str], judgments: 
     for version in versions:
         table: Dict[str, Dict[str, Optional[float]]] = {}
         for uuid in users:
-            source = (judged_records(version.judged[uuid]) if judgments
-                      else version.results[uuid])
-            for label, kind, value in compute(source):
+            for label, kind, value in compute(user_source(version, uuid, source)):
                 if (label, kind) not in rows:
                     rows.append((label, kind))
                 table.setdefault(label, {})[uuid] = value
@@ -499,14 +611,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               "interval over the users; shares in percentage points.")
 
     found = []
-    for title, judgments, compute in SECTIONS:
-        users = held[judgments]
+    for title, source, compute in SECTIONS:
+        users = held[source == JUDGED]
         if not users:
             print(f"\n{title}: no user " + ("judged in every version: launch "
                                            "halumem_adapter.py evaluate first."
-                                           if judgments else "in every version."))
+                                           if source == JUDGED else "in every version."))
             continue
-        table = section_table(versions, users, judgments, compute)
+        table = section_table(versions, users, source, compute)
+        if not table[0]:
+            print(f"\n{title}: nothing to count in these runs.")
+            continue
         print_section(title, len(users), names, table)
         found += csv_rows(title, names, table)
 

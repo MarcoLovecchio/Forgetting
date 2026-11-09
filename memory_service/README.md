@@ -465,6 +465,12 @@ From the run alone, before `evaluate` too, it prints:
 - the active memories of the archive flagged safety, which no prune can take: their share
   at the questions and at the end, and their number at the end, the slots an archive
   limit would have to leave them;
+- the new and updated facts without the ratings of the mode, by cause: a redundant
+  whose target was not found, which the service stores as new with no ratings, or
+  ratings the model left out or wrote off the scale. Next to them, the share of each
+  level of each rating, and the consolidation calls whose facts came as a string, which
+  the service cannot read, with the facts lost in them. The causes and the lost calls
+  come from `logs/<uuid>.log`;
 - the cost of the consolidation calls: per exchange, the seconds and tokens of a call,
   and their share of the time the dialogue took;
 - the cost of the answer: the seconds and tokens of an answer call, and per question the
