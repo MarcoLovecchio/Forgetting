@@ -820,20 +820,23 @@ class JudgmentTest(unittest.TestCase):
 
                 self.assertEqual(self.judged_fields(), ("InsertCoreMemories", judged))
 
-    def test_with_need_and_gain_only_new_and_update_off_safety_must_be_rated(self):
+    def test_only_new_and_update_off_safety_must_be_rated_in_both_modes(self):
         # Exactly what the prompt asks: no rating for a safety fact, nor for redundant
         # and delete.
-        self.use("need_gain")
-        self.consolidate([])
+        for mode, ratings in (("single", {"utility"}), ("need_gain", {"need", "gain"})):
+            with self.subTest(mode=mode):
+                self.use(mode)
+                self.consolidate([])
 
-        function = convert_to_openai_tool(self.bound_tool())["function"]
-        shapes = [(tuple(form["properties"]["operation"]["enum"]),
-                   form["properties"].get("safety", {}).get("const"), set(form["required"]))
-                  for form in self.forms(function)]
-        self.assertEqual(shapes, [
-            (("new", "update"), False, {"fact", "operation", "safety", "need", "gain"}),
-            (("new", "update"), True, {"fact", "operation", "safety"}),
-            (("redundant", "delete"), None, {"fact", "operation"})])
+                function = convert_to_openai_tool(self.bound_tool())["function"]
+                shapes = [(tuple(form["properties"]["operation"]["enum"]),
+                           form["properties"].get("safety", {}).get("const"),
+                           set(form["required"]))
+                          for form in self.forms(function)]
+                self.assertEqual(shapes, [
+                    (("new", "update"), False, {"fact", "operation", "safety"} | ratings),
+                    (("new", "update"), True, {"fact", "operation", "safety"}),
+                    (("redundant", "delete"), None, {"fact", "operation"})])
 
     def test_an_update_without_a_judgment_takes_its_target_one(self):
         self.use("need_gain")

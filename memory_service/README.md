@@ -837,12 +837,13 @@ changes while keeping the name `InsertCoreMemories`. `safety` is true only if
 forgetting the fact can put the user at risk (an allergy, a medical condition): in
 that case the ratings are not given and, if the model gives them anyway, they are
 discarded. An `update` is judged again, a `redundant` keeps the ratings it had, a
-`delete` has none. With `need_gain` the schema says so itself: an operation has three
-shapes, `new` and `update` with `safety` false and `need` and `gain` required, `new` and
-`update` with `safety` true and no rating, `redundant` and `delete` with none. An
-`update` that arrives without any judgment all the same (a server that does not hold the
-model to the schema, or `single`, where the fields stay optional) takes its target's,
-and the agent prints it. An off-scale rating counts as not given. The four fields live
+`delete` has none. The schema says so itself, in both modes: an operation has three
+shapes, `new` and `update` with `safety` false and the ratings of the mode required
+(`utility`, or `need` and `gain`), `new` and `update` with `safety` true and no rating,
+`redundant` and `delete` with none. The voting without context of
+`test/calibration_ratings.py` has the same two shapes for a fact. An `update` that
+arrives without any judgment all the same (a server that does not hold the model to the
+schema) takes its target's, and the agent prints it. An off-scale rating counts as not given. The four fields live
 in `CoreMemoryItem` and in the archive metadata, where a missing value is absent rather
 than `None`.
 

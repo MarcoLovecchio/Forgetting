@@ -86,12 +86,12 @@ class NeedGainFact(BaseModel):
 
 
 class UtilityFact(BaseModel):
-    """A fact with its safety flag and, unless it is about safety, its utility."""
+    """A fact that is not about safety, with its utility, required."""
 
     number: int = Field(description=NUMBER)
-    safety: bool = Field(description=SAFETY_DESCRIPTION)
-    utility: Optional[Literal[1, 2, 3, 4, 5]] = Field(
-        default=None, description=UtilityJudgedOperation.model_fields["utility"].description)
+    safety: Literal[False] = Field(description=SAFETY_DESCRIPTION)
+    utility: Literal[1, 2, 3, 4, 5] = Field(
+        description=UtilityJudgedOperation.model_fields["utility"].description)
 
 
 class JudgeNeedGain(BaseModel):
@@ -107,7 +107,7 @@ class JudgeUtility(BaseModel):
 
     model_config = ConfigDict(title="JudgeFacts")
 
-    facts: List[UtilityFact]
+    facts: List[Union[UtilityFact, SafetyFact]]
 
 
 TOOLS = {"single": JudgeUtility, "need_gain": JudgeNeedGain}

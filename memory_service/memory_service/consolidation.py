@@ -189,18 +189,12 @@ DETAIL = "a detail that would change no answer, such as a color or a passing rem
 EXACT_VALUE = "an exact value that cannot be guessed: a name, a place, a date, a time, a number"
 
 
-class SafetyJudgedOperation(MemoryOperation):
-    """A classified fact, flagged when forgetting it could put the user at risk."""
+class UtilityJudgedOperation(MemoryOperation):
+    """A new or updated fact that is not about safety, with its utility, required."""
 
-    safety: Optional[bool] = Field(default=None, description=(
-        SAFETY_DESCRIPTION + " Only for new and update: leave it out for redundant and "
-        "delete."))
-
-
-class UtilityJudgedOperation(SafetyJudgedOperation):
-    """A classified fact, with its safety flag and one utility rating."""
-
-    utility: Optional[Literal[1, 2, 3, 4, 5]] = Field(default=None, description=(
+    operation: Literal["new", "update"]
+    safety: Literal[False] = Field(description=SAFETY_DESCRIPTION)
+    utility: Literal[1, 2, 3, 4, 5] = Field(description=(
         "How valuable it will be to keep this fact and find it again in future "
         "conversations, from what kind of fact it is and from what it holds that an answer "
         "could not guess. "
@@ -211,9 +205,7 @@ class UtilityJudgedOperation(SafetyJudgedOperation):
         "First, is it 1? It is 1 when " + ONE_OFF + ". "
         "If not, is it part of the user's life? It is when " + PART_OF_LIFE + ". Then it "
         "is 5 if it holds a limit or " + EXACT_VALUE + "; otherwise it is 4. "
-        "Otherwise " + TOPICAL + ": it is 2 if it is only " + DETAIL + ", otherwise 3. "
-        "Only for new and update, and only when safety is false: leave it out for redundant "
-        "and delete, and when safety is true."))
+        "Otherwise " + TOPICAL + ": it is 2 if it is only " + DETAIL + ", otherwise 3."))
 
 
 class NeedGainJudgedOperation(MemoryOperation):
@@ -265,7 +257,8 @@ class InsertCoreMemoriesWithUtility(InsertCoreMemories):
 
     model_config = ConfigDict(title="InsertCoreMemories")
 
-    memories: List[UtilityJudgedOperation] = Field(
+    memories: List[Union[UtilityJudgedOperation, SafetyFactOperation,
+                         UnjudgedOperation]] = Field(
         description=InsertCoreMemories.model_fields["memories"].description)
 
 
