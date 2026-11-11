@@ -457,7 +457,7 @@ judgment, the own score minus the score without utility. With `--repeat-at-end` 
 the reports of `simulate --repeat-at-end` and adds what each rule holds when every question
 is asked again at the end.
 Each version after the first is set against it with the 95% bootstrap interval over the
-users. The roles are printed with the rule each stands for, so traces of different modes
+users and the number of users above, below and at zero. The roles are printed with the rule each stands for, so traces of different modes
 line up: it is the comparison of the models, the sampling or the core limit on what the
 judgment gives the eviction.
 
@@ -521,8 +521,9 @@ From the run alone, before `evaluate` too, it prints:
 Every figure is the mean over users of the user's own figure, and the judgments HaluMem
 could not use are left out, so the figures are not the pooled scores `evaluate` prints.
 With several versions only the users all of them hold are read. Each version after the
-first gets a column with its difference from the first, user by user, and the 95%
-bootstrap interval over the users. Seconds depend on how many users ran at once, so
+first gets a column with its difference from the first, user by user, the 95%
+bootstrap interval over the users and how many users it is above, below and at zero for,
+so an average carried by a few users shows. Seconds depend on how many users ran at once, so
 compare runs launched with the same `--workers`. `--csv` writes every row, version by
 version, for the plots.
 

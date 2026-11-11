@@ -691,13 +691,13 @@ def report(arguments: argparse.Namespace) -> int:
 
     compared = ("found", "correct", "hallucinated", "omitted")
     print("\nEach search minus its reference, user by user, in percentage points, with the 95% "
-          "interval over the users:")
-    print(f"{'':<16}" + "".join(f"{metric:>22}" for metric in compared))
+          "interval over the users and the users above/below/at zero:")
+    print(f"{'':<16}" + "".join(f"{metric:>31}" for metric in compared))
     for name, reference in COMPARISONS:
         cells = [kpi.difference_text(kpi.paired(by_user(reports, reference, metric),
                                                 by_user(reports, name, metric)), SHARE)
                  for metric in compared]
-        print(f"  {name + ' - ' + reference:<14}" + "".join(f"{cell:>22}" for cell in cells))
+        print(f"  {name + ' - ' + reference:<14}" + "".join(f"{cell:>31}" for cell in cells))
 
     kinds = sorted({kind for found in reports.values() for kind in found["types"]})
     print("\nAnswers correct by question type:")

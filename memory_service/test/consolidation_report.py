@@ -33,7 +33,8 @@ Every figure is the mean over users of the user's own figure; a user with nothin
 count in a cell stays out of it. A judgment HaluMem could not use is left out, as in its
 (valid) scores. With several versions only the users all of them hold are read, and each
 version after the first is set beside it: the mean difference user by user, with its 95%
-bootstrap interval over the users. Seconds depend on how many users ran at once: compare
+bootstrap interval over the users and how many users it is above, below and at zero for,
+so an average carried by a few users shows. Seconds depend on how many users ran at once: compare
 runs launched with the same --workers.
 
     python3 memory_service/test/consolidation_report.py --halumem PATH --versions A [B ...]
@@ -533,6 +534,12 @@ def bootstrap(values: Sequence[float], samples: int = BOOTSTRAP_SAMPLES, seed: i
     return means[int(0.025 * (samples - 1))], means[int(0.975 * (samples - 1))]
 
 
+def signs(values: Sequence[float]) -> Tuple[int, int, int]:
+    """How many users a difference is above, below and at zero for."""
+    return (sum(1 for value in values if value > 0), sum(1 for value in values if value < 0),
+            sum(1 for value in values if value == 0))
+
+
 def shown(value: Optional[float], kind: str, signed: bool = False) -> str:
     if value is None:
         return "-"
@@ -549,7 +556,8 @@ def difference_text(values: Sequence[float], kind: str) -> str:
     text = shown(mean(values), kind, signed=True)
     if interval:
         text += f" [{shown(interval[0], kind, True)}, {shown(interval[1], kind, True)}]"
-    return text
+    above, below, tied = signs(values)
+    return text + f" {above}/{below}/{tied}"
 
 
 def print_section(title: str, users: int, names: Sequence[str], table: Table) -> None:
@@ -557,7 +565,7 @@ def print_section(title: str, users: int, names: Sequence[str], table: Table) ->
     width = max([LABEL_WIDTH] + [len(label) + 4 for label, _ in rows])
     headers = list(names) + [f"{name} diff" for name in names[1:]]
     columns = ([max(len(name), 8) + 2 for name in names]
-               + [max(len(name) + 5, 22) + 2 for name in names[1:]])
+               + [max(len(name) + 5, 31) + 2 for name in names[1:]])
     print(f"\n{title} ({users} users)")
     print(f"{'':<{width}}" + "".join(f"{header:>{column}}"
                                      for header, column in zip(headers, columns)))
@@ -581,9 +589,9 @@ def csv_rows(title: str, names: Sequence[str], table: Table) -> List[List[Any]]:
             if position:
                 difference = paired(tables[0].get(label, {}), values.get(label, {}))
                 interval = bootstrap(difference) or (None, None)
-                row += [mean(difference), interval[0], interval[1]]
+                row += [mean(difference), interval[0], interval[1], *signs(difference)]
             else:
-                row += [None, None, None]
+                row += [None, None, None, None, None, None]
             found.append(["" if cell is None else cell for cell in row])
     return found
 
@@ -608,7 +616,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if len(versions) > 1:
         print(f"\nIn every version: {len(held[False])} users, {len(held[True])} of them judged. "
               f"The diff columns are each version minus {names[0]}, user by user, with the 95% "
-              "interval over the users; shares in percentage points.")
+              "interval over the users and the users above/below/at zero; shares in "
+              "percentage points.")
 
     found = []
     for title, source, compute in SECTIONS:
@@ -629,7 +638,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         with open(arguments.csv, "w", encoding="utf-8", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(["section", "kpi", "version", "users", "mean", "difference",
-                             "difference_low", "difference_high"])
+                             "difference_low", "difference_high", "users_above",
+                             "users_below", "users_tied"])
             writer.writerows(found)
         print(f"\nEvery row, version by version: {arguments.csv}")
     return 0

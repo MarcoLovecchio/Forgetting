@@ -22,7 +22,8 @@ question (old, the primary measure), user by user, and what the judgment gives:
 The rows are named by role, so traces of different modes line up: the rule each role
 stands for, per trace, is printed first. Each version after the first is set against it
 on the users all of them hold: the mean difference user by user, with its 95% bootstrap
-interval over the users. It compares what the judgment gives the eviction across models
+interval over the users and how many users it is above, below and at zero for. It compares
+what the judgment gives the eviction across models
 (4B, 9B), sampling or core limit, where each trace has memories of its own.
 
 With --repeat-at-end it reads the reports of simulate --repeat-at-end instead, and adds
@@ -139,8 +140,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     shared = sorted(set(limits(loaded[0][1])).intersection(
         *(limits(found) for _, found in loaded[1:])))
     print(f"\n{len(users)} users in every version. The diff columns are each version minus "
-          f"{arguments.versions[0]}, user by user, with the 95% interval over the users; "
-          "shares and gains in percentage points.")
+          f"{arguments.versions[0]}, user by user, with the 95% interval over the users "
+          "and the users above/below/at zero; shares and gains in percentage points.")
 
     for limit in shared:
         for title, part, whole in measures:

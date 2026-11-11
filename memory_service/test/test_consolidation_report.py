@@ -343,6 +343,10 @@ class ComparisonTest(unittest.TestCase):
                           cr.paired({"a": 0.5, "b": 0.7, "c": None},
                                     {"a": 0.6, "b": 0.6, "d": 0.9})], [0.1, -0.1])
 
+    def test_a_difference_counts_the_users_above_below_and_at_zero(self):
+        self.assertEqual(cr.signs([0.1, -0.2, 0.0, 0.3]), (2, 1, 1))
+        self.assertTrue(cr.difference_text([0.1, -0.2, 0.0, 0.3], cr.SHARE).endswith(" 2/1/1"))
+
     def test_the_interval_needs_two_users(self):
         low, high = cr.bootstrap([0.1, 0.2, 0.3])
         self.assertTrue(0.1 <= low < 0.2 < high <= 0.3)
@@ -357,6 +361,7 @@ class ComparisonTest(unittest.TestCase):
         self.assertEqual(rows[("recall", "none")]["users"], "1")
         self.assertAlmostEqual(float(rows[("recall", "none")]["mean"]), 0.5)
         self.assertAlmostEqual(float(rows[("recall", "need_gain")]["difference"]), 0.5)
+        self.assertEqual(rows[("recall", "need_gain")]["users_above"], "1")
 
     def test_a_version_not_yet_judged_still_has_operations_and_cost(self):
         self.write_version("judged", {"u1": 2})
