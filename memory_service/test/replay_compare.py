@@ -30,8 +30,15 @@ With --repeat-at-end it reads the reports of simulate --repeat-at-end instead, a
 the retention and the retrievable share when every question is asked again at the end of
 the story.
 
+With --fractions it compares, within each trace on its own, the prune fractions of the
+replay: the own score, the calibrated ones, the score without utility and the judgment
+gain at every fraction, each set against the trace's fraction user by user. The votes and
+the references are replayed only at the trace's fraction, so they are left out.
+
     python3 memory_service/test/replay_compare.py --halumem PATH --versions A B [C ...]
                                                   [--repeat-at-end]
+    python3 memory_service/test/replay_compare.py --halumem PATH --versions A [B ...]
+                                                  --fractions [--repeat-at-end]
 """
 
 import argparse
@@ -87,6 +94,56 @@ def roles(config: Any) -> Dict[str, str]:
     return named
 
 
+FRACTION_ROWS = ("own score", "own score, calibrated", "own score, calibrated alone",
+                 "score none", "judgment gain", "judgment gain, calibrated",
+                 "judgment gain, calibrated alone")
+
+
+def fractions(config: Any) -> List[float]:
+    """The prune fractions of the replay, the trace's first: the others are set against it."""
+    return [config.prune_fraction] + sorted(
+        set(replay.PRUNE_FRACTIONS) - {config.prune_fraction})
+
+
+def fraction_roles(config: Any, fraction: float) -> Dict[str, str]:
+    """Role -> the score rule that plays it at `fraction`."""
+    named = {"own score": replay.ScoreRule(config, prune_fraction=fraction).name,
+             "own score, calibrated": replay.ScoreRule(config, table=(),
+                                                       prune_fraction=fraction).name,
+             "own score, calibrated alone": replay.ScoreRule(
+                 config, table=(), variant=replay.ALONE, prune_fraction=fraction).name,
+             "score none": replay.ScoreRule(config, consolidation_utility="none",
+                                            prune_fraction=fraction).name}
+    if config.consolidation_utility == "none":
+        named = {"score none": named["score none"]}
+    return named
+
+
+def compare_fractions(name: str, config: Any, found: Dict[str, Tallies],
+                      measures: Sequence[Tuple[str, str, str]]) -> None:
+    """The prune fractions of one trace side by side, user by user."""
+    chosen = fractions(config)
+    labels = [f"prune {fraction:.0%}" for fraction in chosen]
+    users = list(found)
+    print(f"\n{name}: {len(users)} users. The diff columns are each fraction minus the "
+          f"trace's, {chosen[0]:.0%}, user by user, with the 95% interval over the users and "
+          "the users above/below/at zero; shares and gains in percentage points.")
+    for limit in limits(found):
+        for title, part, whole in measures:
+            tables = []
+            for fraction in chosen:
+                table: Dict[str, Dict[str, Optional[float]]] = {}
+                for uuid in users:
+                    for role, value in user_values(found[uuid], fraction_roles(config, fraction),
+                                                   limit, part, whole).items():
+                        table.setdefault(role, {})[uuid] = value
+                tables.append(table)
+            rows = [(role, kpi.SHARE) for role in FRACTION_ROWS
+                    if any(kpi.present(table.get(role, {})) for table in tables)]
+            kpi.print_section(f"{name}, {title} at limit {limit}", len(users), labels,
+                              (rows, tables))
+
+
 def limits(users: Dict[str, Tallies]) -> List[int]:
     return sorted({int(name.rsplit("@", 1)[1]) for tallies in users.values()
                    for name in tallies if "@" in name})
@@ -124,14 +181,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="traces already replayed by eviction_replay.py simulate")
     parser.add_argument("--repeat-at-end", action="store_true", dest="repeat_at_end",
                         help="the reports of simulate --repeat-at-end, with the end measures")
+    parser.add_argument("--fractions", action="store_true",
+                        help="the prune fractions of each trace side by side, instead of the "
+                             "traces")
     arguments = parser.parse_args(argv)
-    if len(arguments.versions) < 2:
-        parser.error("--versions needs two traces or more")
+    if len(arguments.versions) < 2 and not arguments.fractions:
+        parser.error("--versions needs two traces or more, or --fractions")
 
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
     report = replay.REPEAT_REPORT if arguments.repeat_at_end else "report.json"
     loaded = [load_report(root, name, report) for name in arguments.versions]
     measures = MEASURES + (END_MEASURES if arguments.repeat_at_end else ())
+    if arguments.fractions:
+        for name, (config, found) in zip(arguments.versions, loaded):
+            compare_fractions(name, config, found, measures)
+        return 0
     named = [roles(config) for config, _ in loaded]
     for name, rules in zip(arguments.versions, named):
         print(f"{name}: " + "; ".join(f"{role} = {rule}" for role, rule in rules.items()

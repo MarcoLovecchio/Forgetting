@@ -461,8 +461,15 @@ users and the number of users above, below and at zero. The roles are printed wi
 line up: it is the comparison of the models, the sampling or the core limit on what the
 judgment gives the eviction.
 
+With `--fractions` it compares, within each trace on its own, the prune fractions of the
+replay instead: the own score, the calibrated ones, the score without utility and the
+judgment gain at every fraction, each set user by user against the trace's fraction, the
+one the real runs use. The votes and the references are replayed only at the trace's
+fraction, so they are left out. One trace is enough.
+
 ```bash
 python3 memory_service/test/replay_compare.py --halumem PATH --versions trace-ng-4b trace-ng-9b
+python3 memory_service/test/replay_compare.py --halumem PATH --versions trace-ng-4b trace-single-4b --fractions
 ```
 
 **Whether the replay foresaw a real eviction.** A run with a real archive limit prunes as

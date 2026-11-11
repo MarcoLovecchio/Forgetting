@@ -104,5 +104,37 @@ class ReplayCompareTest(unittest.TestCase):
         self.assertIn("+10.0 [+10.0, +10.0]", gain, "both users gain ten points more")
 
 
+class FractionsTest(unittest.TestCase):
+    """The prune fractions of one trace, each against the trace's own."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = folder.name
+
+    def test_the_traces_fraction_comes_first(self):
+        self.assertEqual(rc.fractions(CONFIG), [0.10, 0.05, 0.20])
+        self.assertEqual(rc.fraction_roles(CONFIG, 0.05)["own score"],
+                         "score need_gain weighted_sum 0.05")
+
+    def test_one_trace_is_enough_to_compare_its_fractions(self):
+        def kept(count):
+            return {"needed": 10, "kept": count, "found": count}
+        tallies = {f"score need_gain weighted_sum {fraction}@50": kept(own)
+                   for fraction, own in (("0.05", 8), ("0.10", 7), ("0.20", 5))}
+        tallies.update({f"score none {fraction}@50": kept(5) for fraction in ("0.05", "0.10",
+                                                                              "0.20")})
+        ReplayCompareTest.write(self, "only", {"u1": tallies, "u2": tallies})
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(rc.main(["--halumem", self.root, "--versions", "only",
+                                      "--fractions"]), 0)
+
+        own = next(line for line in output.getvalue().splitlines()
+                   if line.strip().startswith("own score ") and "+" in line)
+        self.assertIn("+10.0 [+10.0, +10.0] 2/0/0", own, "5% keeps one more of ten")
+
+
 if __name__ == "__main__":
     unittest.main()
