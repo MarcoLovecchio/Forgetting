@@ -1615,7 +1615,7 @@ def calibration_table(root: str, paths: Sequence[str],
         return None
     found = []
     for path in paths:
-        same = calibrate_utility.of_model(calibrate_utility.load_ratings(path), model)
+        same = calibrate_utility.series(calibrate_utility.load_ratings(path), mode, model)
         if calibrate_utility.rated_points(same, mode):
             found.append((path, same))
         else:

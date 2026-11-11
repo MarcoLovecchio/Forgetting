@@ -57,8 +57,9 @@ vote is noise that averaging takes away, and how much is in the judgment itself.
 
     python memory_service/test/calibrate_utility.py --halumem PATH [--ratings FILE ...]
 
-uses, of each file, the ratings of the last saved commit and model; with --model, of the
-last commit saved with that model. Several files are several series of the same points:
+uses, of each file and mode, the ratings of the last commit saved for that mode, with the
+model of the last line saved or the one of --model. Several files are several series of
+the same points:
 their pairs go together, so each level's fraction averages the judgments of the series.
 """
 
@@ -130,8 +131,12 @@ def of_model(records: Sequence[Dict[str, Any]], model: Optional[str]) -> List[Di
 
 def series(records: Sequence[Dict[str, Any]], mode: str,
            model: Optional[str] = None) -> List[Dict[str, Any]]:
-    """The sessions of `mode` rated with the last commit saved for it, of `model` if given."""
+    """The sessions of `mode` rated with the last commit saved for it, of `model` if given.
+
+    The lines of calibration_ratings.py --trace, which hold memories, never count.
+    """
     return latest([record for record in records if record.get("mode") == mode
+                   and "trace" not in record
                    and (model is None or record.get("model") == model)])
 
 
@@ -511,7 +516,7 @@ def report(mode: str, pairs: Sequence[Pair], users: int) -> List[str]:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Calibrate the tables on the ratings of the last saved commit and model and print them."""
+    """Calibrate the tables on the ratings of each mode's last commit and print them."""
     parser = argparse.ArgumentParser(description="The utility tables from HaluMem's "
                                                  "calibration users.")
     parser.add_argument("--halumem", required=True, help="the folder of the HaluMem clone")
@@ -524,22 +529,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     loaded = [(path, load_ratings(path)) for path in arguments.ratings]
     model = arguments.model or next((records[-1].get("model")
                                      for _, records in reversed(loaded) if records), None)
-    series_list = []
-    for path, records in loaded:
-        same = of_model(records, model)
-        if not same:
-            print(f"No ratings saved in {path}" + (f" with model {model}" if model else ""))
-            continue
-        print(f"{path}: {len(same)} sessions rated with commit "
-              f"{same[-1].get('commit') or '(unknown)'} and model "
-              f"{same[-1].get('model') or '(unknown)'}, out of {len(records)} saved")
-        series_list.append(same)
-    if not series_list:
+    empty = [path for path, records in loaded if not of_model(records, model)]
+    for path in empty:
+        print(f"No ratings saved in {path}" + (f" with model {model}" if model else ""))
+    if len(empty) == len(loaded):
         return 1
 
     users = adapter.calibration_users(os.path.abspath(os.path.expanduser(arguments.halumem)))
     for mode in MODES:
-        rated_series = [(same, rated) for same in series_list
+        # Each mode has its own last commit: a newer series of one does not hide the other.
+        rated_series = [(path, len(records), same, rated) for path, records in loaded
+                        for same in (series(records, mode, model),)
                         for rated in (rated_points(same, mode),) if rated]
         if not rated_series:
             print(f"\n{mode}: no ratings")
@@ -547,17 +547,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         together = f" {len(rated_series)} series, their pairs together" if len(
             rated_series) > 1 else ""
         print(f"\n{mode}:{together}")
-        for _, rated in rated_series:
+        for path, saved, same, rated in rated_series:
+            print(f"  {path}: {len(same)} sessions rated with commit "
+                  f"{same[-1].get('commit') or '(unknown)'} and model "
+                  f"{same[-1].get('model') or '(unknown)'}, out of {saved} saved")
             print(judged_line(rated, mode))
             print(shares_line(level_shares([judgment for points in rated.values()
                                             for judgment in points.values()], mode), "by point"))
-        pairs = pooled_pairs(users, [same for same, _ in rated_series], mode)
-        present = {uuid for _, rated in rated_series for uuid in rated}
+        chosen = [same for _, _, same, _ in rated_series]
+        pairs = pooled_pairs(users, chosen, mode)
+        present = {uuid for _, _, _, rated in rated_series for uuid in rated}
         for line in report(mode, pairs, sum(1 for user in users if user["uuid"] in present)):
             print(line)
         if len(rated_series) > 1:
             print()
-            for line in consensus_lines(users, [same for same, _ in rated_series], mode):
+            for line in consensus_lines(users, chosen, mode):
                 print(line)
     return 0
 

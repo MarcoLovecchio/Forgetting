@@ -348,21 +348,29 @@ class MainTest(unittest.TestCase):
         records = [self.record("u0", "need_gain", commit="old", model="qwen3.5-9b"),
                    self.record("u0", "need_gain", commit="new", model="qwen3.5-9b"),
                    self.record("u0", "need_gain", commit="other", model="qwen3.5-4b"),
-                   self.record("u0", "single", commit="last", model="qwen3.5-9b")]
+                   self.record("u0", "single", commit="last", model="qwen3.5-9b"),
+                   {**self.record("u0", "need_gain", commit="rerated", model="qwen3.5-9b"),
+                    "trace": "cal-ng-9b"}]
 
         chosen = cu.series(records, "need_gain", "qwen3.5-9b")
 
         self.assertEqual([record["commit"] for record in chosen], ["new"])
 
-    def test_only_the_ratings_of_the_last_commit_and_model_count(self):
-        old = self.record("u0", "single", commit="vecchio")
+    def test_each_mode_keeps_the_ratings_of_its_own_last_commit(self):
+        # A newer single series in the same file must not hide the need_gain one.
+        records = [self.record("u0", "need_gain", commit="old"),
+                   self.record("u1", "need_gain", commit="old"),
+                   self.record("u0", "single", commit="vecchio"),
+                   self.record("u0", "single", commit="new"),
+                   self.record("u1", "single", commit="new")]
 
-        code, output = self.run_main([old, self.record("u0", "need_gain"),
-                                      self.record("u1", "need_gain")])
+        code, output = self.run_main(records)
 
         self.assertEqual(code, 0)
-        self.assertIn("single: no ratings", output)
         self.assertIn("NEED_GAIN_TABLE = (", output)
+        self.assertIn("UTILITY_TABLE = (", output)
+        self.assertIn("2 sessions rated with commit new", output)
+        self.assertNotIn("commit vecchio", output)
 
     def test_without_ratings_there_is_nothing_to_calibrate(self):
         code, _ = self.run_main([])
