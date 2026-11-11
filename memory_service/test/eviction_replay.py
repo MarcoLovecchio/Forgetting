@@ -53,16 +53,19 @@ The rules, each once: two that would choose the same are one.
                     is weighted_sum
     calibrated      the trace's utility with a calibrated table in place of the
                     provisional one, for weighted_sum and product (expected_gain reads no
-                    table): with --calibration-trace, from the ratings in context of
-                    those traces together, of the same mode, model and sampling and with
-                    no user of this trace; otherwise from the --ratings series of the
-                    trace's model, their pairs together
+                    table). "calibrated" with --calibration-trace: the table from the
+                    ratings in context of those traces together, of the same mode, model
+                    and sampling and with no user of this trace. "calibrated-alone" with
+                    --ratings: the table from the series of the trace's model rated
+                    without context, their pairs together. With both options both tables
+                    are replayed side by side; with neither, calibrated-alone from the
+                    default series
     votes           with --rerated, the series of calibration_ratings.py --trace of this
                     trace: the trace's utility with the term of one vote without context
                     (the first series) and of the mean vote of all of them, every
                     combination at the trace's prune fraction; a memory the series did
                     not rate keeps the trace's rating, and safety is always the trace's
-    references      FIFO, LRU, LFU, utility alone, with the calibrated table too unless it
+    references      FIFO, LRU, LFU, utility alone, with each calibrated table too unless it
                     ranks the levels as the provisional one, random (RANDOM_SEEDS), with
                     the trace's prune fraction; the oracle, which knows the questions to
                     come and removes first what no question will need, then what is
@@ -82,15 +85,25 @@ The indicators, summed over the users:
     victims         who leaves: the share written in the session of the prune, the mean
                     age in sessions, by age, and by rating level of the trace, each with
                     how often a later question needed it
+    old             the retention of the needed memories written two sessions or more
+                    before their question, where recency no longer keeps them, with its
+                    of oracle: the primary measure of whether the judgment helps
     rating AUC      how often a memory a later session needs has a higher utility term
                     (need x gain, or utility) than one no later session needs, on the
                     trace alone: a question of the same session is kept by recency
                     anyway, as in calibrate_utility.py; user by user and averaged, with
-                    the calibrated table too
+                    each calibrated table too
 
 Before the rules, simulate checks the replay against the trace: with no limit its core
 split must archive what the trace archived, and its search must find what the
 questions found.
+
+With --repeat-at-end every labelled question is also asked again at the end of the
+user's story, on the needed memories the trace still holds then with no limit (an update
+or a deletion of the trace takes a memory out). The rules choose as before, since the
+questions still search when they came, but the oracle also keeps for the end. The end
+tallies say how much of what the questions needed each rule still holds years later,
+where recency protects nothing. The report goes to REPEAT_REPORT, beside the usual one.
 
 The trace must keep count_candidate_search off, as halumem_adapter.py does: the
 candidate searches of consolidation are not in the log, so their counts could not be
@@ -103,8 +116,9 @@ replayed.
                                                    --ratings FILE
     python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version NAME
                                                    [--calibration-trace CAL ...]
-                                                   [--rerated FILE ...]
                                                    [--ratings FILE ...]
+                                                   [--rerated FILE ...]
+                                                   [--repeat-at-end]
 
 Everything lands in PATH/eval/results/memory_service-NAME/replay/.
 """
@@ -159,15 +173,19 @@ EVIDENCE_CANDIDATES = 10
 RANK_BUCKETS = ((0, 0, "core"), (1, 20, "1-20"), (21, 30, "21-30"), (31, 40, "31-40"),
                 (41, None, ">40"))
 AGE_BUCKETS = ((0, 0, "0"), (1, 1, "1"), (2, 5, "2-5"), (6, 20, "6-20"), (21, None, ">20"))
+OLD_AGE = 2  # sessions between writing and question: the primary measure counts these
 BOOTSTRAP_SAMPLES = 1000
 EMBED_BATCH = 64
 FOLDER = "replay"
 CALIBRATION_FILE = "calibration.json"
-RULE_WIDTH = 47
+REPEAT_REPORT = "report-repeat-at-end.json"
+RULE_WIDTH = 54
 RATING_FIELDS = ("safety", "utility", "need", "gain")
 LEVEL_KEY = "victims level "
 LEVEL_ORDER = ("low", "2/2", "3", "high", "unrated")
 CONTEXT_ID = re.compile(r"ID: (\w+),")
+CALIBRATED = "calibrated"  # the table from the ratings in context
+ALONE = "calibrated-alone"  # the table from the series rated without context
 
 
 def text_key(text: str) -> str:
@@ -259,7 +277,8 @@ class Rule:
 class ScoreRule(Rule):
     """The service's own choice, with the trace's configuration changed by `changes`.
 
-    With a `table`, the calibrated rule: it takes the place of the utility table.
+    With a `table`, a calibrated rule: it takes the place of the utility table, and
+    `variant` names where the table came from.
     """
 
     def __init__(self, config: MemoryConfig, table: Optional[Sequence] = None,
@@ -272,7 +291,7 @@ class ScoreRule(Rule):
         # The name says what the score does: equal names, equal choices.
         if utility == "single" and combination == "expected_gain":
             combination = "weighted_sum"
-        kind = [variant] if variant else (["calibrated"] if table is not None else [])
+        kind = [variant] if variant else ([CALIBRATED] if table is not None else [])
         parts = ["score", utility] + kind + ([] if utility == "none" else [combination])
         self.name = " ".join(parts + [f"{self.config.prune_fraction:.2f}"])
 
@@ -328,9 +347,10 @@ def utility_rule(name: str, fraction: float, mode: str, table: Optional[Sequence
                    (utility_value(ratings_of(item), mode, table), item.updated_at), fraction)
 
 
-def reference_rules(fraction: float, mode: str, table: Optional[Sequence] = None) -> List[Rule]:
+def reference_rules(fraction: float, mode: str,
+                    tables: Optional[Dict[str, Sequence]] = None) -> List[Rule]:
     """FIFO, LRU, LFU, utility alone with the trace's ratings, the oracle; utility alone with
-    the calibrated table too, unless it ranks the levels as the provisional one."""
+    each calibrated table too, unless it ranks the levels as the provisional one."""
     rules = [
         KeyRule("fifo", lambda replay, item, now: replay.created[item.id], fraction),
         KeyRule("lru", lambda replay, item, now: item.updated_at, fraction),
@@ -338,8 +358,9 @@ def reference_rules(fraction: float, mode: str, table: Optional[Sequence] = None
     ]
     if mode != "none":
         rules.append(utility_rule("utility", fraction, mode, None))
-        if table is not None and not same_order(mode, table):
-            rules.append(utility_rule("utility calibrated", fraction, mode, table))
+        for kind, table in (tables or {}).items():
+            if not same_order(mode, table):
+                rules.append(utility_rule(f"utility {kind}", fraction, mode, table))
     rules.append(KeyRule("oracle", oracle_key, fraction))
     return rules
 
@@ -349,9 +370,11 @@ def random_rule(seed: int, fraction: float) -> Rule:
     return KeyRule("random", lambda replay, item, now: generator.random(), fraction)
 
 
-def score_rules(config: MemoryConfig, table: Optional[Sequence] = None) -> List[Rule]:
-    """Utility none or the trace's, every combination and fraction, the trace's too; with a
-    calibrated table, the trace's utility with it for the combinations that read it.
+def score_rules(config: MemoryConfig,
+                tables: Optional[Dict[str, Sequence]] = None) -> List[Rule]:
+    """Utility none or the trace's, every combination and fraction, the trace's too; with
+    calibrated tables, by the name of their origin, the trace's utility with each for the
+    combinations that read it.
 
     A rule that chooses as another is left out: with none the three combinations are the
     same mean, and with single expected_gain is weighted_sum.
@@ -362,10 +385,11 @@ def score_rules(config: MemoryConfig, table: Optional[Sequence] = None) -> List[
     rules = [ScoreRule(config, consolidation_utility=utility, eviction_combination=combination,
                        prune_fraction=fraction)
              for utility in utilities for combination in combinations for fraction in fractions]
-    if table is not None and config.consolidation_utility != "none":
+    if config.consolidation_utility != "none":
         # expected_gain reads NEED_TABLE and GAIN_TABLE: calibrated, it would be the same.
-        rules += [ScoreRule(config, table, eviction_combination=combination,
+        rules += [ScoreRule(config, table, variant=kind, eviction_combination=combination,
                             prune_fraction=fraction)
+                  for kind, table in (tables or {}).items()
                   for combination in combinations if combination != "expected_gain"
                   for fraction in fractions]
     unique: Dict[str, Rule] = {}
@@ -430,15 +454,19 @@ class Replay:
     """One rule at one limit on one trace.
 
     `rank(question_key, [(id, content)])` orders archived memories by closeness to the
-    question; `needs` maps a question key to the trace ids it needs.
+    question; `needs` maps a question key to the trace ids it needs; `again`, the same for
+    the questions asked again at the end of the story.
     """
 
     def __init__(self, config: MemoryConfig, limit: Optional[int], rule: Optional[Rule],
                  rank: Callable[[str, List[Tuple[str, str]]], List[str]],
                  needs: Optional[Dict[str, List[str]]] = None,
-                 on_question: Optional[Callable[["Replay", Question, List[str]], None]] = None):
+                 on_question: Optional[Callable[["Replay", Question, List[str]], None]] = None,
+                 again: Optional[Dict[str, List[str]]] = None):
         self.config, self.limit, self.rule = config, limit, rule
         self.rank, self.needs, self.on_question = rank, needs or {}, on_question
+        self.again = again or {}
+        self.asked_again: List[Asked] = []
         self.items: Dict[str, CoreMemoryItem] = {}
         self.core: set = set()
         self.archive: set = set()
@@ -460,6 +488,10 @@ class Replay:
         for key, needed in self.needs.items():
             for item_id in needed if key in times else ():
                 self.need_times.setdefault(item_id, []).append(times[key])
+        end = max((event.time for event in events), default=None)
+        for needed in self.again.values():
+            for item_id in needed:
+                self.need_times.setdefault(item_id, []).append(end)
         for moments in self.need_times.values():
             moments.sort()
         for event in events:
@@ -468,6 +500,8 @@ class Replay:
                 self.insert(event)
             else:
                 self.question(event)
+        if self.again:
+            self.repeat()
         return self
 
     def resolve(self, item_id: str) -> str:
@@ -475,7 +509,8 @@ class Replay:
 
     def next_need(self, item_id: str, now: datetime) -> Optional[datetime]:
         moments = self.need_times.get(self.origin.get(item_id, item_id), [])
-        position = bisect.bisect_right(moments, now)
+        # The questions of a session come after its last insert, at the same moment.
+        position = bisect.bisect_left(moments, now)
         return moments[position] if position < len(moments) else None
 
     def _add(self, item_id: str, content: str, time: datetime, ratings: Optional[Dict[str, Any]],
@@ -606,6 +641,19 @@ class Replay:
                                  current in self.core or current in found))
         self.asked.append(asked)
 
+    def repeat(self) -> None:
+        """The questions asked again at the end: what is kept and found, with no counts."""
+        archived = [(item_id, self.items[item_id].content) for item_id in self.archive]
+        for key, needed in self.again.items():
+            found = set(self.rank(key, archived)[:QUESTION_K])
+            asked = Asked(key, "")
+            for item_id in needed:
+                current = self.resolve(item_id)
+                asked.needed.append((self.session - self.born.get(item_id, self.session),
+                                     current in self.items,
+                                     current in self.core or current in found))
+            self.asked_again.append(asked)
+
 
 # --------------------------------------------------------------------------- #
 # The indicators
@@ -626,7 +674,16 @@ def tally(replay: Replay) -> Counter:
         counts["labelled questions"] += 1
         counts["complete questions"] += all(kept for _, kept, _ in asked.needed)
         for age, kept, found in asked.needed:
-            for prefix in ("", f"type {asked.question_type} ", f"age {age_bucket(age)} "):
+            prefixes = ["", f"type {asked.question_type} ", f"age {age_bucket(age)} "]
+            for prefix in prefixes + (["old "] if age >= OLD_AGE else []):
+                counts[prefix + "needed"] += 1
+                counts[prefix + "kept"] += kept
+                counts[prefix + "found"] += found
+    for asked in replay.asked_again:
+        counts["end labelled questions"] += 1
+        counts["end complete questions"] += all(kept for _, kept, _ in asked.needed)
+        for age, kept, found in asked.needed:
+            for prefix in ("end ", f"end age {age_bucket(age)} "):
                 counts[prefix + "needed"] += 1
                 counts[prefix + "kept"] += kept
                 counts[prefix + "found"] += found
@@ -1416,12 +1473,14 @@ def trace_checks(replay: Replay, result: Dict[str, Any]) -> Dict[str, Optional[f
 
 
 def simulate_user(run_dir: str, result: Dict[str, Any], user: Dict[str, Any],
-                  table: Optional[Sequence] = None,
-                  given: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None
-                  ) -> Dict[str, Any]:
+                  tables: Optional[Dict[str, Sequence]] = None,
+                  given: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+                  repeat_at_end: bool = False) -> Dict[str, Any]:
     """Every rule at every limit on one user: the tallies by (rule, limit).
 
-    `given` is, by variant, the terms of the votes without context of this user's memories.
+    `tables` are the calibrated tables by the name of their origin; `given` is, by variant,
+    the terms of the votes without context of this user's memories; with `repeat_at_end`
+    every labelled question is asked again at the end of the story.
     """
     config = trace_config(run_dir)
     uuid = result["uuid"]
@@ -1432,16 +1491,18 @@ def simulate_user(run_dir: str, result: Dict[str, Any], user: Dict[str, Any],
 
     unlimited = Replay(config, None, None, closeness.rank, needs).run(events)
     tallies = {"unlimited": tally(unlimited)}
-    rules = (score_rules(config, table) + given_rules(config, given or {})
-             + reference_rules(config.prune_fraction, config.consolidation_utility, table))
+    again = repeated_needs(needs, unlimited) if repeat_at_end else None
+    rules = (score_rules(config, tables) + given_rules(config, given or {})
+             + reference_rules(config.prune_fraction, config.consolidation_utility, tables))
     for limit in LIMITS:
         for rule in rules:
-            replay = Replay(config, limit, rule, closeness.rank, needs).run(events)
+            replay = Replay(config, limit, rule, closeness.rank, needs,
+                            again=again).run(events)
             tallies[f"{rule.name}@{limit}"] = tally(replay)
         seeds = Counter()
         for seed in range(RANDOM_SEEDS):
             seeds += tally(Replay(config, limit, random_rule(seed, config.prune_fraction),
-                                  closeness.rank, needs).run(events))
+                                  closeness.rank, needs, again=again).run(events))
         tallies[f"random@{limit}"] = Counter({name: value / RANDOM_SEEDS
                                               for name, value in seeds.items()})
     simulated = {"uuid": uuid, "tallies": tallies, "checks": trace_checks(unlimited, result),
@@ -1455,12 +1516,19 @@ def simulate_user(run_dir: str, result: Dict[str, Any], user: Dict[str, Any],
     return simulated
 
 
+def repeated_needs(needs: Dict[str, List[str]], unlimited: Replay) -> Dict[str, List[str]]:
+    """The needs asked again at the end: the memories the trace still holds with no limit."""
+    again = {key: [item_id for item_id in needed if item_id in unlimited.items]
+             for key, needed in needs.items()}
+    return {key: needed for key, needed in again.items() if needed}
+
+
 def percent(value: Optional[float]) -> str:
     return "  -  " if value is None else f"{100 * value:5.1f}"
 
 
 def summarize(users: List[Dict[str, Any]], config: MemoryConfig,
-              table: Optional[Sequence] = None) -> Dict[str, Any]:
+              tables: Optional[Dict[str, Sequence]] = None) -> Dict[str, Any]:
     """The indicators of every (rule, limit) summed over users, with the intervals."""
     names = list(users[0]["tallies"])
     summary = {}
@@ -1471,6 +1539,13 @@ def summarize(users: List[Dict[str, Any]], config: MemoryConfig,
             "retention": ratio(total["kept"], total["needed"]),
             "retention interval": bootstrap_interval(per_user, "kept", "needed"),
             "retrievable": ratio(total["found"], total["needed"]),
+            "old retention": ratio(total["old kept"], total["old needed"]),
+            "old retention interval": bootstrap_interval(per_user, "old kept", "old needed"),
+            "old needed": total["old needed"],
+            "end retention": ratio(total["end kept"], total["end needed"]),
+            "end retention interval": (bootstrap_interval(per_user, "end kept", "end needed")
+                                       if total["end needed"] else None),
+            "end retrievable": ratio(total["end found"], total["end needed"]),
             "complete questions": ratio(total["complete questions"], total["labelled questions"]),
             "updates on removed": ratio(total["updates on removed"], total["updates"]),
             "divergence": ratio(total["updates on removed"] + total["redundants on removed"],
@@ -1498,10 +1573,12 @@ def summarize(users: List[Dict[str, Any]], config: MemoryConfig,
         if "@" not in name:
             continue
         limit = name.split("@")[1]
-        low = summary[f"random@{limit}"]["retention"]
-        high = summary[f"oracle@{limit}"]["retention"]
-        values["of oracle"] = (None if None in (low, high, values["retention"]) or high == low
-                               else (values["retention"] - low) / (high - low))
+        for measure, share in (("retention", "of oracle"), ("old retention", "old of oracle"),
+                               ("end retention", "end of oracle")):
+            low = summary[f"random@{limit}"][measure]
+            high = summary[f"oracle@{limit}"][measure]
+            values[share] = (None if None in (low, high, values[measure]) or high == low
+                             else (values[measure] - low) / (high - low))
         chance = summary[f"random@{limit}"]["prunes needed later"]
         best = summary[f"oracle@{limit}"]["prunes needed later"]
         regret = values["prunes needed later"]
@@ -1522,14 +1599,15 @@ def summarize(users: List[Dict[str, Any]], config: MemoryConfig,
             for index, user in enumerate(users)})
 
     summary["rating AUC"] = rating_auc(None)
-    summary["rating AUC calibrated"] = None if table is None else rating_auc(table)
+    summary["rating AUC by table"] = {kind: rating_auc(table)
+                                      for kind, table in (tables or {}).items()}
     compared = [user["votes compared"] for user in users if "votes compared" in user]
     if compared:
         summary["rating AUC of the votes"] = {
             variant: calibrate_utility.mean_auc({index: auc(votes[variant])
                                                  for index, votes in enumerate(compared)})
             for variant in compared[0]}
-    summary["calibrated table"] = table
+    summary["calibrated tables"] = dict(tables or {})
     summary["needed by level"] = {level: ratio(*levels[level]) for level in levels}
     summary["main rule"] = ScoreRule(config).name
     return summary
@@ -1545,8 +1623,8 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
           f"memories found, {summary['unlimited']['needed']} needed in all")
     main = summary["main rule"]
     header = (f"{'rule':<{RULE_WIDTH}}{'kept':>6}{'95% interval':>16}{'found':>7}"
-              f"{'of oracle':>10}{'diverge':>9}{'prunes':>8}{'later':>7}{'NPS':>7}"
-              f"{'same':>7}")
+              f"{'of oracle':>10}{'old':>6}{'old 95%':>16}{'old orc':>8}{'diverge':>9}"
+              f"{'prunes':>8}{'later':>7}{'NPS':>7}{'same':>7}")
     fraction = main.rsplit(" ", 1)[-1]
     for limit in LIMITS:
         print(f"\nArchive limit {limit}\n{header}")
@@ -1556,14 +1634,19 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
             interval = values["retention interval"]
             shown = "" if interval is None else f"[{percent(interval[0])},{percent(interval[1])}]"
             rule = name.split("@")[0] + (" *" if name.split("@")[0] == main else "")
+            old = values["old retention interval"]
+            old_shown = "" if old is None else f"[{percent(old[0])},{percent(old[1])}]"
             print(f"{rule:<{RULE_WIDTH}}{percent(values['retention']):>6}{shown:>16}"
                   f"{percent(values['retrievable']):>7}{percent(values['of oracle']):>10}"
+                  f"{percent(values['old retention']):>6}{old_shown:>16}"
+                  f"{percent(values['old of oracle']):>8}"
                   f"{percent(values['divergence']):>9}"
                   f"{values['prunes per session'] or 0:>8.1f}"
                   f"{percent(values['prunes needed later']):>7}{percent(values['NPS']):>7}"
                   f"{percent(values['same session']):>7}")
         print_victims([(name.split("@")[0], summary[name]) for name in rows
                        if not name.startswith("score ") or name.split("@")[0].endswith(fraction)])
+        print_end([(name.split("@")[0], summary[name]) for name in rows])
         values = summary[f"{main}@{limit}"]
         print("  * by type: " + ", ".join(f"{name} {percent(value)}"
                                           for name, value in sorted(values["by type"].items())))
@@ -1571,8 +1654,8 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
                                           for name, value in values["by age"].items()))
     print(f"\nRating AUC (utility term, needed by a later session, mean over the users): "
           f"{summary['rating AUC']}")
-    if summary.get("calibrated table") is not None:
-        print(f"Rating AUC with the calibrated table: {summary['rating AUC calibrated']}")
+    for kind, value in summary.get("rating AUC by table", {}).items():
+        print(f"Rating AUC with the {kind} table: {value}")
     if summary.get("rating AUC of the votes"):
         print("Rating AUC on the memories every vote rated: " + ", ".join(
             f"{variant} {value if value is None else round(value, 3)}"
@@ -1586,7 +1669,23 @@ def print_summary(summary: Dict[str, Any], users: List[Dict[str, Any]]) -> None:
           "prunes a later question needed (HPR); NPS: (HPR random - HPR) / (HPR random - HPR "
           "oracle);\nsame: prunes of a memory written in the same session. Victims: share of "
           "the prunes by level of the trace's ratings,\nin brackets how many a later question "
-          "needed. * is the trace's rule.")
+          "needed. * is the trace's rule. calibrated: the table from the ratings in context;\n"
+          "calibrated-alone: the table from the series rated without context. old: the needed "
+          f"memories written {OLD_AGE} sessions or more\nbefore their question, the primary "
+          "measure, with its interval and of oracle.")
+
+
+def print_end(rows: Sequence[Tuple[str, Dict[str, Any]]]) -> None:
+    """With --repeat-at-end: what each rule still holds when every question is asked again."""
+    if all(values.get("end retention") is None for _, values in rows):
+        return
+    print(f"  asked again at the end of the story:{'':<{RULE_WIDTH - 38}}{'kept':>6}"
+          f"{'95% interval':>16}{'found':>7}{'of oracle':>10}")
+    for rule, values in rows:
+        interval = values["end retention interval"]
+        shown = "" if interval is None else f"[{percent(interval[0])},{percent(interval[1])}]"
+        print(f"  {rule:<{RULE_WIDTH - 2}}{percent(values['end retention']):>6}{shown:>16}"
+              f"{percent(values['end retrievable']):>7}{percent(values['end of oracle']):>10}")
 
 
 def print_victims(rows: Sequence[Tuple[str, Dict[str, Any]]]) -> None:
@@ -1621,19 +1720,35 @@ def calibration_table(root: str, paths: Sequence[str],
         else:
             print(f"No {mode} ratings of {model} in {path}")
     if not found:
-        print("No calibrated rules.")
+        print("No calibrated-alone rules.")
         return None
     try:
         table = calibrate_utility.calibrated_table(root, [same for _, same in found], mode)
     except ValueError as error:
-        print(f"No calibrated rules: {error}")
+        print(f"No calibrated-alone rules: {error}")
         return None
-    print(f"Calibrated rules: the {mode} table of {model}, from {len(found)} series together")
+    print(f"Calibrated-alone rules: the {mode} table of {model}, from {len(found)} series "
+          "rated without context, together")
     for path, same in found:
         print(f"  {path}: {len(same)} sessions, commit {same[-1].get('commit') or '(unknown)'}")
     for line in calibrate_utility.literal(calibrate_utility.TABLE_NAMES[mode], table):
         print(f"  {line}")
     return table
+
+
+def simulation_tables(root: str, arguments: argparse.Namespace, manifest: Dict[str, Any],
+                      replayed: set) -> Dict[str, Sequence]:
+    """The calibrated tables of the replay by the name of their origin: CALIBRATED from the
+    ratings in context of --calibration-trace, ALONE from the --ratings series rated without
+    context; without either option, ALONE from the default series."""
+    config = MemoryConfig(**manifest["config"])
+    tables = {}
+    if arguments.calibration_trace:
+        tables[CALIBRATED] = context_table(root, arguments.calibration_trace, manifest, replayed)
+    if arguments.ratings or not arguments.calibration_trace:
+        tables[ALONE] = calibration_table(
+            root, arguments.ratings or [calibrate_utility.DEFAULT_RATINGS], config)
+    return {kind: table for kind, table in tables.items() if table is not None}
 
 
 def simulate(arguments: argparse.Namespace) -> int:
@@ -1653,23 +1768,20 @@ def simulate(arguments: argparse.Namespace) -> int:
     if unlabelled:
         raise SystemExit(f"{len(unlabelled)} users without labels: launch label first.")
     dataset = {user["uuid"]: user for user in adapter.dataset_users(root)}
-    if arguments.calibration_trace:
-        table = context_table(root, arguments.calibration_trace, manifest,
-                              {result["uuid"] for result in results})
-    else:
-        table = calibration_table(root, arguments.ratings, config)
-    given = (rerated_votes(arguments.rerated, arguments.version, config,
+    tables = simulation_tables(root, arguments, manifest, {result["uuid"] for result in results})
+    given =(rerated_votes(arguments.rerated, arguments.version, config,
                            {result["uuid"] for result in results})
              if arguments.rerated and config.consolidation_utility != "none" else {})
     context = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(max_workers=arguments.workers, mp_context=context) as pool:
         users = list(pool.map(simulate_user, [run_dir] * len(results), results,
                               [dataset[result["uuid"]] for result in results],
-                              [table] * len(results),
-                              [given.get(result["uuid"]) for result in results]))
-    summary = summarize(users, config, table)
-    save_json(os.path.join(replay_folder(run_dir), "report.json"),
-              {"summary": summary, "users": users})
+                              [tables] * len(results),
+                              [given.get(result["uuid"]) for result in results],
+                              [arguments.repeat_at_end] * len(results)))
+    summary = summarize(users, config, tables)
+    report = REPEAT_REPORT if arguments.repeat_at_end else "report.json"
+    save_json(os.path.join(replay_folder(run_dir), report), {"summary": summary, "users": users})
     print_summary(summary, users)
     return 0
 
@@ -1700,16 +1812,22 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     compared.set_defaults(step_function=compare)
     replayed = steps.add_parser("simulate", parents=[common], help="every rule, every limit")
     replayed.add_argument("--workers", type=int, default=1, help="users at the same time")
-    replayed.add_argument("--ratings", nargs="+", default=[calibrate_utility.DEFAULT_RATINGS],
-                          help="the calibration series: those of the trace's model, together, "
-                               "give the calibrated rules")
+    replayed.add_argument("--ratings", nargs="+",
+                          help="the calibration series rated without context: those of the "
+                               "trace's model, together, give the calibrated-alone rules; "
+                               "without this option and --calibration-trace, the default "
+                               "series")
     replayed.add_argument("--calibration-trace", nargs="+", type=adapter.version_name,
                           dest="calibration_trace",
-                          help="calibrated traces of the calibration users, in place of "
-                               "--ratings: the table from the ratings given in context")
+                          help="calibrated traces of the calibration users: the table from "
+                               "the ratings given in context, the calibrated rules; with "
+                               "--ratings too, both tables side by side")
     replayed.add_argument("--rerated", nargs="+",
                           help="series of calibration_ratings.py --trace of this trace: the "
                                "rules with one vote without context and with their mean")
+    replayed.add_argument("--repeat-at-end", action="store_true", dest="repeat_at_end",
+                          help="ask every labelled question again at the end of the story; "
+                               "the report goes to " + REPEAT_REPORT)
     replayed.set_defaults(step_function=simulate)
     return parser.parse_args(argv)
 

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from unittest import mock
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
@@ -257,6 +258,14 @@ class IndicatorsTest(unittest.TestCase):
         self.assertEqual(counts["type Basic Fact Recall kept"], 1)
         self.assertEqual(counts["age 1 needed"], 1)
         self.assertEqual(counts["sessions"], 2)
+        self.assertEqual(counts["old needed"], 0, "one session back is not old")
+
+    def test_a_memory_two_sessions_old_counts_among_the_old(self):
+        events = [Insert(0, at(0), [create("a", 0)]), asked("2:0", 9, session=2)]
+
+        counts = replay_tool.tally(replayed(events, needs={"2:0": ["a"]}))
+
+        self.assertEqual((counts["old needed"], counts["old kept"]), (1, 1))
 
     def test_auc(self):
         self.assertEqual(replay_tool.auc([(1, False), (2, True)]), 1.0)
@@ -306,7 +315,8 @@ class RulesTest(unittest.TestCase):
 
     def test_single_has_no_expected_gain_beside_its_weighted_sum(self):
         config = dataclasses.replace(CONFIG, consolidation_utility="single")
-        rules = [rule for rule in replay_tool.score_rules(config, (0.2, 0.4, 0.6, 0.8, 1.0))
+        rules = [rule for rule in replay_tool.score_rules(
+                     config, {replay_tool.CALIBRATED: (0.2, 0.4, 0.6, 0.8, 1.0)})
                  if rule.config.consolidation_utility == "single"]
 
         self.assertEqual({rule.config.eviction_combination for rule in rules},
@@ -322,7 +332,8 @@ class RulesTest(unittest.TestCase):
         self.assertIn(ScoreRule(config).name, names)
 
     def test_the_calibrated_rules_are_the_combinations_that_read_the_table(self):
-        calibrated = [rule for rule in replay_tool.score_rules(CONFIG, self.TABLE)
+        calibrated = [rule for rule in replay_tool.score_rules(
+                          CONFIG, {replay_tool.CALIBRATED: self.TABLE})
                       if rule.table is not None]
 
         self.assertEqual({rule.config.eviction_combination for rule in calibrated},
@@ -331,6 +342,17 @@ class RulesTest(unittest.TestCase):
                          {"need_gain"})
         self.assertIn("score need_gain calibrated weighted_sum 0.10",
                       [rule.name for rule in calibrated])
+
+    def test_the_tables_in_context_and_without_have_rules_of_their_own(self):
+        tables = {replay_tool.CALIBRATED: self.TABLE, replay_tool.ALONE: self.TABLE[::-1]}
+
+        names = [rule.name for rule in replay_tool.score_rules(CONFIG, tables)]
+        references = [rule.name for rule in replay_tool.reference_rules(0.10, "need_gain",
+                                                                        tables)]
+
+        self.assertIn("score need_gain calibrated weighted_sum 0.10", names)
+        self.assertIn("score need_gain calibrated-alone weighted_sum 0.10", names)
+        self.assertIn("utility calibrated-alone", references)
 
     def test_a_calibrated_rule_prunes_by_its_table(self):
         events = [Insert(0, at(0), [create("a", 0, need=1, gain=3),
@@ -356,9 +378,9 @@ class RulesTest(unittest.TestCase):
 
     def test_a_table_in_the_same_order_adds_no_utility_alone(self):
         increasing = [rule.name for rule in replay_tool.reference_rules(
-            0.10, "single", (0.0001, 0.15, 0.33, 0.59, 1.0))]
+            0.10, "single", {replay_tool.CALIBRATED: (0.0001, 0.15, 0.33, 0.59, 1.0)})]
         tied = [rule.name for rule in replay_tool.reference_rules(
-            0.10, "single", (0.1, 0.1, 0.33, 0.59, 1.0))]
+            0.10, "single", {replay_tool.CALIBRATED: (0.1, 0.1, 0.33, 0.59, 1.0)})]
 
         self.assertNotIn("utility calibrated", increasing)
         self.assertIn("utility calibrated", tied)
@@ -372,6 +394,52 @@ class RulesTest(unittest.TestCase):
                                          "ratings": {}}) + "\n")
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertIsNone(replay_tool.calibration_table(folder, [path], CONFIG))
+
+
+class RepeatAtEndTest(unittest.TestCase):
+    """Every question asked again at the end of the story, on what the trace still holds."""
+
+    EVENTS = [Insert(0, at(0), [create("a", 0)]), asked("0:0", 0),
+              Insert(1, at(10), [create("b", 10)]), Insert(2, at(20), [create("c", 20)])]
+
+    def run_rule(self, rule):
+        return Replay(CONFIG, 1, rule, by_content, {"0:0": ["a"]},
+                      again={"0:0": ["a"]}).run(self.EVENTS)
+
+    def test_a_rule_that_dropped_the_memory_misses_it_at_the_end(self):
+        replay = self.run_rule(fifo())
+
+        self.assertEqual(replay.asked_again[0].needed, [(2, False, False)])
+        counts = replay_tool.tally(replay)
+        self.assertEqual((counts["end needed"], counts["end kept"]), (1, 0))
+
+    def test_the_oracle_keeps_for_the_end_too(self):
+        replay = self.run_rule(oracle())
+
+        self.assertEqual(replay.asked_again[0].needed, [(2, True, True)])
+
+    def test_the_end_asks_the_same_questions_without_counting_a_search(self):
+        needs = {"0:0": ["a"]}
+        plain = Replay(CONFIG, None, None, by_content, needs).run(self.EVENTS)
+        again = Replay(CONFIG, None, None, by_content, needs, again=needs).run(self.EVENTS)
+
+        self.assertEqual(again.items["a"].n_search, plain.items["a"].n_search,
+                         "the end looks, it does not search")
+
+    def test_a_question_at_the_moment_of_the_last_insert_comes_after_it(self):
+        events = [Insert(0, at(0), [create("a", 0)]), Insert(0, at(1), [create("b", 1)]),
+                  asked("0:0", 1)]
+
+        replay = replayed(events, limit=1, rule=oracle(), needs={"0:0": ["a"]})
+
+        self.assertEqual(replay.asked[0].needed, [(0, True, True)])
+
+    def test_a_memory_the_trace_updated_is_not_asked_again(self):
+        events = [Insert(0, at(0), [create("a", 0)]), asked("0:0", 0),
+                  Insert(1, at(10), [operation("update", "a2", 10, related="a")])]
+        unlimited = replayed(events, needs={"0:0": ["a"]})
+
+        self.assertEqual(replay_tool.repeated_needs({"0:0": ["a"]}, unlimited), {})
 
 
 class VictimsTest(unittest.TestCase):
@@ -419,6 +487,17 @@ class SummaryTest(unittest.TestCase):
 
     def test_nps_is_one_for_the_oracle_and_zero_for_random(self):
         self.assertAlmostEqual(self.summary({})["NPS"], (0.5 - 0.3) / (0.5 - 0.1))
+
+    def test_the_old_memories_have_their_own_share_of_the_oracle(self):
+        def counts(old_kept):
+            return {"needed": 10, "kept": 5, "old needed": 4, "old kept": old_kept}
+        tallies = {"unlimited": {"needed": 10}, "random@25": counts(1),
+                   "oracle@25": counts(4), "lru@25": counts(2)}
+
+        values = replay_tool.summarize([{"tallies": tallies, "rated": []}], CONFIG)["lru@25"]
+
+        self.assertAlmostEqual(values["old retention"], 0.5)
+        self.assertAlmostEqual(values["old of oracle"], (0.5 - 0.25) / (1.0 - 0.25))
 
     def test_the_victims_by_session_and_level(self):
         values = self.summary({"victims age 0": 4, "victims age sum": 12,
@@ -707,6 +786,27 @@ class CalibrateTest(unittest.TestCase):
 
         with self.assertRaises(SystemExit):
             arguments.step_function(arguments)
+
+    def tables_of(self, *options):
+        arguments = replay_tool.parse_arguments(["simulate", "--halumem", self.root,
+                                                 "--version", "trace", *options])
+        manifest = {"config": dataclasses.asdict(CONFIG)}
+        with mock.patch.object(replay_tool, "context_table", return_value="in context"),                 mock.patch.object(replay_tool, "calibration_table",
+                                  return_value="without context") as alone:
+            return replay_tool.simulation_tables(self.root, arguments, manifest, {"e1"}), alone
+
+    def test_simulate_replays_the_table_in_context_beside_the_one_without(self):
+        tables, alone = self.tables_of("--calibration-trace", "cal", "--ratings", "one.jsonl")
+
+        self.assertEqual(tables, {replay_tool.CALIBRATED: "in context",
+                                  replay_tool.ALONE: "without context"})
+        self.assertEqual(alone.call_args.args[1], ["one.jsonl"])
+
+    def test_the_calibration_trace_alone_gives_only_the_table_in_context(self):
+        tables, alone = self.tables_of("--calibration-trace", "cal")
+
+        self.assertEqual(tables, {replay_tool.CALIBRATED: "in context"})
+        alone.assert_not_called()
 
     def test_a_calibration_on_the_users_replayed_stops_the_replay(self):
         self.trace("cal", ["u1", "u2"], "calibration", {"u1": "a", "u2": "a"})

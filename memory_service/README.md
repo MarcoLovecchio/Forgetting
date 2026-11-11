@@ -322,11 +322,13 @@ utility `none` or the trace's, the three combinations, three prune fractions and
 trace's frequency function, it replays the calibrated rules: the trace's utility with a
 calibrated table in place of the provisional one, for `weighted_sum` and `product`, since
 `expected_gain` reads no table. With `--calibration-trace` the table comes from the
-ratings given in context (below); otherwise from the context-free series of the trace's
-model, their pairs together (`--ratings` with one file or more, the calibration file by
-default). Without a calibration of that model and mode they are left out, and `simulate`
-says so. As references it replays FIFO, LRU, LFU,
-utility alone, with the calibrated table too, random and an oracle that knows the
+ratings given in context (below), and the rules are named `calibrated`; with `--ratings`
+(one file or more) from the context-free series of the trace's model, their pairs
+together, and the rules are named `calibrated-alone`. With both options both tables are
+replayed side by side, so a single report compares them; with neither, `calibrated-alone`
+comes from the calibration file. Without a calibration of that model and mode a table is
+left out, and `simulate` says so. As references it replays FIFO, LRU, LFU,
+utility alone, with each calibrated table too, random and an oracle that knows the
 questions to come, at the limits 25, 50, 100, 150 and 200. Two rules that would choose
 the same are replayed once: with `none` the combination does not count, with `single`
 `expected_gain` is `weighted_sum`, and utility alone with a calibrated table that ranks
@@ -343,22 +345,33 @@ about, its evidence is not. It prints where the needed memories were in the ques
 ranking: many beyond the 40th would mean the question alone misses them. `simulate`
 replays and prints, for every rule and limit,
 the share of needed memories still kept and still found, where it lies between random and
-the oracle, by question type and by age, the divergence and the prunes, with how many a
+the oracle, by question type and by age, the same share and place for the needed memories
+written two sessions or more before their question (`old`, the primary measure of whether
+the judgment helps: in HaluMem most questions ask about their own session, which recency
+keeps anyway), the divergence and the prunes, with how many a
 later question needed (HPR) and the NPS, (HPR of random − HPR) / (HPR of random − HPR of
 the oracle). For the rules at the trace's prune fraction it prints who leaves: the share
 of prunes on memories written in the same session, their mean age in sessions, and the
 share by rating level of the trace, each with how many a later question needed. And the AUC of
 the utility term (need × gain, or utility in `single`) against being needed by a later
-session, with the calibrated table too. Before the rules it checks the replay
+session, with each calibrated table too. Before the rules it checks the replay
 with no limit against the trace: the split must archive the same memories at the same
 insert, the search must find what the questions found. Everything lands in the run's
 `replay/` folder, and `label` and `embed` skip what they already did.
+
+With `--repeat-at-end` every labelled question is also asked again at the end of the
+user's story, on the needed memories the trace still holds then with no limit. The rules
+choose as before, since the questions still search when they came, but the oracle also
+keeps for the end; a second table per limit says how much each rule still holds and finds
+years after the question, where recency protects nothing. The report goes to
+`replay/report-repeat-at-end.json`, beside the usual one.
 
 ```bash
 python3 memory_service/test/halumem_adapter.py run --halumem PATH --version trace --archive-limit 100000
 python3 memory_service/test/eviction_replay.py embed --halumem PATH --version trace
 python3 memory_service/test/eviction_replay.py label --halumem PATH --version trace
 python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --ratings A.jsonl B.jsonl C.jsonl
+python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --ratings A.jsonl B.jsonl C.jsonl --repeat-at-end
 ```
 
 **Calibration in context.** The series of `calibration_ratings.py` judge each session's
@@ -410,6 +423,9 @@ python3 memory_service/test/calibration_ratings.py --halumem PATH --utility need
 python3 memory_service/test/eviction_replay.py compare --halumem PATH --version trace --ratings R1.jsonl R2.jsonl R3.jsonl
 python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --rerated R1.jsonl R2.jsonl R3.jsonl
 python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --calibration-trace cal
+
+# both tables, in context and without, and the votes, in one report
+python3 memory_service/test/eviction_replay.py simulate --halumem PATH --version trace --workers 4 --calibration-trace cal --ratings A.jsonl B.jsonl C.jsonl --rerated R1.jsonl R2.jsonl R3.jsonl
 ```
 
 **What a limit costs the robot.** After `simulate`, `test/resource_frontier.py` reads the
@@ -418,7 +434,8 @@ bytes and the search milliseconds of one more memory, with the empty folder and 
 of a vector alone. It then gives every limit of the replay in MB and ms and prints the
 retention and of oracle of every rule at every limit. A point is on the frontier when no
 rule keeps more with an archive no larger; the oracle is shown but is never on it. The
-same table, one row per rule and limit, with the NPS and the share of prunes in the
+same table, one row per rule and limit, with the retention of the old memories and its
+of oracle, the NPS and the share of prunes in the
 same session, goes to `replay/frontier.csv` for the plots.
 
 ```bash
@@ -430,12 +447,15 @@ replays are compared user by user rather than pooled. `test/replay_compare.py` r
 `replay/report.json` of each trace. At every limit they share it prints the retention and
 the retrievable share, user by user, of the rules each trace plays in the same role:
 - its own score;
-- the same with the calibrated table, with one vote without context and with the mean
-  vote, when its replay had them;
+- the same with the table calibrated in context, with the one calibrated without
+  context, with one vote without context and with the mean vote, when its replay had them;
 - the score without utility;
 - LRU, random and the oracle.
 
-It also prints the gain of the judgment, the own score minus the score without utility.
+It prints the same for the needed memories two sessions old or more, and the gain of the
+judgment, the own score minus the score without utility. With `--repeat-at-end` it reads
+the reports of `simulate --repeat-at-end` and adds what each rule holds when every question
+is asked again at the end.
 Each version after the first is set against it with the 95% bootstrap interval over the
 users. The roles are printed with the rule each stands for, so traces of different modes
 line up: it is the comparison of the models, the sampling or the core limit on what the

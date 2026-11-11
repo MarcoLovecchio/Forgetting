@@ -196,9 +196,9 @@ def answer_question(agent: MemoryAgent, question: Dict[str, Any], name: str) -> 
     agent.up_to_date = False
     asked = neutral(question["question"], name)
     searched = SEARCH_STATS["seconds"]
-    started = time.time()
+    started = time.perf_counter()
     state = with_retries(lambda: agent.run_memory_agent("retrieve", query=asked))
-    elapsed = (time.time() - started) * 1000
+    elapsed = (time.perf_counter() - started) * 1000
     answer = str(state["messages"][-1].content).strip()
     agent.state["messages"] = []
 

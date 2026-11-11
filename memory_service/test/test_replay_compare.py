@@ -36,9 +36,11 @@ OWN, NONE = "score need_gain weighted_sum 0.10", "score none 0.10"
 
 
 def tallies(own, none, limit=50):
-    """Out of 10 needed memories, how many each rule kept; found is half of it."""
+    """Out of 10 needed memories, how many each rule kept; found is half of it, and of the
+    4 old ones each rule kept one less than its share."""
     kept = {OWN: own, NONE: none, "lru": 4, "random": 3, "oracle": 9}
-    return {f"{rule}@{limit}": {"needed": 10, "kept": count, "found": count / 2}
+    return {f"{rule}@{limit}": {"needed": 10, "kept": count, "found": count / 2,
+                                "old needed": 4, "old kept": min(count, 5) - 1}
             for rule, count in kept.items()}
 
 
@@ -65,6 +67,8 @@ class ReplayCompareTest(unittest.TestCase):
                           named["own score, mean vote"], named["score none"]),
                          (OWN, "score need_gain calibrated weighted_sum 0.10",
                           "score need_gain mean-vote weighted_sum 0.10", NONE))
+        self.assertEqual(named["own score, calibrated alone"],
+                         "score need_gain calibrated-alone weighted_sum 0.10")
         self.assertNotIn("own score", rc.roles(dataclasses.replace(
             CONFIG, consolidation_utility="none")))
 
@@ -74,6 +78,13 @@ class ReplayCompareTest(unittest.TestCase):
         self.assertAlmostEqual(found["judgment gain"], 0.2)
         self.assertIsNone(found["own score, calibrated"], "the replay had no calibrated table")
         self.assertNotIn("judgment gain, calibrated", found)
+
+    def test_the_old_memories_are_measured_on_their_own_count(self):
+        found = rc.user_values(tallies(own=7, none=3), rc.roles(CONFIG), 50, "old kept",
+                               "old needed")
+
+        self.assertAlmostEqual(found["own score"], 4 / 4)
+        self.assertAlmostEqual(found["judgment gain"], (4 - 2) / 4)
 
     def test_two_traces_are_compared_on_the_users_both_hold(self):
         self.write("small", {"u1": tallies(6, 5), "u2": tallies(8, 6)})

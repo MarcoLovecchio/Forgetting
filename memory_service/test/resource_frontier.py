@@ -165,8 +165,8 @@ def write_csv(path: str, rules: Sequence[str], limits: Sequence[int],
     with open(path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["rule", "limit", "megabytes", "search_ms", "retention",
-                         "retention_low", "retention_high", "of_oracle", "retrievable",
-                         "nps", "same_session", "frontier"])
+                         "retention_low", "retention_high", "of_oracle", "old_retention",
+                         "old_of_oracle", "retrievable", "nps", "same_session", "frontier"])
         for rule in rules:
             for limit in limits:
                 value = values.get((rule, limit))
@@ -178,6 +178,7 @@ def write_csv(path: str, rules: Sequence[str], limits: Sequence[int],
                     "" if space is None else round(space.at(limit) / MEBIBYTE, 4),
                     "" if search is None else round(search.at(limit), 2),
                     value.get("retention"), interval[0], interval[1], value.get("of oracle"),
+                    value.get("old retention"), value.get("old of oracle"),
                     value.get("retrievable"), value.get("NPS"), value.get("same session"),
                     int((rule, limit) in on)])
 
