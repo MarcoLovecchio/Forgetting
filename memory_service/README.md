@@ -688,8 +688,11 @@ python3 memory_service/test/load_probe.py --halumem PATH --levels 1 15 --csv loa
 ```
 
   `--part judge` probes HaluMem's judge instead, with the model and settings of
-  `eval/.env` but without its retries, on the results of a finished run (`--version`).
-  It has two tables:
+  `eval/.env` but without retries (neither `llms.py`'s nor the OpenAI client's), on the
+  results of a finished run (`--version`). A call that fails, times out or replies
+  without the JSON block that `llms.py` reads counts as failed, and every call is printed
+  as it ends, with its seconds and output tokens. It has two tables, which
+  `--part evaluate` and `--part label` send one at a time:
   - evaluate: the requests of `halumem_adapter.py evaluate`, its four kinds in the share
     it sends them;
   - label: those of `eviction_replay.py label`, one per question with evidence, on the

@@ -186,20 +186,30 @@ RUN = [{"user_name": "Mario Rossi", "sessions": [
      "extracted_memories": []}]}]
 
 
+def reply(content, tokens, finish="stop"):
+    return SimpleNamespace(usage=SimpleNamespace(completion_tokens=tokens), choices=[
+        SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish)])
+
+
 class FakeLlms:
-    """eval/llms.py: a client that answers 42 tokens and keeps what it was sent."""
+    """eval/llms.py: a client that answers 42 tokens with a JSON block, and keeps what it
+    was sent and the retries it was given."""
 
     MODEL = "qwen3.8-27b"
     common_params = {"temperature": 0.0}
 
-    def __init__(self):
-        self.sent = []
-        self.client = SimpleNamespace(chat=SimpleNamespace(
-            completions=SimpleNamespace(create=self.create)))
+    def __init__(self, content='```json\n{"score": "2"}\n```'):
+        self.sent, self.retries, self.content = [], [], content
+        self.client = SimpleNamespace(with_options=self.with_options)
+
+    def with_options(self, max_retries):
+        self.retries.append(max_retries)
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+            create=self.create)))
 
     def create(self, **request):
         self.sent.append(request)
-        return SimpleNamespace(usage=SimpleNamespace(completion_tokens=42))
+        return reply(self.content, 42, "stop" if "json" in self.content else "length")
 
 
 class JudgeRequestsTest(unittest.TestCase):
@@ -246,6 +256,26 @@ class JudgeRequestsTest(unittest.TestCase):
         self.assertEqual(found["tokens per call"], 42)
         self.assertEqual({(request["model"], request["temperature"]) for request in llms.sent},
                          {("qwen3.8-27b", 0.0)})
+        self.assertEqual(llms.retries, [0, 0], "not even the client's own retries")
+
+    def test_a_reply_without_the_json_block_is_a_failed_call(self):
+        found = probe.probe_level(probe.Judge(FakeLlms("Let me think about the memories")),
+                                  ["a"], level=1)
+
+        self.assertEqual(found["calls"], 0)
+        self.assertIn("no JSON block after 42 tokens, finish reason length", found["errors"][0])
+
+    def test_with_progress_every_call_is_printed_as_it_ends(self):
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed):
+            probe.probe_level(CountingModel(fail_every=2), ["a"] * 4, level=2, progress=True)
+
+        lines = printed.getvalue().splitlines()
+        self.assertEqual([line.split(" after ")[0].strip() for line in lines],
+                         ["1/4", "2/4", "3/4", "4/4"])
+        self.assertEqual(sum("40 tokens" in line for line in lines), 2)
+        self.assertEqual(sum("TimeoutError" in line for line in lines), 2)
 
 
 FAKE_LLMS = '''
@@ -253,8 +283,11 @@ from types import SimpleNamespace
 MODEL = "qwen3.8-27b"
 common_params = {}
 def create(**request):
-    return SimpleNamespace(usage=SimpleNamespace(completion_tokens=7))
-client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    return SimpleNamespace(usage=SimpleNamespace(completion_tokens=7), choices=[SimpleNamespace(
+        message=SimpleNamespace(content='```json {"needed": [1]} ```'), finish_reason="stop")])
+def with_options(max_retries):
+    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+client = SimpleNamespace(with_options=with_options)
 '''
 FAKE_TOOLS = "".join(f'EVALUATION_PROMPT_FOR_{name} = "{name} {{{field}}}"\n' for name, field in (
     ("MEMORY_INTEGRITY", "memories"), ("MEMORY_ACCURACY", "dialogue"),
@@ -305,6 +338,16 @@ class JudgePartTest(unittest.TestCase):
                           ("label", "1", "1"), ("label", "2", "2")])
         self.assertEqual({(row["model"], row["tokens per call"]) for row in rows},
                          {("qwen3.8-27b", "7.0")})
+
+    def test_label_alone(self):
+        printed = io.StringIO()
+
+        with contextlib.redirect_stdout(printed):
+            probe.main(["--halumem", self.root, "--part", "label", "--version", "trace-ng-4b",
+                        "--levels", "1", "--judge-rounds", "1"])
+
+        self.assertIn("\nLabel\n", printed.getvalue())
+        self.assertNotIn("\nEvaluate\n", printed.getvalue())
 
     def test_judge_needs_a_run(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

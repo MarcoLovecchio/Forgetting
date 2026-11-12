@@ -13,7 +13,9 @@ rounds requests, never more than level at a time.
                    them as the memories recalled, and the last two messages of the session
 
 With --part judge it sends instead the calls of HaluMem's judge, with the settings of
-eval/.env and without its retries, on the results of a finished run (--version):
+eval/.env and without retries, on the results of a finished run (--version); --part
+evaluate or label sends one of the two. A call that fails, times out or whose reply has
+no JSON block counts as failed, and every call is printed as it ends:
 
     evaluate       the requests of halumem_adapter.py evaluate, its four kinds in the
                    share it sends them: one per memory point (integrity, or update), one
@@ -38,8 +40,9 @@ of what is already running there.
                                               [--answer-rounds 10]
                                               [--part consolidation|answer|both]
                                               [--csv FILE]
-    python3 memory_service/test/load_probe.py --halumem PATH --part judge --version RUN
-                                              [--levels 1 8 15] [--judge-rounds 4]
+    python3 memory_service/test/load_probe.py --halumem PATH --part judge|evaluate|label
+                                              --version RUN [--levels 1 8 15]
+                                              [--judge-rounds 4]
                                               [--csv FILE]
 
 --csv also writes one row per part and level, with the time the probe started: the
@@ -51,8 +54,10 @@ import csv
 import dataclasses
 import math
 import os
+import re
 import statistics
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -217,20 +222,29 @@ def spread(found: List[Any], count: int, empty: str) -> List[Any]:
     return [found[index * len(found) // count] for index in range(count)]
 
 
+# The block llms.llm_request_for_json reads: a reply without it is a failed call.
+JSON_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+
+
 class Judge:
     """HaluMem's judge as evaluate and label call it, with the settings of eval/.env, but
-    without its retries: a call that fails is counted as failed, not sent again."""
+    without retries, neither llms.py's nor the client's own: a call that fails, or whose
+    reply has no JSON block, is counted as failed, not sent again."""
 
     def __init__(self, llms: Any):
         self.llms = llms
 
     def invoke(self, prompt: str) -> Any:
-        response = self.llms.client.chat.completions.create(
+        response = self.llms.client.with_options(max_retries=0).chat.completions.create(
             model=self.llms.MODEL, messages=[{"role": "user", "content": prompt}],
             **self.llms.common_params)
         usage = getattr(response, "usage", None)
-        return SimpleNamespace(usage_metadata={
-            "output_tokens": getattr(usage, "completion_tokens", 0) or 0})
+        tokens = getattr(usage, "completion_tokens", 0) or 0
+        choice = response.choices[0]
+        if not JSON_BLOCK.search(choice.message.content or ""):
+            raise ValueError(f"no JSON block after {tokens} tokens, finish reason "
+                             f"{choice.finish_reason}")
+        return SimpleNamespace(usage_metadata={"output_tokens": tokens})
 
 
 def percentile(values: Sequence[float], share: float) -> float:
@@ -250,17 +264,31 @@ def level_stats(seconds: Sequence[float], outputs: Sequence[int], wall: float
     }
 
 
-def probe_level(llm: Any, prompts: Sequence[str], level: int) -> Dict[str, Any]:
-    """Every prompt sent, `level` at a time: the stats of the calls that answered."""
+def probe_level(llm: Any, prompts: Sequence[str], level: int, progress: bool = False
+                ) -> Dict[str, Any]:
+    """Every prompt sent, `level` at a time: the stats of the calls that answered.
+
+    With `progress` every call is printed as it ends.
+    """
+    lock = threading.Lock()
+    ended = []
 
     def call(prompt: str):
         started = time.perf_counter()
         try:
             response = llm.invoke(prompt)
         except Exception as error:
-            return None, f"{type(error).__name__}: {error}"
-        usage = getattr(response, "usage_metadata", None) or {}
-        return time.perf_counter() - started, int(usage.get("output_tokens", 0))
+            outcome = None, f"{type(error).__name__}: {error}"
+        else:
+            usage = getattr(response, "usage_metadata", None) or {}
+            outcome = time.perf_counter() - started, int(usage.get("output_tokens", 0))
+        if progress:
+            with lock:
+                ended.append(outcome)
+                what = f"{outcome[1]} tokens" if outcome[0] is not None else outcome[1][:160]
+                print(f"  {len(ended)}/{len(prompts)} after "
+                      f"{time.perf_counter() - started:.0f} s: {what}", flush=True)
+        return outcome
 
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=level) as pool:
@@ -276,14 +304,14 @@ def probe_level(llm: Any, prompts: Sequence[str], level: int) -> Dict[str, Any]:
     return found
 
 
-def probe_levels(llm: Any, requests: Sequence[Any], levels: Sequence[int], rounds: int
-                 ) -> List[Dict[str, Any]]:
+def probe_levels(llm: Any, requests: Sequence[Any], levels: Sequence[int], rounds: int,
+                 progress: bool = False) -> List[Dict[str, Any]]:
     """Every level in turn, each on requests of its own."""
     found, offset = [], 0
     for level in levels:
         count = level * rounds
         print(f"Level {level}: {count} requests...", flush=True)
-        found.append(probe_level(llm, requests[offset:offset + count], level))
+        found.append(probe_level(llm, requests[offset:offset + count], level, progress))
         offset += count
     return found
 
@@ -361,6 +389,7 @@ def service_parts(root: str, arguments: argparse.Namespace) -> Tuple[str, Parts]
         parts.append(("Consolidation", probe_levels(
             backends.get_llm("consolidation"), dialogue_prompts(users, arguments.words, needed),
             arguments.levels, arguments.rounds)))
+        print_levels(*parts[-1])
     if arguments.part in ("answer", "both"):
         needed = sum(level * arguments.answer_rounds for level in arguments.levels)
         print(f"Model {model}, answer settings, {needed} questions.")
@@ -368,11 +397,15 @@ def service_parts(root: str, arguments: argparse.Namespace) -> Tuple[str, Parts]
             ANSWER_PROMPT | backends.get_llm("generate_answer"),
             answer_inputs(users, needed, DATES_NOTE), arguments.levels,
             arguments.answer_rounds)))
+        print_levels(*parts[-1])
     return model, parts
 
 
+JUDGE_PARTS = ("judge", "evaluate", "label")
+
+
 def judge_parts(root: str, arguments: argparse.Namespace) -> Tuple[str, Parts]:
-    """The judge's calls, evaluate's and label's, on the results of a finished run."""
+    """The judge's calls, evaluate's, label's or both, on the results of a finished run."""
     results = os.path.join(adapter.run_folder(arguments), f"{adapter.FRAME}_eval_results.jsonl")
     if not os.path.exists(results):
         raise SystemExit(f"No results in {os.path.dirname(results)}: launch "
@@ -391,14 +424,19 @@ def judge_parts(root: str, arguments: argparse.Namespace) -> Tuple[str, Parts]:
     levels, rounds = arguments.levels, arguments.judge_rounds
     needed = sum(level * rounds for level in levels)
     print(f"Judge {llms.MODEL} (eval/.env), {needed} requests per part, on the results of "
-          f"{arguments.version}.")
-    evaluate = [templates[kind].format(**fields) for kind, fields in
-                spread(evaluate_requests(users), needed, "No evaluation request in the run")]
-    label = [replay.judge_prompt(question, [(None, memory, 0) for memory in memories], name)
-             for question, memories, name in
-             spread(label_requests(users), needed, "No question with evidence in the run")]
-    parts: Parts = [("Evaluate", probe_levels(judge, evaluate, levels, rounds)),
-                    ("Label", probe_levels(judge, label, levels, rounds))]
+          f"{arguments.version}. Every call is printed as it ends.")
+    parts: Parts = []
+    if arguments.part in ("judge", "evaluate"):
+        evaluate = [templates[kind].format(**fields) for kind, fields in
+                    spread(evaluate_requests(users), needed, "No evaluation request in the run")]
+        parts.append(("Evaluate", probe_levels(judge, evaluate, levels, rounds, True)))
+        print_levels(*parts[-1])
+    if arguments.part in ("judge", "label"):
+        label = [replay.judge_prompt(question, [(None, memory, 0) for memory in memories], name)
+                 for question, memories, name in
+                 spread(label_requests(users), needed, "No question with evidence in the run")]
+        parts.append(("Label", probe_levels(judge, label, levels, rounds, True)))
+        print_levels(*parts[-1])
     return llms.MODEL, parts
 
 
@@ -416,11 +454,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--answer-rounds", type=int, default=10, dest="answer_rounds",
                         help="answer requests per level, as a multiple of the level: they are "
                              "short, so more of them")
-    parser.add_argument("--part", choices=("consolidation", "answer", "both", "judge"),
+    parser.add_argument("--part", choices=("consolidation", "answer", "both") + JUDGE_PARTS,
                         default="both",
-                        help="which calls to send: the service model's, or HaluMem's judge's")
+                        help="which calls to send: the service model's, or HaluMem's judge's "
+                             "(judge: evaluate and label)")
     parser.add_argument("--version", type=adapter.version_name,
-                        help="with --part judge, the finished run the requests are built on")
+                        help="with the judge's parts, the finished run the requests are built on")
     parser.add_argument("--judge-rounds", type=int, default=4, dest="judge_rounds",
                         help="judge requests per level and part, as a multiple of the level")
     parser.add_argument("--csv", help="also write every level, part by part, to this file")
@@ -428,19 +467,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if min(arguments.levels) < 1 or min(arguments.rounds, arguments.answer_rounds,
                                         arguments.judge_rounds) < 1:
         parser.error("--levels and the rounds must be at least 1")
-    if arguments.part == "judge" and not arguments.version:
-        parser.error("--part judge needs --version, a finished run")
+    if arguments.part in JUDGE_PARTS and not arguments.version:
+        parser.error(f"--part {arguments.part} needs --version, a finished run")
 
     root = os.path.abspath(os.path.expanduser(arguments.halumem))
-    # The judge's part changes folder.
+    # The judge's parts change folder.
     path = os.path.abspath(arguments.csv) if arguments.csv else None
     started = datetime.now().isoformat(timespec="seconds")
-    if arguments.part == "judge":
+    if arguments.part in JUDGE_PARTS:
         model, parts = judge_parts(root, arguments)
     else:
         model, parts = service_parts(root, arguments)
-    for title, levels in parts:
-        print_levels(title, levels)
     print("\nA level is worth it while 'all vs first' grows with it; when it stops, the "
           "calls added only queue and 's vs first' grows instead.")
     if path:
