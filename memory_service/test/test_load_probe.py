@@ -3,11 +3,18 @@
 Run: python memory_service/run_tests.py -v
 """
 
+import contextlib
+import csv
+import io
+import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
+from collections import Counter
+from types import SimpleNamespace
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
@@ -147,6 +154,161 @@ class LoadProbeTest(unittest.TestCase):
         self.assertEqual((found["median s"], found["p90 s"]), (2.0, 4.0))
         self.assertAlmostEqual(found["tokens/s per call"], 10.0)
         self.assertAlmostEqual(found["tokens/s in all"], 14.0)
+
+
+def said(role, content):
+    return {"role": role, "content": content, "timestamp": "Sep 04, 2025, 09:00:00"}
+
+
+def golden(text, source="primary", **fields):
+    return {"memory_content": text, "is_update": "False", "memory_source": source,
+            "original_memories": [], **fields}
+
+
+RUN = [{"user_name": "Mario Rossi", "sessions": [
+    {"dialogue": [said("user", "Vivo a Palermo e ora lavoro a Catania"),
+                  said("assistant", "Bello")],
+     "memory_points": [
+         golden("Mario vive a Palermo"),
+         golden("Mario lavora a Catania", is_update="True",
+                memories_from_system=["Mario lavora a Catania"],
+                original_memories=["Mario lavora a Messina"]),
+         golden("Mario ama il blu", source="interference")],
+     "extracted_memories": ["Mario vive a Palermo", "Mario lavora a Catania"],
+     "questions": [
+         {"question": "Dove vive Mario?", "answer": "A Palermo",
+          "evidence": [{"memory_content": "Mario vive a Palermo"}], "system_response": "A Palermo"},
+         {"question": "Come si chiama il gatto?", "answer": "Non si sa", "evidence": [],
+          "system_response": "Non lo so"}]},
+    {"is_generated_qa_session": True, "dialogue": [], "memory_points": [golden("Domanda")],
+     "extracted_memories": ["Domanda"]},
+    {"dialogue": [said("user", "Ciao")], "memory_points": [golden("Mario saluta")],
+     "extracted_memories": []}]}]
+
+
+class FakeLlms:
+    """eval/llms.py: a client that answers 42 tokens and keeps what it was sent."""
+
+    MODEL = "qwen3.8-27b"
+    common_params = {"temperature": 0.0}
+
+    def __init__(self):
+        self.sent = []
+        self.client = SimpleNamespace(chat=SimpleNamespace(
+            completions=SimpleNamespace(create=self.create)))
+
+    def create(self, **request):
+        self.sent.append(request)
+        return SimpleNamespace(usage=SimpleNamespace(completion_tokens=42))
+
+
+class JudgeRequestsTest(unittest.TestCase):
+    def test_evaluate_sends_one_call_per_point_written_memory_and_question(self):
+        found = probe.evaluate_requests(RUN)
+
+        self.assertEqual(Counter(kind for kind, _ in found),
+                         {"integrity": 2, "update": 1, "accuracy": 2, "question": 2})
+        accuracy = next(fields for kind, fields in found if kind == "accuracy")
+        self.assertEqual(accuracy["golden_memories"],
+                         "Mario vive a Palermo\nMario lavora a Catania", "interference left out")
+
+    def test_the_dialogue_as_halumem_writes_it(self):
+        self.assertEqual(probe.evaluation_dialogue(RUN[0]["sessions"][0]["dialogue"]),
+                         "[Sep 04, 2025, 09:00:00]user: Vivo a Palermo e ora lavoro a Catania\n"
+                         "[Sep 04, 2025, 09:00:00]assistant: Bello\n")
+
+    def test_label_asks_the_questions_with_evidence_on_the_latest_memories(self):
+        written = [f"Mario ha un ricordo numero {number:02d}" for number in range(60)]
+        run = [{"user_name": "Mario Rossi", "sessions": [
+            dict(RUN[0]["sessions"][0], extracted_memories=written[:30]),
+            {"extracted_memories": written[30:], "questions": RUN[0]["sessions"][0]["questions"]}]}]
+
+        found = probe.label_requests(run)
+
+        self.assertEqual([question["question"] for question, _, _ in found],
+                         ["Dove vive Mario?", "Dove vive Mario?"])
+        self.assertEqual(found[0][1], written[:30])
+        self.assertEqual(len(found[1][1]), probe.LABEL_SHOWN)
+        self.assertEqual(found[1][1][-1], written[-1])
+        self.assertEqual(found[1][2], "Mario Rossi")
+
+    def test_spread_keeps_the_shares_and_reuses_a_short_list(self):
+        self.assertEqual(probe.spread(list(range(10)), 5, "empty"), [0, 2, 4, 6, 8])
+        self.assertEqual(probe.spread([1, 2], 3, "empty"), [1, 2, 1])
+        with self.assertRaises(ValueError):
+            probe.spread([], 3, "empty")
+
+    def test_the_judge_has_the_settings_of_eval_env(self):
+        llms = FakeLlms()
+
+        found = probe.probe_level(probe.Judge(llms), ["a", "b"], level=2)
+
+        self.assertEqual(found["tokens per call"], 42)
+        self.assertEqual({(request["model"], request["temperature"]) for request in llms.sent},
+                         {("qwen3.8-27b", 0.0)})
+
+
+FAKE_LLMS = '''
+from types import SimpleNamespace
+MODEL = "qwen3.8-27b"
+common_params = {}
+def create(**request):
+    return SimpleNamespace(usage=SimpleNamespace(completion_tokens=7))
+client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+'''
+FAKE_TOOLS = "".join(f'EVALUATION_PROMPT_FOR_{name} = "{name} {{{field}}}"\n' for name, field in (
+    ("MEMORY_INTEGRITY", "memories"), ("MEMORY_ACCURACY", "dialogue"),
+    ("UPDATE_MEMORY", "memories"), ("QUESTION", "question")))
+
+
+class JudgePartTest(unittest.TestCase):
+    """--part judge on a finished run, with eval/ of HaluMem replaced by fakes."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = folder.name
+        os.makedirs(os.path.join(self.root, "eval"))
+        for name, text in (("llms.py", FAKE_LLMS), ("eval_tools.py", FAKE_TOOLS)):
+            with open(os.path.join(self.root, "eval", name), "w", encoding="utf-8") as handle:
+                handle.write(text)
+        run_dir = os.path.join(self.root, "eval", "results", "memory_service-trace-ng-4b")
+        os.makedirs(run_dir)
+        with open(os.path.join(run_dir, "memory_service_eval_results.jsonl"), "w",
+                  encoding="utf-8") as handle:
+            handle.write(json.dumps(RUN[0]) + "\n")
+        self.addCleanup(os.chdir, os.getcwd())
+        self.addCleanup(self.forget_eval)
+        self.forget_eval()
+
+    def forget_eval(self):
+        eval_dir = os.path.join(self.root, "eval")
+        while eval_dir in sys.path:
+            sys.path.remove(eval_dir)
+        for name in ("llms", "eval_tools"):
+            sys.modules.pop(name, None)
+
+    def test_evaluate_and_label_at_every_level_and_the_csv_where_it_was_asked(self):
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        os.chdir(target.name)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(probe.main(["--halumem", self.root, "--part", "judge", "--version",
+                                         "trace-ng-4b", "--levels", "1", "2", "--judge-rounds",
+                                         "1", "--csv", "probe.csv"]), 0)
+
+        with open(os.path.join(target.name, "probe.csv"), encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual([(row["part"], row["level"], row["calls"]) for row in rows],
+                         [("evaluate", "1", "1"), ("evaluate", "2", "2"),
+                          ("label", "1", "1"), ("label", "2", "2")])
+        self.assertEqual({(row["model"], row["tokens per call"]) for row in rows},
+                         {("qwen3.8-27b", "7.0")})
+
+    def test_judge_needs_a_run(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            probe.main(["--halumem", self.root, "--part", "judge"])
 
 
 if __name__ == "__main__":

@@ -687,6 +687,21 @@ A few things worth knowing, checked against the sources:
 python3 memory_service/test/load_probe.py --halumem PATH --levels 1 15 --csv load_probe.csv
 ```
 
+  `--part judge` probes HaluMem's judge instead, with the model and settings of
+  `eval/.env` but without its retries, on the results of a finished run (`--version`).
+  It has two tables:
+  - evaluate: the requests of `halumem_adapter.py evaluate`, its four kinds in the share
+    it sends them;
+  - label: those of `eviction_replay.py label`, one per question with evidence, on the
+    last 50 memories written before it.
+
+  `--judge-workers` of evaluate and label is worth raising while the throughput of these
+  tables still grows.
+
+```bash
+python3 memory_service/test/load_probe.py --halumem PATH --part judge --version trace-ng-4b --levels 1 8 15 --csv load_probe_27b.csv
+```
+
 ## The core memory limit
 
 The limit in characters is **imposed by the code**, with no model call. When the core
