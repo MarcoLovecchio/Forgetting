@@ -15,6 +15,7 @@ import time
 import unittest
 from collections import Counter
 from types import SimpleNamespace
+from unittest import mock
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for path in (PACKAGE_ROOT, os.path.dirname(os.path.abspath(__file__))):
@@ -282,7 +283,9 @@ FAKE_LLMS = '''
 from types import SimpleNamespace
 MODEL = "qwen3.8-27b"
 common_params = {}
+sent = []
 def create(**request):
+    sent.append(request)
     return SimpleNamespace(usage=SimpleNamespace(completion_tokens=7), choices=[SimpleNamespace(
         message=SimpleNamespace(content='```json {"needed": [1]} ```'), finish_reason="stop")])
 def with_options(max_retries):
@@ -338,6 +341,16 @@ class JudgePartTest(unittest.TestCase):
                           ("label", "1", "1"), ("label", "2", "2")])
         self.assertEqual({(row["model"], row["tokens per call"]) for row in rows},
                          {("qwen3.8-27b", "7.0")})
+
+    def test_the_thinking_switch_of_eval_env_reaches_every_request(self):
+        with mock.patch.dict(os.environ, {"OPENAI_ENABLE_THINKING": "false"}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            probe.main(["--halumem", self.root, "--part", "evaluate", "--version",
+                        "trace-ng-4b", "--levels", "1", "--judge-rounds", "2"])
+
+        sent = sys.modules["llms"].sent
+        self.assertEqual([request["extra_body"] for request in sent],
+                         [{"chat_template_kwargs": {"enable_thinking": False}}] * 2)
 
     def test_label_alone(self):
         printed = io.StringIO()

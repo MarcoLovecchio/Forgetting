@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from unittest import mock
 
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -461,6 +462,96 @@ class RunTest(unittest.TestCase):
         self.assertFalse(os.path.exists(adapter.result_path(self.run_dir, "uuid-1")))
         with open(os.path.join(self.run_dir, "tmp", "uuid-1_error.log"), encoding="utf-8") as log:
             self.assertIn("ConnectionError", log.read())
+
+
+def fake_llms(**params):
+    return SimpleNamespace(MODEL="qwen3.8-27b", common_params=dict(params))
+
+
+class JudgeThinkingTest(unittest.TestCase):
+    """OPENAI_ENABLE_THINKING of eval/.env reaches every request of HaluMem's judge."""
+
+    def test_false_and_true_go_to_the_chat_template(self):
+        for raw, enabled in (("false", False), (" True ", True)):
+            with self.subTest(raw=raw), mock.patch.dict(os.environ, {adapter.THINKING: raw}):
+                llms = fake_llms(temperature=0.0)
+
+                line = adapter.judge_thinking(llms)
+
+                self.assertEqual(llms.common_params, {"temperature": 0.0, "extra_body": {
+                    "chat_template_kwargs": {"enable_thinking": enabled}}})
+                self.assertIn("thinking on" if enabled else "thinking off", line)
+
+    def test_unset_leaves_the_server_default(self):
+        with mock.patch.dict(os.environ, {adapter.THINKING: ""}):
+            llms = fake_llms(temperature=0.0)
+
+            self.assertIn("server's default", adapter.judge_thinking(llms))
+            self.assertEqual(llms.common_params, {"temperature": 0.0})
+
+    def test_any_other_value_stops(self):
+        with mock.patch.dict(os.environ, {adapter.THINKING: "no"}), \
+                self.assertRaises(SystemExit):
+            adapter.judge_thinking(fake_llms())
+
+
+FAKE_EVAL_LLMS = '''
+MODEL = "qwen3.8-27b"
+common_params = {}
+'''
+FAKE_EVALUATION = '''
+import llms
+seen = []
+def main(frame, version, user_num, max_workers):
+    seen.append(dict(llms.common_params))
+'''
+
+
+class EvaluateThinkingTest(unittest.TestCase):
+    """evaluate with the switch, on a fake eval/ of HaluMem."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = folder.name
+        self.eval_dir = os.path.join(self.root, "eval")
+        run_dir = os.path.join(self.eval_dir, "results", f"{adapter.FRAME}-pilot")
+        os.makedirs(run_dir)
+        for name, text in (("llms.py", FAKE_EVAL_LLMS), ("evaluation.py", FAKE_EVALUATION)):
+            with open(os.path.join(self.eval_dir, name), "w", encoding="utf-8") as handle:
+                handle.write(text)
+        with open(os.path.join(run_dir, f"{adapter.FRAME}_eval_results.jsonl"), "w",
+                  encoding="utf-8") as handle:
+            handle.write(json.dumps({"uuid": "u1", "sessions": []}) + "\n")
+        self.addCleanup(os.chdir, os.getcwd())
+        self.addCleanup(self.forget_eval)
+        self.forget_eval()
+
+    def forget_eval(self):
+        while self.eval_dir in sys.path:
+            sys.path.remove(self.eval_dir)
+        for name in ("llms", "evaluation"):
+            sys.modules.pop(name, None)
+
+    def evaluate(self, method):
+        arguments = adapter.parse_arguments(["evaluate", "--halumem", self.root,
+                                             "--version", "pilot"])
+        with mock.patch.dict(os.environ, {adapter.THINKING: "false"}), \
+                mock.patch.object(adapter.multiprocessing, "get_start_method",
+                                  return_value=method), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return adapter.evaluate(arguments)
+
+    def test_forked_workers_judge_without_thinking(self):
+        self.assertEqual(self.evaluate("fork"), 0)
+
+        self.assertEqual(sys.modules["evaluation"].seen, [{"extra_body": {
+            "chat_template_kwargs": {"enable_thinking": False}}}])
+
+    def test_workers_started_otherwise_would_not_see_the_switch(self):
+        with self.assertRaises(SystemExit):
+            self.evaluate("spawn")
+        self.assertNotIn("evaluation", sys.modules, "nothing judged")
 
 
 if __name__ == "__main__":

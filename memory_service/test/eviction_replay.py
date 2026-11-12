@@ -1048,6 +1048,7 @@ def label(arguments: argparse.Namespace) -> int:
     os.chdir(eval_dir)
     sys.path.insert(0, eval_dir)
     import llms
+    print(adapter.judge_thinking(llms), flush=True)
 
     everyone: List[Dict[str, Any]] = []
     for result in results:

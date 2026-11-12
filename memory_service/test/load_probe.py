@@ -13,7 +13,8 @@ rounds requests, never more than level at a time.
                    them as the memories recalled, and the last two messages of the session
 
 With --part judge it sends instead the calls of HaluMem's judge, with the settings of
-eval/.env and without retries, on the results of a finished run (--version); --part
+eval/.env (OPENAI_ENABLE_THINKING included, see halumem_adapter.judge_thinking) and
+without retries, on the results of a finished run (--version); --part
 evaluate or label sends one of the two. A call that fails, times out or whose reply has
 no JSON block counts as failed, and every call is printed as it ends:
 
@@ -423,8 +424,8 @@ def judge_parts(root: str, arguments: argparse.Namespace) -> Tuple[str, Parts]:
     templates = evaluate_templates(eval_tools)
     levels, rounds = arguments.levels, arguments.judge_rounds
     needed = sum(level * rounds for level in levels)
-    print(f"Judge {llms.MODEL} (eval/.env), {needed} requests per part, on the results of "
-          f"{arguments.version}. Every call is printed as it ends.")
+    print(f"{adapter.judge_thinking(llms)} (eval/.env), {needed} requests per part, on the "
+          f"results of {arguments.version}. Every call is printed as it ends.")
     parts: Parts = []
     if arguments.part in ("judge", "evaluate"):
         evaluate = [templates[kind].format(**fields) for kind, fields in

@@ -219,6 +219,23 @@ empty in the user's cached result and is never asked again: the (all) scores and
 count it as wrong. At the end `evaluate` prints these judgments user by user; deleting
 the user's `tmp2/<uuid>.json` and launching `evaluate` again judges that user again.
 
+The experiments judge without thinking, at temperature 0, as GPT-4o judges in the
+published evaluation: HaluMem's prompts already ask for the reasoning inside the reply.
+Qwen3.8 thinks by default and `llms.py` cannot turn it off, so every step that calls the
+judge (`evaluate`, `label`, the follow-up exchanges and their verdicts, the load probe)
+reads `OPENAI_ENABLE_THINKING` in `eval/.env` and passes it to the chat template of every
+request. Each step prints the judge and its mode first. Unset, the server's default
+stays; `evaluate` stops if HaluMem's workers would not be forked, since only forked
+workers see the switch.
+
+```
+OPENAI_MODEL=qwen3.8-27b
+OPENAI_TEMPERATURE=0.0
+OPENAI_MAX_TOKENS=16384
+OPENAI_TIMEOUT=300
+OPENAI_ENABLE_THINKING=false
+```
+
 ```bash
 # a pilot on one user
 python3 memory_service/test/halumem_adapter.py run --halumem PATH --version pilot --users 1

@@ -158,11 +158,14 @@ def trace_questions(result: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
 
 
 def halumem_module(arguments: argparse.Namespace, name: str) -> Any:
-    """A module of HaluMem's eval/, from its folder: it reads eval/.env from there."""
+    """A module of HaluMem's eval/, from its folder: it reads eval/.env from there. Each of
+    them loads llms.py, which gets the judge's thinking switch."""
     eval_dir = os.path.join(os.path.abspath(os.path.expanduser(arguments.halumem)), "eval")
     os.chdir(eval_dir)
     sys.path.insert(0, eval_dir)
-    return importlib.import_module(name)
+    module = importlib.import_module(name)
+    print(adapter.judge_thinking(sys.modules["llms"]), flush=True)
+    return module
 
 
 def error_text(error: Exception) -> Dict[str, str]:

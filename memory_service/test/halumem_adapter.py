@@ -16,6 +16,12 @@ calibration users.
                cluster and an archive on disk for each user; it never calls the judge
     evaluate   runs HaluMem's evaluation.py on the result, with the judge of eval/.env,
                then prints, user by user, the judgments it could not use
+
+Every step that calls HaluMem's judge (evaluate here, label of eviction_replay.py, the
+follow-up exchanges and their verdicts, the load probe) reads OPENAI_ENABLE_THINKING in
+eval/.env, true or false: llms.py cannot turn thinking off, so judge_thinking passes it to
+the chat template of every request. The experiments set it to false, as GPT-4o judges in
+the published evaluation; unset, the server's default stays.
     clean      deletes the archives of a run, which evaluate does not need; with --all
                the whole run, to launch it again from scratch
 
@@ -576,6 +582,25 @@ def clean(arguments: argparse.Namespace) -> int:
     return 0
 
 
+THINKING = "OPENAI_ENABLE_THINKING"
+
+
+def judge_thinking(llms: Any) -> str:
+    """OPENAI_ENABLE_THINKING of eval/.env on HaluMem's judge, as a line to print.
+
+    llms.py passes its common_params to every request, so the switch goes there.
+    """
+    raw = (os.getenv(THINKING) or "").strip().lower()
+    if not raw:
+        return f"Judge {llms.MODEL}, thinking as the server's default ({THINKING} unset)"
+    if raw not in ("true", "false"):
+        raise SystemExit(f"{THINKING} in eval/.env must be true or false, not {raw!r}")
+    enabled = raw == "true"
+    llms.common_params.setdefault("extra_body", {})["chat_template_kwargs"] = {
+        "enable_thinking": enabled}
+    return f"Judge {llms.MODEL}, thinking {'on' if enabled else 'off'}"
+
+
 def evaluate(arguments: argparse.Namespace) -> int:
     """HaluMem's evaluation, from its own folder: that is where it finds .env and results."""
     run_dir = run_folder(arguments)
@@ -587,6 +612,13 @@ def evaluate(arguments: argparse.Namespace) -> int:
     eval_dir = os.path.dirname(os.path.dirname(run_dir))
     os.chdir(eval_dir)
     sys.path.insert(0, eval_dir)
+    import llms
+    print(judge_thinking(llms), flush=True)
+    if os.getenv(THINKING) and multiprocessing.get_start_method() != "fork":
+        # Started otherwise, its workers would import llms.py again, without the switch.
+        raise SystemExit(f"HaluMem's evaluation would start its workers with "
+                         f"{multiprocessing.get_start_method()!r}, not fork: they would not "
+                         f"see {THINKING}.")
     import evaluation
 
     evaluation.main(FRAME, arguments.version, user_num=users,
