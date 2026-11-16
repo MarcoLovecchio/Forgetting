@@ -496,36 +496,111 @@ class JudgeThinkingTest(unittest.TestCase):
 
 
 FAKE_EVAL_LLMS = '''
+from types import SimpleNamespace
 MODEL = "qwen3.8-27b"
 common_params = {}
+up = [True]
+def served():
+    if not up[0]:
+        raise ConnectionError("Connection error.")
+    return [SimpleNamespace(id=MODEL)]
+client = SimpleNamespace(with_options=lambda **options: SimpleNamespace(
+    models=SimpleNamespace(list=served)))
 '''
+# A user says how many of its ten judgments come back empty, and whether the judge goes
+# away while it is judged.
 FAKE_EVALUATION = '''
+import json
 import llms
-seen = []
-def main(frame, version, user_num, max_workers):
+judged, seen, totals = [], [], []
+def iter_jsonl(path):
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+def process_user(index, user, workers):
+    judged.append(user["uuid"])
     seen.append(dict(llms.common_params))
+    if user.get("away"):
+        llms.up[0] = False
+    return {"question_answering_records": [
+        {"result_type": None if number < user.get("empty", 0) else "Correct"}
+        for number in range(10)]}
+def main(frame, version, user_num, max_workers):
+    totals.append(user_num)
 '''
 
 
-class EvaluateThinkingTest(unittest.TestCase):
-    """evaluate with the switch, on a fake eval/ of HaluMem."""
+class EvaluateTest(unittest.TestCase):
+    """evaluate on a fake eval/ of HaluMem: the thinking switch, and the users it saves."""
 
     def setUp(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = folder.name
         self.eval_dir = os.path.join(self.root, "eval")
-        run_dir = os.path.join(self.eval_dir, "results", f"{adapter.FRAME}-pilot")
-        os.makedirs(run_dir)
+        self.run_dir = os.path.join(self.eval_dir, "results", f"{adapter.FRAME}-pilot")
+        os.makedirs(self.run_dir)
         for name, text in (("llms.py", FAKE_EVAL_LLMS), ("evaluation.py", FAKE_EVALUATION)):
             with open(os.path.join(self.eval_dir, name), "w", encoding="utf-8") as handle:
                 handle.write(text)
-        with open(os.path.join(run_dir, f"{adapter.FRAME}_eval_results.jsonl"), "w",
-                  encoding="utf-8") as handle:
-            handle.write(json.dumps({"uuid": "u1", "sessions": []}) + "\n")
+        self.users([{"uuid": "u1"}])
         self.addCleanup(os.chdir, os.getcwd())
         self.addCleanup(self.forget_eval)
         self.forget_eval()
+
+    def users(self, users):
+        with open(os.path.join(self.run_dir, f"{adapter.FRAME}_eval_results.jsonl"), "w",
+                  encoding="utf-8") as handle:
+            handle.writelines(json.dumps({"sessions": [], **user}) + "\n" for user in users)
+
+    def saved(self, folder="tmp2"):
+        path = os.path.join(self.run_dir, folder)
+        return sorted(name[:-len(".json")] for name in os.listdir(path)) \
+            if os.path.isdir(path) else []
+
+    def cache(self, uuid, empty):
+        os.makedirs(os.path.join(self.run_dir, "tmp2"), exist_ok=True)
+        with open(os.path.join(self.run_dir, "tmp2", f"{uuid}.json"), "w",
+                  encoding="utf-8") as handle:
+            json.dump({"question_answering_records": [
+                {"result_type": None if number < empty else "Correct"}
+                for number in range(10)]}, handle)
+
+    def test_a_user_mostly_empty_is_not_saved_and_stops_the_rest(self):
+        self.users([{"uuid": "u1", "empty": 1}, {"uuid": "u2", "empty": 8}, {"uuid": "u3"}])
+
+        with self.assertRaises(SystemExit):
+            self.evaluate("fork")
+
+        self.assertEqual(self.saved(), ["u1"])
+        self.assertEqual(sys.modules["evaluation"].judged, ["u1", "u2"])
+
+    def test_a_judge_that_goes_away_leaves_its_user_unsaved(self):
+        self.users([{"uuid": "u1"}, {"uuid": "u2", "away": True}, {"uuid": "u3"}])
+
+        with self.assertRaises(SystemExit):
+            self.evaluate("fork")
+
+        self.assertEqual(self.saved(), ["u1"])
+        self.assertEqual(sys.modules["evaluation"].judged, ["u1", "u2"])
+
+    def test_a_saved_user_mostly_empty_is_set_aside_and_judged_again(self):
+        self.users([{"uuid": "u1"}, {"uuid": "u2"}])
+        self.cache("u1", empty=9)
+        self.cache("u2", empty=1)
+
+        self.assertEqual(self.evaluate("fork"), 0)
+
+        self.assertEqual(sys.modules["evaluation"].judged, ["u1"])
+        self.assertEqual((self.saved(), self.saved(adapter.SET_ASIDE)), (["u1", "u2"], ["u1"]))
+        self.assertEqual(sys.modules["evaluation"].totals, [2], "then HaluMem adds up")
+
+    def test_the_empty_share_counts_every_kind_of_judgment(self):
+        judged = {"memory_integrity_records": [{"memory_integrity_score": None},
+                                               {"memory_integrity_score": 2}],
+                  "memory_update_records": [{"memory_update_type": "Correct"},
+                                            {"memory_update_type": "Unknown"}]}
+
+        self.assertEqual(adapter.empty_share(judged), 0.5)
 
     def forget_eval(self):
         while self.eval_dir in sys.path:

@@ -15,7 +15,9 @@ calibration users.
     run        replays the dialogues through the real agent, with the models on the
                cluster and an archive on disk for each user; it never calls the judge
     evaluate   runs HaluMem's evaluation.py on the result, with the judge of eval/.env,
-               then prints, user by user, the judgments it could not use
+               user by user, saving a user only if the judge still answers and most of
+               its judgments came back (judge_users); then prints, user by user, the
+               judgments it could not use
 
 Every step that calls HaluMem's judge (evaluate here, label of eviction_replay.py, the
 follow-up exchanges and their verdicts, the load probe) reads OPENAI_ENABLE_THINKING in
@@ -601,8 +603,77 @@ def judge_thinking(llms: Any) -> str:
     return f"Judge {llms.MODEL}, thinking {'on' if enabled else 'off'}"
 
 
+# When the judge goes away, most of a user's judgments are empty; the model alone leaves ~1%.
+EMPTY_LIMIT = 0.2
+SET_ASIDE = "tmp2_empty"
+
+
+def empty_share(judged: Dict[str, Any]) -> float:
+    """The share of a user's judgments evaluation.py cannot use."""
+    flags = [unusable(record.get(field), labels) for _, records, field, labels in JUDGMENTS
+             for record in judged.get(records, [])]
+    return sum(flags) / len(flags) if flags else 0.0
+
+
+def judge_unreachable(llms: Any) -> Optional[str]:
+    """Why HaluMem's judge cannot be asked now, or None."""
+    try:
+        served = [model.id for model in
+                  llms.client.with_options(max_retries=0, timeout=30).models.list()]
+    except Exception as error:
+        return f"{type(error).__name__}: {error}"
+    if llms.MODEL not in served:
+        return f"the server serves {served}, not {llms.MODEL}"
+    return None
+
+
+def judge_users(evaluation: Any, llms: Any, run_dir: str, users: int, workers: int) -> None:
+    """HaluMem's evaluation user by user, as evaluation.main runs it, but a user is saved only
+    if the judge still answers after it and the user is not mostly empty: process_user takes
+    every failed call for an empty judgment, so a judge that went away would leave users
+    saved as done. A user saved mostly empty is set aside in tmp2_empty and judged again."""
+    folder = os.path.join(run_dir, "tmp2")
+    os.makedirs(folder, exist_ok=True)
+    data = os.path.join(run_dir, f"{FRAME}_eval_results.jsonl")
+    for index, user in enumerate(evaluation.iter_jsonl(data), 1):
+        path = os.path.join(folder, f"{user['uuid']}.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as handle:
+                share = empty_share(json.load(handle))
+            if share <= EMPTY_LIMIT:
+                if index >= users:
+                    break
+                continue
+            os.makedirs(os.path.join(run_dir, SET_ASIDE), exist_ok=True)
+            os.replace(path, os.path.join(run_dir, SET_ASIDE, f"{user['uuid']}.json"))
+            print(f"{user['uuid']}: {share:.0%} of its judgments are empty, set aside in "
+                  f"{SET_ASIDE} and judged again", flush=True)
+        reason = judge_unreachable(llms)
+        if reason:
+            raise SystemExit(f"The judge does not answer ({reason}): launch evaluate again when "
+                             "it is back. The users already judged are kept.")
+        judged = evaluation.process_user(index, user, workers)
+        reason = judge_unreachable(llms)
+        share = empty_share(judged)
+        if reason or share > EMPTY_LIMIT:
+            raise SystemExit(f"{user['uuid']} is not saved: "
+                             + (f"the judge went away ({reason})" if reason else
+                                f"{share:.0%} of its judgments are empty")
+                             + ". Launch evaluate again when the judge answers.")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(judged, handle, ensure_ascii=False, indent=4)
+        print(f"Finished user {user['uuid']} ({index}), {share:.1%} of its judgments empty.",
+              flush=True)
+        if index >= users:
+            break
+
+
 def evaluate(arguments: argparse.Namespace) -> int:
-    """HaluMem's evaluation, from its own folder: that is where it finds .env and results."""
+    """HaluMem's evaluation, from its own folder: that is where it finds .env and results.
+
+    The users are judged by judge_users; evaluation.main then finds them all done and only
+    adds up the scores.
+    """
     run_dir = run_folder(arguments)
     results = os.path.join(run_dir, f"{FRAME}_eval_results.jsonl")
     if not os.path.exists(results):
@@ -621,6 +692,7 @@ def evaluate(arguments: argparse.Namespace) -> int:
                          f"see {THINKING}.")
     import evaluation
 
+    judge_users(evaluation, llms, run_dir, users, arguments.judge_workers)
     evaluation.main(FRAME, arguments.version, user_num=users,
                     max_workers=arguments.judge_workers)
     print(unusable_text(unusable_judgments(run_dir)), flush=True)

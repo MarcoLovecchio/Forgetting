@@ -219,6 +219,17 @@ empty in the user's cached result and is never asked again: the (all) scores and
 count it as wrong. At the end `evaluate` prints these judgments user by user; deleting
 the user's `tmp2/<uuid>.json` and launching `evaluate` again judges that user again.
 
+A judge that goes away would make every call of a user fail, and HaluMem's
+`evaluation.main` would still save that user as done. So `evaluate` judges the users
+itself, one by one, with HaluMem's `process_user`. It saves a user only if two things hold:
+- the judge still answers after it (its `/models` lists `OPENAI_MODEL`);
+- at most 20% of the user's judgments are empty. The model alone leaves about 1%.
+
+Otherwise it stops, and launching it again judges that user from the start. A user
+already saved with more than 20% empty judgments, as an outage leaves it, is moved to
+`tmp2_empty/` and judged again. Then `evaluation.main` finds every user done and only
+adds up the scores.
+
 The experiments judge without thinking, at temperature 0, as GPT-4o judges in the
 published evaluation: HaluMem's prompts already ask for the reasoning inside the reply.
 Qwen3.8 thinks by default and `llms.py` cannot turn it off, so every step that calls the
@@ -226,12 +237,16 @@ judge (`evaluate`, `label`, the follow-up exchanges and their verdicts, the load
 reads `OPENAI_ENABLE_THINKING` in `eval/.env` and passes it to the chat template of every
 request. Each step prints the judge and its mode first. Unset, the server's default
 stays; `evaluate` stops if HaluMem's workers would not be forked, since only forked
-workers see the switch.
+workers see the switch. The cluster serves the judge with a context of 16384 tokens,
+prompt and reply together, so the reply gets 2048: the longest prompt of `evaluate` on
+HaluMem-Medium has about 39,000 characters (10,000 to 13,000 tokens), and a reply without
+thinking takes a few hundred. HaluMem's example of 16384 leaves no room for the prompt
+there, and the server refuses every request.
 
 ```
 OPENAI_MODEL=qwen3.8-27b
 OPENAI_TEMPERATURE=0.0
-OPENAI_MAX_TOKENS=16384
+OPENAI_MAX_TOKENS=2048
 OPENAI_TIMEOUT=300
 OPENAI_ENABLE_THINKING=false
 ```
