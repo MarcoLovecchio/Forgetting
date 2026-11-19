@@ -221,6 +221,7 @@ class PiecesTest(unittest.TestCase):
             "does not name": {**good, "said": "Let's discuss my family status."},
             "names the subject again (children)": {
                 **good, "follow_up": "Were my children born back in January 2025?"},
+            "leaves out details of the question (2025)": {**good, "follow_up": "Did I?"},
         }
 
         self.assertIsNone(fq.exchange_problem(good))
@@ -247,6 +248,21 @@ class PiecesTest(unittest.TestCase):
         self.assertIn("repeats the question", stored["0:1"]["error"])
         self.assertEqual(stored["0:1"]["rejected"], repeated)
         self.assertEqual(len(prompts), 4, "one more call for each broken exchange")
+
+    def test_a_stored_exchange_that_breaks_a_rule_is_asked_again(self):
+        result = {"sessions": [{"questions": [{"asked": "Cosa bevo?"}]}]}
+        stored = {"0:0": {**EXCHANGE, "follow_up": EXCHANGE["question"]}}
+
+        self.assertEqual(fq.generate_user(result, stored, lambda prompt: EXCHANGE, 1), 1)
+        self.assertEqual(stored["0:0"], EXCHANGE)
+        self.assertEqual(fq.generate_user(result, stored, lambda prompt: EXCHANGE, 1), 0)
+
+    def test_a_date_written_otherwise_is_still_kept(self):
+        exchange = {"question": "What is my blood type as of Sep 04, 2025?",
+                    "said": "I was looking at my blood type.", "reply": "Go ahead.",
+                    "follow_up": "What was it on September 4, 2025?"}
+
+        self.assertIsNone(fq.exchange_problem(exchange))
 
     def test_an_empty_rewrite_searches_the_words_of_the_user(self):
         search = next(search for search in fq.SEARCHES if search.name == "F-rw")

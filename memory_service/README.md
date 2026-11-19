@@ -606,11 +606,14 @@ names the subject with the question's own words, so `generate` can check every e
 (`exchange_problem`). It refuses an exchange when one of these holds:
 - a text speaks of "the user";
 - the follow-up has the same content words as the question;
+- the follow-up leaves out a number of the question, a day or a year;
 - the sentence shares no content word with the question;
 - the follow-up repeats one of the words they share.
 
 A refused exchange is asked once more, with the broken answer and the rule. Refused twice,
-it stays an error, and its question is left out.
+it stays an error, and its question is left out. A launch of `generate` checks the stored
+exchanges too, so a rule added later is applied by launching it again, which asks only for
+the exchanges that break it.
 
 Seven searches follow, each answered by the service's own `retrieval_node` and
 `generate_answer` with the trace's model and settings:

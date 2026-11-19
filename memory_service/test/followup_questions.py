@@ -169,6 +169,11 @@ def content_words(text: str) -> set:
     return found
 
 
+def numbers(text: str) -> set:
+    """The numbers of a text, days and years, whatever their leading zeros."""
+    return {int(number) for number in re.findall(r"\d+", text)}
+
+
 def exchange_problem(exchange: Dict[str, str]) -> Optional[str]:
     """What makes an exchange unusable, or None. The subject is what the sentence and the
     question have in common: the follow-up must lean on it without naming it."""
@@ -177,6 +182,10 @@ def exchange_problem(exchange: Dict[str, str]) -> Optional[str]:
             return f"the {name} speaks of \"the user\" instead of the first person"
     if content_words(exchange["follow_up"]) == content_words(exchange["question"]):
         return "the follow_up repeats the question"
+    missing = numbers(exchange["question"]) - numbers(exchange["follow_up"])
+    if missing:
+        return ("the follow_up leaves out details of the question "
+                f"({', '.join(map(str, sorted(missing)))})")
     subject = content_words(exchange["said"]) & content_words(exchange["question"])
     if not subject:
         return "the said sentence does not name the subject with the words of the question"
@@ -243,10 +252,11 @@ def generate_user(result: Dict[str, Any], stored: Dict[str, Any],
     """The exchanges of the questions not built yet, into `stored`: how many were asked.
 
     An exchange that breaks a rule (exchange_problem) is asked once more, with the broken
-    one and the rule; broken again, it is kept as an error with the reason.
+    one and the rule; broken again, it is kept as an error with the reason. A stored
+    exchange that breaks a rule added since is asked again too.
     """
     pending = [(key, question["asked"]) for key, question in trace_questions(result)
-               if "follow_up" not in stored.get(key, {})]
+               if "follow_up" not in stored.get(key, {}) or exchange_problem(stored[key])]
 
     def build(job: Tuple[str, str]) -> Tuple[str, Dict[str, Any]]:
         key, asked = job
