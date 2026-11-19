@@ -102,6 +102,10 @@ class ReplayCompareTest(unittest.TestCase):
         gain = next(line for line in printed.splitlines()
                     if line.strip().startswith("judgment gain ") and "+" in line)
         self.assertIn("+10.0 [+10.0, +10.0]", gain, "both users gain ten points more")
+        against = next(line for line in printed.splitlines()
+                       if line.strip().startswith("against zero, judgment gain:"))
+        self.assertIn("small +15.0 [+10.0, +20.0] 2/0/0", against,
+                      "one user gains 10 points over the score without utility, one 20")
 
 
 class FractionsTest(unittest.TestCase):

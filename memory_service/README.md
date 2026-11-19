@@ -489,7 +489,10 @@ judgment, the own score minus the score without utility. With `--repeat-at-end` 
 the reports of `simulate --repeat-at-end` and adds what each rule holds when every question
 is asked again at the end.
 Each version after the first is set against it with the 95% bootstrap interval over the
-users and the number of users above, below and at zero. The roles are printed with the rule each stands for, so traces of different modes
+users and the number of users above, below and at zero. Under each table every judgment
+gain is also set against zero, trace by trace, in the same way: whether the judgment is
+worth anything at all, beside how two traces differ in it. The roles are printed with the
+rule each stands for, so traces of different modes
 line up: it is the comparison of the models, the sampling or the core limit on what the
 judgment gives the eviction.
 

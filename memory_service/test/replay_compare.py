@@ -22,7 +22,9 @@ question (old, the primary measure), user by user, and what the judgment gives:
 The rows are named by role, so traces of different modes line up: the rule each role
 stands for, per trace, is printed first. Each version after the first is set against it
 on the users all of them hold: the mean difference user by user, with its 95% bootstrap
-interval over the users and how many users it is above, below and at zero for. It compares
+interval over the users and how many users it is above, below and at zero for. Under each
+table every judgment gain is also set against zero, trace by trace, in the same way: whether
+the judgment is worth anything at all. It compares
 what the judgment gives the eviction across models
 (4B, 9B), sampling or core limit, where each trace has memories of its own.
 
@@ -142,6 +144,19 @@ def compare_fractions(name: str, config: Any, found: Dict[str, Tallies],
                     if any(kpi.present(table.get(role, {})) for table in tables)]
             kpi.print_section(f"{name}, {title} at limit {limit}", len(users), labels,
                               (rows, tables))
+            print_gains(labels, tables)
+
+
+def print_gains(names: Sequence[str], tables: Sequence[Dict[str, Dict[str, Optional[float]]]]
+                ) -> None:
+    """Each judgment gain against zero, table by table: is the judgment worth anything at
+    all, beside how two traces differ in it."""
+    for gain, _ in GAINS:
+        values = [kpi.present(table.get(gain, {})) for table in tables]
+        if any(values):
+            print(f"    against zero, {gain}: " + "; ".join(
+                f"{name} {kpi.difference_text(found, kpi.SHARE)}"
+                for name, found in zip(names, values) if found))
 
 
 def limits(users: Dict[str, Tallies]) -> List[int]:
@@ -222,6 +237,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     if any(kpi.present(table.get(role, {})) for table in tables)]
             kpi.print_section(f"{title} at limit {limit}", len(users), arguments.versions,
                               (rows, tables))
+            print_gains(arguments.versions, tables)
     return 0
 
 
