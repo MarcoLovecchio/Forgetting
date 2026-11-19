@@ -521,9 +521,12 @@ def process_user(index, user, workers):
     seen.append(dict(llms.common_params))
     if user.get("away"):
         llms.up[0] = False
-    return {"question_answering_records": [
-        {"result_type": None if number < user.get("empty", 0) else "Correct"}
-        for number in range(10)]}
+    return {"memory_integrity_records": [
+                {"memory_integrity_score": 2} for session in user["sessions"]
+                for _ in session["memory_points"]],
+            "question_answering_records": [
+                {"result_type": None if number < user.get("empty", 0) else "Correct"}
+                for number in range(10)]}
 def main(frame, version, user_num, max_workers):
     totals.append(user_num)
 '''
@@ -608,9 +611,49 @@ class EvaluateTest(unittest.TestCase):
         for name in ("llms", "evaluation"):
             sys.modules.pop(name, None)
 
-    def evaluate(self, method):
+    def judged(self, uuid):
+        with open(os.path.join(self.run_dir, "tmp2", f"{uuid}.json"), encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_the_answers_alone_are_judged_and_added_up_here(self):
+        session = {"memory_points": [{"memory_content": "Mario vive a Palermo"}],
+                   "extracted_memories": ["Mario vive a Palermo"]}
+        self.users([{"uuid": "u1", "sessions": [session], "empty": 1}])
+
+        self.assertEqual(self.evaluate("fork", "--questions-only"), 0)
+
+        judged = self.judged("u1")
+        self.assertEqual((judged["memory_integrity_records"], judged[adapter.QUESTIONS_ONLY]),
+                         ([], True), "no memory point reached the judge")
+        self.assertEqual(sys.modules["evaluation"].totals, [], "HaluMem cannot add it up")
+        with open(os.path.join(self.run_dir, adapter.QUESTION_SCORES), encoding="utf-8") as handle:
+            scores = json.load(handle)["overall_score"]["question_answering"]
+        self.assertAlmostEqual(scores["correct_qa_ratio(all)"], 0.9)
+        self.assertEqual(scores["correct_qa_ratio(valid)"], 1.0)
+
+    def test_a_full_evaluate_judges_again_the_users_judged_on_their_answers(self):
+        self.users([{"uuid": "u1"}, {"uuid": "u2"}])
+        self.cache("u1", empty=0)
+        self.cache("u2", empty=0)
+        cached = self.judged("u1")
+        with open(os.path.join(self.run_dir, "tmp2", "u1.json"), "w", encoding="utf-8") as handle:
+            json.dump({**cached, adapter.QUESTIONS_ONLY: True}, handle)
+
+        self.assertEqual(self.evaluate("fork"), 0)
+
+        self.assertEqual(sys.modules["evaluation"].judged, ["u1"])
+        self.assertNotIn(adapter.QUESTIONS_ONLY, self.judged("u1"))
+
+    def test_the_answers_alone_keep_a_user_already_judged_in_full(self):
+        self.cache("u1", empty=0)
+
+        self.assertEqual(self.evaluate("fork", "--questions-only"), 0)
+
+        self.assertEqual(sys.modules["evaluation"].judged, [])
+
+    def evaluate(self, method, *options):
         arguments = adapter.parse_arguments(["evaluate", "--halumem", self.root,
-                                             "--version", "pilot"])
+                                             "--version", "pilot", *options])
         with mock.patch.dict(os.environ, {adapter.THINKING: "false"}), \
                 mock.patch.object(adapter.multiprocessing, "get_start_method",
                                   return_value=method), \

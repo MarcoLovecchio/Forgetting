@@ -17,7 +17,11 @@ calibration users.
     evaluate   runs HaluMem's evaluation.py on the result, with the judge of eval/.env,
                user by user, saving a user only if the judge still answers and most of
                its judgments came back (judge_users); then prints, user by user, the
-               judgments it could not use
+               judgments it could not use. With --questions-only it judges the answers
+               alone, about 13 minutes a user instead of 4 hours: what a run with a limit
+               is for. HaluMem cannot add up a run with no memory judged, so the answers
+               are pooled here, as it pools them, into memory_service_eval_stat_questions.json.
+               A later evaluate without the option judges those users again in full
 
 Every step that calls HaluMem's judge (evaluate here, label of eviction_replay.py, the
 follow-up exchanges and their verdicts, the load probe) reads OPENAI_ENABLE_THINKING in
@@ -63,6 +67,7 @@ logs/<uuid>.log, every operation with the exchange it belongs to to the result f
 
     python3 memory_service/test/halumem_adapter.py run --halumem PATH --version NAME
     python3 memory_service/test/halumem_adapter.py evaluate --halumem PATH --version NAME
+                                                   [--questions-only]
     python3 memory_service/test/halumem_adapter.py clean --halumem PATH --version NAME
 
 Results are in PATH/eval/results/memory_service-NAME.
@@ -606,6 +611,48 @@ def judge_thinking(llms: Any) -> str:
 # When the judge goes away, most of a user's judgments are empty; the model alone leaves ~1%.
 EMPTY_LIMIT = 0.2
 SET_ASIDE = "tmp2_empty"
+QUESTIONS_ONLY = "questions_only"
+QUESTION_SCORES = f"{FRAME}_eval_stat_questions.json"
+ANSWER_LABELS = (("Correct", "correct"), ("Hallucination", "hallucination"),
+                 ("Omission", "omission"))
+
+
+def answers_only(user: Dict[str, Any]) -> Dict[str, Any]:
+    """The user with no memory point and no extracted memory: process_user then has nothing
+    to judge but the answers."""
+    kept = copy.deepcopy(user)
+    for session in kept["sessions"]:
+        session["memory_points"] = []
+        session["extracted_memories"] = []
+    return kept
+
+
+def question_scores(run_dir: str, uuids: Sequence[str]) -> Dict[str, Any]:
+    """HaluMem's question_answering scores over these users, pooled as
+    aggregate_eval_results pools them: (all) counts an unusable verdict as wrong, (valid)
+    leaves it out."""
+    verdicts = []
+    for uuid in uuids:
+        path = os.path.join(run_dir, "tmp2", f"{uuid}.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as handle:
+                verdicts += [record.get("result_type") for record in
+                             json.load(handle).get("question_answering_records", [])]
+    valid = [verdict for verdict in verdicts if verdict in dict(ANSWER_LABELS)]
+    scores: Dict[str, Any] = {"qa_num": len(verdicts), "qa_valid_num": len(valid)}
+    for label, key in ANSWER_LABELS:
+        hits = valid.count(label)
+        scores[f"{key}_qa_ratio(all)"] = hits / len(verdicts) if verdicts else None
+        scores[f"{key}_qa_ratio(valid)"] = hits / len(valid) if valid else None
+    return scores
+
+
+def question_scores_text(scores: Dict[str, Any], users: int) -> str:
+    if not scores["qa_num"]:
+        return "No answer judged yet."
+    shares = ", ".join(f"{key} {scores[f'{key}_qa_ratio(all)']:.1%}" for _, key in ANSWER_LABELS)
+    return (f"Answers of {users} users, pooled as HaluMem pools them (all): {shares}; "
+            f"{scores['qa_num'] - scores['qa_valid_num']} of {scores['qa_num']} unusable.")
 
 
 def empty_share(judged: Dict[str, Any]) -> float:
@@ -627,11 +674,15 @@ def judge_unreachable(llms: Any) -> Optional[str]:
     return None
 
 
-def judge_users(evaluation: Any, llms: Any, run_dir: str, users: int, workers: int) -> None:
+def judge_users(evaluation: Any, llms: Any, run_dir: str, users: int, workers: int,
+                questions: bool = False) -> None:
     """HaluMem's evaluation user by user, as evaluation.main runs it, but a user is saved only
     if the judge still answers after it and the user is not mostly empty: process_user takes
     every failed call for an empty judgment, so a judge that went away would leave users
-    saved as done. A user saved mostly empty is set aside in tmp2_empty and judged again."""
+    saved as done. A user saved mostly empty is set aside in tmp2_empty and judged again.
+
+    With `questions` only the answers are judged, and the user is saved with
+    questions_only; a user saved so is judged again in full when `questions` is off."""
     folder = os.path.join(run_dir, "tmp2")
     os.makedirs(folder, exist_ok=True)
     data = os.path.join(run_dir, f"{FRAME}_eval_results.jsonl")
@@ -639,20 +690,26 @@ def judge_users(evaluation: Any, llms: Any, run_dir: str, users: int, workers: i
         path = os.path.join(folder, f"{user['uuid']}.json")
         if os.path.exists(path):
             with open(path, encoding="utf-8") as handle:
-                share = empty_share(json.load(handle))
-            if share <= EMPTY_LIMIT:
+                cached = json.load(handle)
+            share = empty_share(cached)
+            if share > EMPTY_LIMIT:
+                os.makedirs(os.path.join(run_dir, SET_ASIDE), exist_ok=True)
+                os.replace(path, os.path.join(run_dir, SET_ASIDE, f"{user['uuid']}.json"))
+                print(f"{user['uuid']}: {share:.0%} of its judgments are empty, set aside in "
+                      f"{SET_ASIDE} and judged again", flush=True)
+            elif cached.get(QUESTIONS_ONLY) and not questions:
+                print(f"{user['uuid']}: its answers alone were judged, now judged in full",
+                      flush=True)
+            else:
                 if index >= users:
                     break
                 continue
-            os.makedirs(os.path.join(run_dir, SET_ASIDE), exist_ok=True)
-            os.replace(path, os.path.join(run_dir, SET_ASIDE, f"{user['uuid']}.json"))
-            print(f"{user['uuid']}: {share:.0%} of its judgments are empty, set aside in "
-                  f"{SET_ASIDE} and judged again", flush=True)
         reason = judge_unreachable(llms)
         if reason:
             raise SystemExit(f"The judge does not answer ({reason}): launch evaluate again when "
                              "it is back. The users already judged are kept.")
-        judged = evaluation.process_user(index, user, workers)
+        judged = evaluation.process_user(index, answers_only(user) if questions else user,
+                                         workers)
         reason = judge_unreachable(llms)
         share = empty_share(judged)
         if reason or share > EMPTY_LIMIT:
@@ -660,10 +717,13 @@ def judge_users(evaluation: Any, llms: Any, run_dir: str, users: int, workers: i
                              + (f"the judge went away ({reason})" if reason else
                                 f"{share:.0%} of its judgments are empty")
                              + ". Launch evaluate again when the judge answers.")
+        if questions:
+            judged[QUESTIONS_ONLY] = True
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(judged, handle, ensure_ascii=False, indent=4)
-        print(f"Finished user {user['uuid']} ({index}), {share:.1%} of its judgments empty.",
-              flush=True)
+        print(f"Finished user {user['uuid']} ({index}"
+              + (", answers alone" if questions else "")
+              + f"), {share:.1%} of its judgments empty.", flush=True)
         if index >= users:
             break
 
@@ -672,13 +732,14 @@ def evaluate(arguments: argparse.Namespace) -> int:
     """HaluMem's evaluation, from its own folder: that is where it finds .env and results.
 
     The users are judged by judge_users; evaluation.main then finds them all done and only
-    adds up the scores.
+    adds up the scores. With --questions-only the answers are added up here instead.
     """
     run_dir = run_folder(arguments)
     results = os.path.join(run_dir, f"{FRAME}_eval_results.jsonl")
     if not os.path.exists(results):
         raise SystemExit(f"No results in {run_dir}: launch run first.")
-    users = len(load_users(results))
+    uuids = [user["uuid"] for user in load_users(results)]
+    users = len(uuids)
 
     eval_dir = os.path.dirname(os.path.dirname(run_dir))
     os.chdir(eval_dir)
@@ -692,9 +753,16 @@ def evaluate(arguments: argparse.Namespace) -> int:
                          f"see {THINKING}.")
     import evaluation
 
-    judge_users(evaluation, llms, run_dir, users, arguments.judge_workers)
-    evaluation.main(FRAME, arguments.version, user_num=users,
-                    max_workers=arguments.judge_workers)
+    judge_users(evaluation, llms, run_dir, users, arguments.judge_workers,
+                arguments.questions_only)
+    if arguments.questions_only:
+        scores = question_scores(run_dir, uuids)
+        with open(os.path.join(run_dir, QUESTION_SCORES), "w", encoding="utf-8") as handle:
+            json.dump({"overall_score": {"question_answering": scores}}, handle, indent=4)
+        print(question_scores_text(scores, users), flush=True)
+    else:
+        evaluation.main(FRAME, arguments.version, user_num=users,
+                        max_workers=arguments.judge_workers)
     print(unusable_text(unusable_judgments(run_dir)), flush=True)
     return 0
 
@@ -727,6 +795,9 @@ def parse_arguments(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     judge = steps.add_parser("evaluate", parents=[common], help="judge a finished run")
     judge.add_argument("--judge-workers", type=int, default=10, dest="judge_workers",
                        help="judge calls at the same time, per user")
+    judge.add_argument("--questions-only", action="store_true", dest="questions_only",
+                       help="judge the answers alone, not the memories written: what a run "
+                            "with a limit needs, in about 13 minutes a user")
     judge.set_defaults(step_function=evaluate)
 
     wipe = steps.add_parser("clean", parents=[common], help="delete the archives of a run")

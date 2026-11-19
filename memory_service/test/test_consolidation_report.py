@@ -113,6 +113,13 @@ class FidelityTest(unittest.TestCase):
 
         self.assertIsNone(found["updates correct"])
 
+    def test_a_user_judged_on_its_answers_alone_has_no_writing_values(self):
+        judged = cr.judged_records({**judgments(answers=[{"result_type": "Correct"}]),
+                                    "questions_only": True})
+
+        self.assertEqual(set(values(cr.fidelity(judged)).values()), {None}, "not 0%")
+        self.assertEqual(values(cr.answers(judged))["correct"], 1.0)
+
 
 class GroupTest(unittest.TestCase):
     """Each record counts in its type and in the bucket of its session."""
