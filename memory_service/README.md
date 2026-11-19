@@ -603,12 +603,16 @@ For every question, HaluMem's judge writes four texts once: the question as the 
 ask it about themselves, a sentence of the user that brings up its subject, a reply of the
 assistant, and the follow-up that leans on them without naming the subject. The sentence
 names the subject with the question's own words, so `generate` can check every exchange
-(`exchange_problem`). It refuses an exchange when one of these holds:
+(`exchange_problem`). The follow-up leans on the sentence when it leaves out words of the
+question that the sentence says, since those name the subject; the sentence may repeat
+details too, which the follow-up keeps. Words are compared by the first six letters of
+their singular, so that "unemployed" meets "unemployment". `generate` refuses an exchange
+when one of these holds:
 - a text speaks of "the user";
-- the follow-up has the same content words as the question;
-- the follow-up leaves out a number of the question, a day or a year;
-- the sentence shares no content word with the question;
-- the follow-up repeats one of the words they share.
+- the follow-up keeps every content word of the question;
+- the follow-up leaves out a word that the sentence does not say;
+- the follow-up leaves out a date of the question: a day after its month, or a year
+  ("1920s" is not one).
 
 A refused exchange is asked once more, with the broken answer and the rule. Refused twice,
 it stays an error, and its question is left out. A launch of `generate` checks the stored

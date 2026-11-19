@@ -47,7 +47,7 @@ CONFIG = MemoryConfig(
 )
 TEA = "Mario beve tè nero il pomeriggio"
 HOME = "Mario vive a Palermo"
-EXCHANGE = {"question": "Cosa bevo il pomeriggio?", "said": "Parliamo di cosa bevo.",
+EXCHANGE = {"question": "Cosa bevo il pomeriggio?", "said": "Parliamo di cosa bevo il pomeriggio.",
             "reply": "Certo, chiedi pure.", "follow_up": "E a quell'ora?"}
 REWRITTEN = "pomeriggio bevanda"
 # The follow-up alone lands on the wrong memory; the question, the rewrite and the
@@ -205,11 +205,32 @@ class PiecesTest(unittest.TestCase):
         self.assertEqual(stored["0:0"], EXCHANGE)
 
     def test_an_exchange_that_leans_on_the_sentence_is_usable(self):
-        exchange = {"question": "Che gruppo sanguigno ho?",
+        exchange = {"question": "Qual è il mio gruppo sanguigno?",
                     "said": "Stavo guardando il mio gruppo sanguigno.",
                     "reply": "Chiedi pure.", "follow_up": "Qual è?"}
 
         self.assertIsNone(fq.exchange_problem(exchange))
+
+    def test_details_the_sentence_repeats_may_stay_in_the_follow_up(self):
+        # Real exchanges of the judge: the sentence repeats details of the question too.
+        exchanges = [
+            ("Did I dislike roast duck with plum sauce after visiting the gourmet historical "
+             "restaurant on Jul 25, 2027?",
+             "I was thinking about the roast duck with plum sauce after visiting the gourmet "
+             "historical restaurant on Jul 25, 2027.",
+             "Did I dislike it after visiting the gourmet historical restaurant on Jul 25, "
+             "2027?"),
+            ("Did I decide to include 1920s jazz in my film projects on Aug 04, 2028?",
+             "I was thinking about 1920s jazz in my film projects.",
+             "Did I decide to include it on Aug 04, 2028?"),
+            ("Am I unemployed as of Sep 05, 2025?", "I was thinking about my unemployment status.",
+             "Am I, as of Sep 05, 2025?"),
+        ]
+        for question, said, follow_up in exchanges:
+            with self.subTest(question=question):
+                self.assertIsNone(fq.exchange_problem({"question": question, "said": said,
+                                                       "reply": "Sure.",
+                                                       "follow_up": follow_up}))
 
     def test_each_broken_rule_is_named(self):
         good = {"question": "Did I have children in January 2025?",
@@ -217,11 +238,10 @@ class PiecesTest(unittest.TestCase):
                 "follow_up": "Did I have them in January 2025?"}
         broken = {
             "the user": {**good, "question": "Did the user have children in January 2025?"},
-            "repeats": {**good, "follow_up": "Did I have children in January 2025?"},
-            "does not name": {**good, "said": "Let's discuss my family status."},
-            "names the subject again (children)": {
-                **good, "follow_up": "Were my children born back in January 2025?"},
-            "leaves out details of the question (2025)": {**good, "follow_up": "Did I?"},
+            "repeats every word": {**good, "follow_up": "Did I have children in January 2025?"},
+            "leaves out children, which the said sentence does not bring up": {
+                **good, "said": "Let's discuss my family status."},
+            "leaves out the date of the question (2025)": {**good, "follow_up": "Did I?"},
         }
 
         self.assertIsNone(fq.exchange_problem(good))
@@ -245,7 +265,7 @@ class PiecesTest(unittest.TestCase):
         fq.generate_user(result, stored, ask, 1)
 
         self.assertEqual(stored["0:0"], EXCHANGE)
-        self.assertIn("repeats the question", stored["0:1"]["error"])
+        self.assertIn("repeats every word", stored["0:1"]["error"])
         self.assertEqual(stored["0:1"]["rejected"], repeated)
         self.assertEqual(len(prompts), 4, "one more call for each broken exchange")
 

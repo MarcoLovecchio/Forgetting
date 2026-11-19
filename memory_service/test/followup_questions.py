@@ -157,41 +157,51 @@ jan feb mar apr jun jul aug sep sept oct nov dec
 """.split())
 
 
-def content_words(text: str) -> set:
-    """The words of a text that can name a subject, a plural reduced to its singular."""
-    found = set()
+MONTHS = ("january|february|march|april|may|june|july|august|september|october|november|"
+          "december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec")
+MONTH = rf"\b(?:{MONTHS})\.?\s+(\d{{1,2}})\b"
+YEAR = r"\b((?:19|20)\d\d)\b"
+
+
+def content_words(text: str) -> Dict[str, str]:
+    """Stem -> word, for the words of a text that can name a subject. The stem is the
+    first six letters of the singular, so that forms of one word meet (unemployed and
+    unemployment, film and films)."""
+    found = {}
     for word in re.findall(r"[^\W\d_]+", text.lower()):
         if len(word) < 3 or word in FUNCTION_WORDS:
             continue
-        if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
-            word = word[:-1]
-        found.add(word)
+        stem = word[:-1] if len(word) > 4 and word.endswith("s") and not word.endswith("ss") \
+            else word
+        found.setdefault(stem[:6], word)
     return found
 
 
-def numbers(text: str) -> set:
-    """The numbers of a text, days and years, whatever their leading zeros."""
-    return {int(number) for number in re.findall(r"\d+", text)}
+def dates(text: str) -> set:
+    """The days and years of a text, whatever their leading zeros: 1920s is not a year."""
+    lowered = text.lower()
+    return {int(number) for pattern in (MONTH, YEAR) for number in re.findall(pattern, lowered)}
 
 
 def exchange_problem(exchange: Dict[str, str]) -> Optional[str]:
-    """What makes an exchange unusable, or None. The subject is what the sentence and the
-    question have in common: the follow-up must lean on it without naming it."""
+    """What makes an exchange unusable, or None. The follow-up leans on the sentence when
+    it leaves out words of the question that the sentence says: those name the subject."""
     for name in ("question", "said", "follow_up"):
         if re.search(r"\bthe user\b", exchange[name], re.IGNORECASE):
             return f"the {name} speaks of \"the user\" instead of the first person"
-    if content_words(exchange["follow_up"]) == content_words(exchange["question"]):
-        return "the follow_up repeats the question"
-    missing = numbers(exchange["question"]) - numbers(exchange["follow_up"])
+    question = content_words(exchange["question"])
+    left_out = set(question) - set(content_words(exchange["follow_up"]))
+    if not left_out:
+        return ("the follow_up repeats every word of the question: it must leave out the "
+                "words that name the subject")
+    unsaid = sorted(question[stem] for stem in left_out - set(content_words(exchange["said"])))
+    if unsaid:
+        return (f"the follow_up leaves out {', '.join(unsaid)}, which the said sentence does "
+                "not bring up")
+    missing = dates(exchange["question"]) - dates(exchange["follow_up"])
     if missing:
-        return ("the follow_up leaves out details of the question "
+        return ("the follow_up leaves out the date of the question "
                 f"({', '.join(map(str, sorted(missing)))})")
-    subject = content_words(exchange["said"]) & content_words(exchange["question"])
-    if not subject:
-        return "the said sentence does not name the subject with the words of the question"
-    named = subject & content_words(exchange["follow_up"])
-    if named:
-        return f"the follow_up names the subject again ({', '.join(sorted(named))})"
     return None
 
 
