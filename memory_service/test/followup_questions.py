@@ -53,6 +53,7 @@ import argparse
 import contextlib
 import importlib
 import json
+import re
 import os
 import random
 import sys
@@ -118,20 +119,71 @@ in earlier conversations. Below is a question about the user. Turn it into a sho
 
 Question: {question}
 
-Write four texts. All but the reply are said by the user, in the first person ("I", "my").
+Write four texts. All but the reply are said by the user, in the first person ("I", "my"),
+never "the user".
 - question: the same question, asked by the user about themselves, every detail kept.
-- said: one short sentence that brings up the subject of the question without asking it
-  and without stating any fact about the user, such as "Let's talk about my wardrobe."
+- said: one short sentence that brings up the subject of the question, with the same words
+  the question uses for it, without asking the question and without stating any fact about
+  the user. For "What is my blood type?": "I was looking at my blood type."
 - reply: one short sentence of the assistant that invites the question and states no fact
   about the user.
-- follow_up: the question as the user would ask it right after the reply. It leans on what
-  was just said: the subject is not named again (a pronoun, "there", "that", or nothing),
-  while every other detail of the question, dates included, is kept.
+- follow_up: the question as the user would ask it right after the reply. It is not the
+  question again: it leans on what was just said, so the words that name the subject are
+  not repeated (a pronoun, "there", "that", or nothing), while every other detail of the
+  question, dates included, is kept. For the example above: "What is it?"
 
 Reply with a JSON block and nothing else:
 ```json
 {{"question": "...", "said": "...", "reply": "...", "follow_up": "..."}}
 ```"""
+
+REPAIR_PROMPT = """
+
+Your previous answer was:
+{previous}
+
+It breaks a rule: {problem}. Write the four texts again, following every rule."""
+
+FUNCTION_WORDS = frozenset("""
+a an the and or but if of to in on at by for from with about as into over after before
+since during than then so too very just also not no yes i me my mine myself we our you
+your it its they them their he she his her this that these those there here what which
+who whom whose when where why how do does did done doing is am are was were be been being
+have has had having can could will would shall should may might must let talk talking
+discuss discussing think thinking tell recently now today currently some any all each
+every other more most much many one ever still user
+january february march april may june july august september october november december
+jan feb mar apr jun jul aug sep sept oct nov dec
+""".split())
+
+
+def content_words(text: str) -> set:
+    """The words of a text that can name a subject, a plural reduced to its singular."""
+    found = set()
+    for word in re.findall(r"[^\W\d_]+", text.lower()):
+        if len(word) < 3 or word in FUNCTION_WORDS:
+            continue
+        if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        found.add(word)
+    return found
+
+
+def exchange_problem(exchange: Dict[str, str]) -> Optional[str]:
+    """What makes an exchange unusable, or None. The subject is what the sentence and the
+    question have in common: the follow-up must lean on it without naming it."""
+    for name in ("question", "said", "follow_up"):
+        if re.search(r"\bthe user\b", exchange[name], re.IGNORECASE):
+            return f"the {name} speaks of \"the user\" instead of the first person"
+    if content_words(exchange["follow_up"]) == content_words(exchange["question"]):
+        return "the follow_up repeats the question"
+    subject = content_words(exchange["said"]) & content_words(exchange["question"])
+    if not subject:
+        return "the said sentence does not name the subject with the words of the question"
+    named = subject & content_words(exchange["follow_up"])
+    if named:
+        return f"the follow_up names the subject again ({', '.join(sorted(named))})"
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -188,14 +240,27 @@ def parse_exchange(reply: Any) -> Dict[str, str]:
 
 def generate_user(result: Dict[str, Any], stored: Dict[str, Any],
                   ask: Callable[[str], Any], workers: int) -> int:
-    """The exchanges of the questions not built yet, into `stored`: how many were asked."""
+    """The exchanges of the questions not built yet, into `stored`: how many were asked.
+
+    An exchange that breaks a rule (exchange_problem) is asked once more, with the broken
+    one and the rule; broken again, it is kept as an error with the reason.
+    """
     pending = [(key, question["asked"]) for key, question in trace_questions(result)
                if "follow_up" not in stored.get(key, {})]
 
-    def build(job: Tuple[str, str]) -> Tuple[str, Dict[str, str]]:
+    def build(job: Tuple[str, str]) -> Tuple[str, Dict[str, Any]]:
         key, asked = job
+        prompt = GENERATE_PROMPT.format(question=asked)
         try:
-            return key, parse_exchange(ask(GENERATE_PROMPT.format(question=asked)))
+            exchange = parse_exchange(ask(prompt))
+            problem = exchange_problem(exchange)
+            if problem:
+                exchange = parse_exchange(ask(prompt + REPAIR_PROMPT.format(
+                    previous=json.dumps(exchange, ensure_ascii=False), problem=problem)))
+                problem = exchange_problem(exchange)
+            if problem:
+                return key, {"error": f"rejected: {problem}", "rejected": exchange}
+            return key, exchange
         except Exception as error:
             return key, error_text(error)
 
@@ -216,8 +281,10 @@ def generate(arguments: argparse.Namespace) -> int:
         asked = generate_user(result, stored, llms.llm_request_for_json, arguments.judge_workers)
         replay.save_json(path, stored)
         failed = sum(1 for entry in stored.values() if "error" in entry)
-        print(f"{result['uuid']}: {asked} questions turned into exchanges, {failed} failed "
-              "(launch generate again to retry them)", flush=True)
+        rejected = sum(1 for entry in stored.values() if "rejected" in entry)
+        print(f"{result['uuid']}: {asked} questions turned into exchanges, {failed} failed, "
+              f"{rejected} of them because they broke a rule twice (launch generate again to "
+              "retry them)", flush=True)
         for key, question in trace_questions(result):
             entry = stored.get(key, {})
             if shown < 3 and "follow_up" in entry:

@@ -204,6 +204,50 @@ class PiecesTest(unittest.TestCase):
         self.assertEqual(fq.generate_user(result, stored, ask, 1), 1)
         self.assertEqual(stored["0:0"], EXCHANGE)
 
+    def test_an_exchange_that_leans_on_the_sentence_is_usable(self):
+        exchange = {"question": "Che gruppo sanguigno ho?",
+                    "said": "Stavo guardando il mio gruppo sanguigno.",
+                    "reply": "Chiedi pure.", "follow_up": "Qual è?"}
+
+        self.assertIsNone(fq.exchange_problem(exchange))
+
+    def test_each_broken_rule_is_named(self):
+        good = {"question": "Did I have children in January 2025?",
+                "said": "I was thinking about my children.", "reply": "Go ahead.",
+                "follow_up": "Did I have them in January 2025?"}
+        broken = {
+            "the user": {**good, "question": "Did the user have children in January 2025?"},
+            "repeats": {**good, "follow_up": "Did I have children in January 2025?"},
+            "does not name": {**good, "said": "Let's discuss my family status."},
+            "names the subject again (children)": {
+                **good, "follow_up": "Were my children born back in January 2025?"},
+        }
+
+        self.assertIsNone(fq.exchange_problem(good))
+        for reason, exchange in broken.items():
+            with self.subTest(reason=reason):
+                self.assertIn(reason, fq.exchange_problem(exchange))
+
+    def test_a_broken_exchange_is_asked_once_more_with_its_rule(self):
+        result = {"sessions": [{"questions": [{"asked": "Cosa bevo?"},
+                                              {"asked": "Dove vivo?"}]}]}
+        repeated = {**EXCHANGE, "follow_up": EXCHANGE["question"]}
+        replies = {"Cosa bevo?": [repeated, EXCHANGE], "Dove vivo?": [repeated, repeated]}
+        prompts = []
+
+        def ask(prompt):
+            prompts.append(prompt)
+            asked = "Cosa bevo?" if "Cosa bevo?" in prompt else "Dove vivo?"
+            return replies[asked].pop(0)
+
+        stored = {}
+        fq.generate_user(result, stored, ask, 1)
+
+        self.assertEqual(stored["0:0"], EXCHANGE)
+        self.assertIn("repeats the question", stored["0:1"]["error"])
+        self.assertEqual(stored["0:1"]["rejected"], repeated)
+        self.assertEqual(len(prompts), 4, "one more call for each broken exchange")
+
     def test_an_empty_rewrite_searches_the_words_of_the_user(self):
         search = next(search for search in fq.SEARCHES if search.name == "F-rw")
 

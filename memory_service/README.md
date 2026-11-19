@@ -601,9 +601,19 @@ replay gives it.
 
 For every question, HaluMem's judge writes four texts once: the question as the user would
 ask it about themselves, a sentence of the user that brings up its subject, a reply of the
-assistant, and the follow-up that leans on them without naming the subject. Seven searches
-follow, each answered by the service's own `retrieval_node` and `generate_answer` with the
-trace's model and settings:
+assistant, and the follow-up that leans on them without naming the subject. The sentence
+names the subject with the question's own words, so `generate` can check every exchange
+(`exchange_problem`). It refuses an exchange when one of these holds:
+- a text speaks of "the user";
+- the follow-up has the same content words as the question;
+- the sentence shares no content word with the question;
+- the follow-up repeats one of the words they share.
+
+A refused exchange is asked once more, with the broken answer and the rule. Refused twice,
+it stays an error, and its question is left out.
+
+Seven searches follow, each answered by the service's own `retrieval_node` and
+`generate_answer` with the trace's model and settings:
 - `Q`: the question with an empty window, searched with its words, as in a HaluMem run;
 - `Q-rw`: the same, searched with the model's query, as in a HaluMem run with
   `query_rewrite`;
