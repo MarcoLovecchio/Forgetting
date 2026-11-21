@@ -552,8 +552,11 @@ From the run alone, before `evaluate` too, it prints:
   whose target was not found, which the service stores as new with no ratings, or
   ratings the model left out or wrote off the scale. Next to them, the share of each
   level of each rating, and the consolidation calls whose facts came as a string, which
-  the service cannot read, with the facts lost in them. The causes and the lost calls
-  come from `logs/<uuid>.log`;
+  the service cannot read, with the facts lost in them. Apart from them, the calls the
+  model answered with text and no tool call, which write nothing: the facts it wrote in
+  the last JSON block of that text are counted as lost. The server does not enforce the
+  required tool call, so this happens with reasoning on too. The causes and the lost
+  calls come from `logs/<uuid>.log`;
 - the cost of the consolidation calls: per exchange, the seconds and tokens of a call,
   and their share of the time the dialogue took;
 - the cost of the answer: the seconds and tokens of an answer call, and per question the

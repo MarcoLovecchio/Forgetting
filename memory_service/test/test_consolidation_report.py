@@ -270,10 +270,28 @@ class JudgmentTest(unittest.TestCase):
         self.assertNotIn("without ratings, left out by the model", found)
         self.assertNotIn("consolidation calls lost", found)
 
+    def test_a_reply_with_no_tool_call_loses_the_facts_of_its_last_json_block(self):
+        said = "L'utente lo ha già detto.\n\n```json\n[]\n```"
+        lost = ("Due fatti nuovi:\n```json\n[{\"fact\": \"L'utente ama il jazz\"}]\n```\n"
+                "Correggo:\n```json\n[{\"fact\": \"L'utente ama il jazz\"}, "
+                "{\"fact\": \"L'utente suona il piano\"}]\n```")
+        lines = [tool_call([{"fact": "L'utente vive a Palermo", "operation": "new"},
+                            {"fact": "L'utente nuota", "operation": "new"}]),
+                 f"\tSummarization result: no tool call, content={said!r}\n",
+                 f"\tSummarization result: no tool call, content={lost!r}\n"]
+
+        found = values(cr.judgment((judged_user({}, []), lines)))
+
+        self.assertAlmostEqual(found["calls with no tool call"], 2 / 3)
+        self.assertAlmostEqual(found["facts lost without a tool call"], 2 / 4)
+        self.assertEqual(found["consolidation calls lost"], 0.0)
+
     def test_a_mode_that_rates_nothing_has_only_the_calls(self):
         found = values(cr.judgment((judged_user({}, []), [tool_call([])])))
 
-        self.assertEqual(set(found), {"consolidation calls lost", "facts lost with them"})
+        self.assertEqual(set(found), {"consolidation calls lost", "facts lost with them",
+                                      "calls with no tool call",
+                                      "facts lost without a tool call"})
 
 
 class AnswersTest(unittest.TestCase):

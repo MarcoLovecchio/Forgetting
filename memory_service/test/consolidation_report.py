@@ -22,7 +22,9 @@ From one or more runs of halumem_adapter.py; the judged sections after its evalu
                    or ratings the model left out or wrote off the scale; the share of
                    each level of each rating; the consolidation calls whose facts came
                    as a string, which the service cannot read, and the facts lost with
-                   them. The causes and the calls come from logs/<uuid>.log
+                   them; the calls answered with text and no tool call, which write
+                   nothing, and the facts the last JSON block of that text held. The
+                   causes and the calls come from logs/<uuid>.log
     cost         the consolidation calls: per exchange, seconds and tokens per call,
                    their share of the time the dialogue took
     answer cost    the answer calls, seconds and tokens each, and per question the ms of
@@ -68,7 +70,9 @@ SHARE, NUMBER, TOKENS, MILLISECONDS = "share", "number", "tokens", "ms"
 JUDGED, RESULT, LOGGED = "judged", "result", "logged"
 # The lines the service prints, in memory_manager_llm.py and consolidation.py.
 TOOL_CALL = "Invoking InsertCoreMemories with args: "
+NO_TOOL_CALL = "Summarization result: no tool call, content="
 STORED_AS_NEW = re.compile(r"No target for 'redundant', storing (.*) as a new memory$")
+JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 Record = Dict[str, Any]
 Value = Tuple[str, str, Optional[float]]
@@ -297,15 +301,40 @@ def facts_in(text: str) -> int:
         found = json.loads(text)
     except ValueError:
         return text.count('"fact"')
+    if isinstance(found, dict) and isinstance(found.get("memories"), list):
+        return len(found["memories"])
     return len(found) if isinstance(found, list) else 1
 
 
-def consolidation_calls(lines: Sequence[str]) -> Tuple[int, int, int, int]:
-    """(calls, calls lost, facts, facts lost): a call whose facts came as a string is
-    lost, since the service reads the string one character at a time."""
-    calls = lost = facts = facts_lost = 0
+def facts_in_reply(content: str) -> int:
+    """The facts a reply with no tool call held: those of its last JSON block."""
+    blocks = JSON_BLOCK.findall(content)
+    return facts_in(blocks[-1].strip()) if blocks else facts_in(content)
+
+
+class Calls(NamedTuple):
+    """The consolidation calls of a user, and the facts they carried."""
+
+    calls: int
+    lost: int
+    facts: int
+    facts_lost: int
+    without_tool: int
+    facts_without_tool: int
+
+
+def consolidation_calls(lines: Sequence[str]) -> Calls:
+    """A call whose facts came as a string is lost, since the service reads the string one
+    character at a time; a call answered with text and no tool call writes nothing."""
+    calls = lost = facts = facts_lost = without_tool = facts_without_tool = 0
     for line in lines:
         line = line.strip()
+        if line.startswith(NO_TOOL_CALL):
+            content = literal(line[len(NO_TOOL_CALL):])
+            count = facts_in_reply(content) if isinstance(content, str) else 0
+            calls, without_tool = calls + 1, without_tool + 1
+            facts, facts_without_tool = facts + count, facts_without_tool + count
+            continue
         args = literal(line[len(TOOL_CALL):]) if line.startswith(TOOL_CALL) else None
         if not isinstance(args, dict):
             continue
@@ -317,7 +346,7 @@ def consolidation_calls(lines: Sequence[str]) -> Tuple[int, int, int, int]:
             facts += count
         elif isinstance(memories, list):
             facts += len(memories)
-    return calls, lost, facts, facts_lost
+    return Calls(calls, lost, facts, facts_lost, without_tool, facts_without_tool)
 
 
 def judgment(found: Tuple[Record, Optional[List[str]]]) -> List[Value]:
@@ -351,9 +380,12 @@ def judgment(found: Tuple[Record, Optional[List[str]]]) -> List[Value]:
             values += [(f"{name} {level}", SHARE, ratio(count, given))
                        for level, count in sorted(counts.items(), key=lambda item: int(item[0]))]
     if lines is not None:
-        calls, lost, facts, facts_lost = consolidation_calls(lines)
-        values += [("consolidation calls lost", SHARE, ratio(lost, calls)),
-                   ("facts lost with them", SHARE, ratio(facts_lost, facts))]
+        found = consolidation_calls(lines)
+        values += [("consolidation calls lost", SHARE, ratio(found.lost, found.calls)),
+                   ("facts lost with them", SHARE, ratio(found.facts_lost, found.facts)),
+                   ("calls with no tool call", SHARE, ratio(found.without_tool, found.calls)),
+                   ("facts lost without a tool call", SHARE,
+                    ratio(found.facts_without_tool, found.facts))]
     return values
 
 
