@@ -576,7 +576,8 @@ From the run alone, before `evaluate` too, it prints:
   why the call is missing;
 - after the judgment section, and only on screen, the same calls counted over the users,
   with the new, update and redundant operations lost without a tool call: save it with
-  `tee`;
+  `tee`. A reply of the model is one call, even with several tool calls in it, while the
+  empty lists and the facts given as a string are counted by tool call;
 - the cost of the consolidation calls: per exchange, the seconds and tokens of a call,
   and their share of the time the dialogue took;
 - the cost of the answer: the seconds and tokens of an answer call, and per question the

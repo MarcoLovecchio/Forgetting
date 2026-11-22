@@ -215,12 +215,20 @@ def written(op_type, content, ratings):
             "ratings": ratings}
 
 
-def tool_call(memories):
-    return f"Invoking InsertCoreMemories with args: {dict(memories=memories)}\n"
+def tool_call(*given):
+    """What the service prints for one reply: its result, then a line for each tool call."""
+    calls = [dict(memories=memories) for memories in given]
+    result = "; ".join(f"InsertCoreMemories(args={args})" for args in calls)
+    return f"\tSummarization result: {result}\n" + "".join(
+        f"Invoking InsertCoreMemories with args: {args}\n" for args in calls)
 
 
 def no_tool_call(reply):
     return f"\tSummarization result: no tool call, content={reply!r}\n"
+
+
+def log_lines(printed):
+    return "".join(printed).splitlines(True)
 
 
 class JudgmentTest(unittest.TestCase):
@@ -259,7 +267,7 @@ class JudgmentTest(unittest.TestCase):
                            '{"fact": "L\'utente leg'),
                  "Invoking InsertCoreMemories with args: {'memories': [{'fact'\n"]
 
-        found = values(cr.judgment((judged_user({}, []), lines)))
+        found = values(cr.judgment((judged_user({}, []), log_lines(lines))))
 
         self.assertAlmostEqual(found["consolidation calls lost"], 2 / 3)
         self.assertAlmostEqual(found["facts lost with them"], 3 / 5)
@@ -284,7 +292,7 @@ class JudgmentTest(unittest.TestCase):
                  f"\tSummarization result: no tool call, content={said!r}\n",
                  f"\tSummarization result: no tool call, content={lost!r}\n"]
 
-        found = values(cr.judgment((judged_user({}, []), lines)))
+        found = values(cr.judgment((judged_user({}, []), log_lines(lines))))
 
         self.assertAlmostEqual(found["calls with no tool call"], 2 / 3)
         self.assertAlmostEqual(found["facts lost without a tool call"], 2 / 4)
@@ -329,7 +337,7 @@ class JudgmentTest(unittest.TestCase):
         lines = [tool_call([]), tool_call([{"fact": fact, "operation": "new"}])] + [
             no_tool_call(reply) for reply in replies]
 
-        found = values(cr.judgment((judged_user({}, []), lines)))
+        found = values(cr.judgment((judged_user({}, []), log_lines(lines))))
 
         self.assertAlmostEqual(found["calls with no tool call"], 8 / 10)
         self.assertAlmostEqual(found["no tool call, a new fact or update"], 2 / 10)
@@ -339,6 +347,15 @@ class JudgmentTest(unittest.TestCase):
         self.assertAlmostEqual(found["no tool call, no text"], 2 / 10)
         self.assertAlmostEqual(found["calls with an empty list, as text too"], 2 / 10)
         self.assertAlmostEqual(found["new facts and updates lost without a tool call"], 2 / 3)
+
+    def test_a_reply_with_several_tool_calls_is_one_call(self):
+        fact = [{"fact": "L'utente vive a Palermo", "operation": "new"}]
+        other = [{"fact": "L'utente nuota", "operation": "new"}]
+        lines = [tool_call(fact, other), tool_call([]), no_tool_call("")]
+
+        found = cr.consolidation_calls(log_lines(lines))
+
+        self.assertEqual((found.calls, found.facts, found.writes), (3, 2, 2))
 
     def test_the_last_block_is_the_one_that_counts(self):
         reply = ('```json\n[{"fact": "x", "operation": "new"}]\n```\n'
@@ -350,7 +367,7 @@ class JudgmentTest(unittest.TestCase):
         self.assertEqual(found["no tool call, a new fact or update"], 0.0)
 
     def test_a_mode_that_rates_nothing_has_only_the_calls(self):
-        found = values(cr.judgment((judged_user({}, []), [tool_call([])])))
+        found = values(cr.judgment((judged_user({}, []), log_lines([tool_call([])]))))
 
         self.assertEqual(set(found), {"consolidation calls lost", "facts lost with them",
                                       "calls with an empty list, as text too",

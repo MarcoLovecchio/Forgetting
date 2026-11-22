@@ -75,7 +75,8 @@ SHARE, NUMBER, TOKENS, MILLISECONDS = "share", "number", "tokens", "ms"
 JUDGED, RESULT, LOGGED = "judged", "result", "logged"
 # The lines the service prints, in memory_manager_llm.py and consolidation.py.
 TOOL_CALL = "Invoking InsertCoreMemories with args: "
-NO_TOOL_CALL = "Summarization result: no tool call, content="
+REPLY = "Summarization result: "
+NO_TOOL_CALL = REPLY + "no tool call, content="
 STORED_AS_NEW = re.compile(r"No target for 'redundant', storing (.*) as a new memory$")
 JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 FACT_KEY = re.compile(r'"fact"\s*(?::|$)')
@@ -369,17 +370,18 @@ class Calls(NamedTuple):
 
 def consolidation_calls(lines: Sequence[str]) -> Calls:
     """A call whose facts came as a string is lost, since the service reads the string one
-    character at a time; a call with no tool call writes nothing, whatever its text held."""
+    character at a time; a call with no tool call writes nothing, whatever its text held.
+    A reply is one call, however many tool calls it holds."""
     calls = lost = empty = facts = facts_lost = facts_without_tool = writes = 0
     replies: Counter = Counter()
     operations_lost: Counter = Counter()
     for line in lines:
         line = line.strip()
+        calls += line.startswith(REPLY)
         if line.startswith(NO_TOOL_CALL):
             content = literal(line[len(NO_TOOL_CALL):])
             content = content if isinstance(content, str) else ""
             count, done = facts_in_reply(content), operations_in(reply_part(content))
-            calls += 1
             replies[reply_kind(content, count, done)] += 1
             operations_lost.update(done)
             writes += sum(name in WRITES for name in done)
@@ -388,7 +390,6 @@ def consolidation_calls(lines: Sequence[str]) -> Calls:
         args = literal(line[len(TOOL_CALL):]) if line.startswith(TOOL_CALL) else None
         if not isinstance(args, dict):
             continue
-        calls += 1
         memories = args.get("memories") or []
         if isinstance(memories, str):
             count = facts_in(memories)
