@@ -22,9 +22,12 @@ From one or more runs of halumem_adapter.py; the judged sections after its evalu
                    or ratings the model left out or wrote off the scale; the share of
                    each level of each rating; the consolidation calls whose facts came
                    as a string, which the service cannot read, and the facts lost with
-                   them; the calls answered with text and no tool call, which write
-                   nothing, and the facts the last JSON block of that text held. The
-                   causes and the calls come from logs/<uuid>.log
+                   them; the skips, an empty list in the call or written as text; the
+                   calls with no tool call, which write nothing, by what the last JSON
+                   block of the reply held, or the whole reply without one (a new fact or
+                   update, other operations only, an empty list, no list, no text), and
+                   what was lost with them. After the section the same calls are counted
+                   over the users. The causes and the calls come from logs/<uuid>.log
     cost         the consolidation calls: per exchange, seconds and tokens per call,
                    their share of the time the dialogue took
     answer cost    the answer calls, seconds and tokens each, and per question the ms of
@@ -51,10 +54,12 @@ import os
 import random
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 import halumem_adapter as adapter
+from memory_service.consolidation import normalize_operation
 
 CONSOLIDATION_OPERATIONS = ("create", "update", "redundant", "delete")
 UPDATE_LABELS = ("Correct", "Hallucination", "Omission", "Other")
@@ -73,6 +78,14 @@ TOOL_CALL = "Invoking InsertCoreMemories with args: "
 NO_TOOL_CALL = "Summarization result: no tool call, content="
 STORED_AS_NEW = re.compile(r"No target for 'redundant', storing (.*) as a new memory$")
 JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+FACT_KEY = re.compile(r'"fact"\s*(?::|$)')
+# The quotes are escaped when the arguments of a call are written as a string.
+OPERATION = re.compile(r'"operation\\*"\s*:\s*\\*"(\w+)\\*"')
+EMPTY_LIST = re.compile(r"\[\s*\]")
+REPLY_END = 200  # characters: reasoning written as text may quote a [] before its answer
+WRITES = ("new", "update")
+WRITE, OTHER, EMPTY, NO_LIST, NO_TEXT = REPLY_KINDS = (
+    "a new fact or update", "other operations only", "an empty list", "no list", "no text")
 
 Record = Dict[str, Any]
 Value = Tuple[str, str, Optional[float]]
@@ -296,20 +309,48 @@ def stored_as_new(lines: Sequence[str]) -> set:
     return facts
 
 
-def facts_in(text: str) -> int:
-    try:
-        found = json.loads(text)
-    except ValueError:
-        return text.count('"fact"')
-    if isinstance(found, dict) and isinstance(found.get("memories"), list):
-        return len(found["memories"])
-    return len(found) if isinstance(found, list) else 1
+def facts_in(found: Any) -> int:
+    """The facts of some operations, or of the call around them, read or still as text."""
+    if isinstance(found, str):
+        try:
+            return facts_in(json.loads(found))
+        except ValueError:
+            return len(FACT_KEY.findall(found))
+    if isinstance(found, dict):
+        if "fact" in found or "operation" in found:
+            return 1
+        return sum(facts_in(value) for value in found.values())
+    if isinstance(found, list):
+        # A string in a list is a fact written without its operation.
+        return sum(1 if isinstance(item, str) else facts_in(item) for item in found)
+    return 0
+
+
+def reply_part(content: str) -> str:
+    """What counts of a reply with no tool call: its last JSON block, or all of it."""
+    blocks = JSON_BLOCK.findall(content)
+    return blocks[-1].strip() if blocks else content
 
 
 def facts_in_reply(content: str) -> int:
     """The facts a reply with no tool call held: those of its last JSON block."""
-    blocks = JSON_BLOCK.findall(content)
-    return facts_in(blocks[-1].strip()) if blocks else facts_in(content)
+    return facts_in(reply_part(content))
+
+
+def operations_in(text: str) -> List[str]:
+    """The operations written in a text, as the service names them, or as written."""
+    return [normalize_operation(name) or name for name in OPERATION.findall(text)]
+
+
+def reply_kind(content: str, facts: int, done: Sequence[str]) -> str:
+    """What a reply with no tool call held, given its facts and its operations."""
+    if not content.strip():
+        return NO_TEXT
+    if any(name in WRITES for name in done):
+        return WRITE
+    if done or facts:
+        return OTHER
+    return EMPTY if EMPTY_LIST.search(reply_part(content)[-REPLY_END:]) else NO_LIST
 
 
 class Calls(NamedTuple):
@@ -317,22 +358,31 @@ class Calls(NamedTuple):
 
     calls: int
     lost: int
+    empty: int  # in the call: those written as text are among the replies
     facts: int
     facts_lost: int
-    without_tool: int
     facts_without_tool: int
+    writes: int  # the new facts and updates given, stored or lost
+    replies: Counter  # the calls with no tool call, by what they held
+    operations_lost: Counter  # the operations of those calls
 
 
 def consolidation_calls(lines: Sequence[str]) -> Calls:
     """A call whose facts came as a string is lost, since the service reads the string one
-    character at a time; a call answered with text and no tool call writes nothing."""
-    calls = lost = facts = facts_lost = without_tool = facts_without_tool = 0
+    character at a time; a call with no tool call writes nothing, whatever its text held."""
+    calls = lost = empty = facts = facts_lost = facts_without_tool = writes = 0
+    replies: Counter = Counter()
+    operations_lost: Counter = Counter()
     for line in lines:
         line = line.strip()
         if line.startswith(NO_TOOL_CALL):
             content = literal(line[len(NO_TOOL_CALL):])
-            count = facts_in_reply(content) if isinstance(content, str) else 0
-            calls, without_tool = calls + 1, without_tool + 1
+            content = content if isinstance(content, str) else ""
+            count, done = facts_in_reply(content), operations_in(reply_part(content))
+            calls += 1
+            replies[reply_kind(content, count, done)] += 1
+            operations_lost.update(done)
+            writes += sum(name in WRITES for name in done)
             facts, facts_without_tool = facts + count, facts_without_tool + count
             continue
         args = literal(line[len(TOOL_CALL):]) if line.startswith(TOOL_CALL) else None
@@ -344,9 +394,14 @@ def consolidation_calls(lines: Sequence[str]) -> Calls:
             count = facts_in(memories)
             lost, facts_lost = lost + 1, facts_lost + count
             facts += count
+            writes += sum(name in WRITES for name in operations_in(memories))
         elif isinstance(memories, list):
+            empty += not memories
             facts += len(memories)
-    return Calls(calls, lost, facts, facts_lost, without_tool, facts_without_tool)
+            writes += sum(normalize_operation(item.get("operation")) in WRITES
+                          for item in memories if isinstance(item, dict))
+    return Calls(calls, lost, empty, facts, facts_lost, facts_without_tool, writes, replies,
+                 operations_lost)
 
 
 def judgment(found: Tuple[Record, Optional[List[str]]]) -> List[Value]:
@@ -383,10 +438,31 @@ def judgment(found: Tuple[Record, Optional[List[str]]]) -> List[Value]:
         found = consolidation_calls(lines)
         values += [("consolidation calls lost", SHARE, ratio(found.lost, found.calls)),
                    ("facts lost with them", SHARE, ratio(found.facts_lost, found.facts)),
-                   ("calls with no tool call", SHARE, ratio(found.without_tool, found.calls)),
-                   ("facts lost without a tool call", SHARE,
-                    ratio(found.facts_without_tool, found.facts))]
+                   ("calls with an empty list, as text too", SHARE,
+                    ratio(found.empty + found.replies[EMPTY], found.calls)),
+                   ("calls with no tool call", SHARE,
+                    ratio(sum(found.replies.values()), found.calls))]
+        values += [(f"no tool call, {kind}", SHARE, ratio(found.replies[kind], found.calls))
+                   for kind in REPLY_KINDS]
+        values += [("facts lost without a tool call", SHARE,
+                    ratio(found.facts_without_tool, found.facts)),
+                   ("new facts and updates lost without a tool call", SHARE,
+                    ratio(sum(found.operations_lost[name] for name in WRITES), found.writes))]
     return values
+
+
+def calls_counted(found: Sequence[Calls]) -> List[Tuple[str, int]]:
+    """The calls of some users, counted together."""
+    replies = sum((calls.replies for calls in found), Counter())
+    lost = sum((calls.operations_lost for calls in found), Counter())
+    return ([("calls", sum(calls.calls for calls in found)),
+             ("lost, facts as a string", sum(calls.lost for calls in found)),
+             ("an empty list, in the call", sum(calls.empty for calls in found)),
+             ("no tool call", sum(replies.values()))]
+            + [(f"no tool call, {kind}", replies[kind]) for kind in REPLY_KINDS]
+            + [(f"{name} lost without a tool call", lost[name])
+               for name in WRITES + ("redundant",)]
+            + [("new facts and updates given", sum(calls.writes for calls in found))])
 
 
 def cost(result: Record) -> List[Value]:
@@ -609,6 +685,28 @@ def print_section(title: str, users: int, names: Sequence[str], table: Table) ->
                                                   for cell, column in zip(cells, columns)))
 
 
+def print_counts(versions: Sequence[Version], users: Sequence[str]) -> None:
+    """The calls counted over the users who have a log in every version: shares of few
+    calls hide how many they are."""
+    found: List[List[Calls]] = [[] for _ in versions]
+    for uuid in users:
+        logs = [agent_log(version.run_dir, uuid) for version in versions]
+        if all(lines is not None for lines in logs):
+            for calls, lines in zip(found, logs):
+                calls.append(consolidation_calls(lines))
+    if not found[0]:
+        return
+    counted = [calls_counted(calls) for calls in found]
+    width = max([LABEL_WIDTH] + [len(label) + 4 for label, _ in counted[0]])
+    columns = [max(len(version.name), 8) + 2 for version in versions]
+    print(f"\nconsolidation calls, counted over {len(found[0])} users")
+    print(f"{'':<{width}}" + "".join(f"{version.name:>{column}}"
+                                     for version, column in zip(versions, columns)))
+    for cells in zip(*counted):
+        print(f"  {cells[0][0]:<{width - 2}}" + "".join(
+            f"{count:>{column}}" for (_, count), column in zip(cells, columns)))
+
+
 def csv_rows(title: str, names: Sequence[str], table: Table) -> List[List[Any]]:
     """section, kpi, version, users, mean, and the difference from the first version with
     its interval; shares as fractions."""
@@ -664,6 +762,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"\n{title}: nothing to count in these runs.")
             continue
         print_section(title, len(users), names, table)
+        if compute is judgment:
+            print_counts(versions, users)
         found += csv_rows(title, names, table)
 
     if arguments.csv:

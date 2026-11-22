@@ -219,6 +219,10 @@ def tool_call(memories):
     return f"Invoking InsertCoreMemories with args: {dict(memories=memories)}\n"
 
 
+def no_tool_call(reply):
+    return f"\tSummarization result: no tool call, content={reply!r}\n"
+
+
 class JudgmentTest(unittest.TestCase):
     """The ratings of what consolidation wrote, and the calls the service could not read."""
 
@@ -286,12 +290,78 @@ class JudgmentTest(unittest.TestCase):
         self.assertAlmostEqual(found["facts lost without a tool call"], 2 / 4)
         self.assertEqual(found["consolidation calls lost"], 0.0)
 
+    def test_a_call_written_as_text_holds_the_facts_of_its_operations(self):
+        two = [{"fact": "L'utente ama il jazz", "operation": "new"},
+               {"fact": "L'utente suona il piano", "operation": "new"}]
+        name = "InsertCoreMemories"
+
+        def fenced(value):
+            return f"Chiamo lo strumento:\n```json\n{json.dumps(value)}\n```"
+
+        for shape, content, expected in (
+                ("arguments", fenced({"name": name, "arguments": {"memories": two}}), 2),
+                ("arguments as a string",
+                 fenced({"name": name, "arguments": json.dumps({"memories": two})}), 2),
+                ("a list of calls",
+                 fenced([{"function": {"name": name, "arguments": {"memories": two}}}]), 2),
+                ("a call with an empty list",
+                 fenced({"name": name, "arguments": {"memories": []}}), 0),
+                ("an empty object", fenced({}), 0),
+                ("one operation", fenced(two[0]), 1),
+                ("a deletion with no fact",
+                 fenced([{"operation": "delete", "target_item_id": "850ef5a4"}]), 1),
+                ("facts as plain text", fenced(["L'utente nuota", "L'utente corre"]), 2),
+                ("tags, no block", f"<tool_call>{json.dumps({'memories': two})}</tool_call>", 2),
+                ("the field only named", 'Il campo "fact" resta vuoto.', 0)):
+            with self.subTest(shape=shape):
+                self.assertEqual(cr.facts_in_reply(content), expected)
+
+    def test_a_reply_with_no_tool_call_counts_under_what_it_held(self):
+        fact = "L'utente ama il jazz"
+        escaped = json.dumps({"arguments": json.dumps(
+            {"memories": [{"fact": fact, "operation": "add"}]})})
+        replies = [f"```json\n{escaped}\n```",
+                   json.dumps([{"operation": "redundant", "fact": "x"},
+                               {"operation": "update", "fact": "y"}]),
+                   '[{"operation": "redundant", "fact": "x"}]', '[{"fact": "x"}]',
+                   "Niente di nuovo.\n```json\n[]\n```",
+                   'Lo schema dice "operation": "new | update", qui non serve.', "", "\n\n"]
+        lines = [tool_call([]), tool_call([{"fact": fact, "operation": "new"}])] + [
+            no_tool_call(reply) for reply in replies]
+
+        found = values(cr.judgment((judged_user({}, []), lines)))
+
+        self.assertAlmostEqual(found["calls with no tool call"], 8 / 10)
+        self.assertAlmostEqual(found["no tool call, a new fact or update"], 2 / 10)
+        self.assertAlmostEqual(found["no tool call, other operations only"], 2 / 10)
+        self.assertAlmostEqual(found["no tool call, an empty list"], 1 / 10)
+        self.assertAlmostEqual(found["no tool call, no list"], 1 / 10)
+        self.assertAlmostEqual(found["no tool call, no text"], 2 / 10)
+        self.assertAlmostEqual(found["calls with an empty list, as text too"], 2 / 10)
+        self.assertAlmostEqual(found["new facts and updates lost without a tool call"], 2 / 3)
+
+    def test_the_last_block_is_the_one_that_counts(self):
+        reply = ('```json\n[{"fact": "x", "operation": "new"}]\n```\n'
+                 "È già in memoria:\n```json\n[]\n```")
+
+        found = values(cr.judgment((judged_user({}, []), [no_tool_call(reply)])))
+
+        self.assertEqual(found["no tool call, an empty list"], 1.0)
+        self.assertEqual(found["no tool call, a new fact or update"], 0.0)
+
     def test_a_mode_that_rates_nothing_has_only_the_calls(self):
         found = values(cr.judgment((judged_user({}, []), [tool_call([])])))
 
         self.assertEqual(set(found), {"consolidation calls lost", "facts lost with them",
+                                      "calls with an empty list, as text too",
                                       "calls with no tool call",
-                                      "facts lost without a tool call"})
+                                      "no tool call, a new fact or update",
+                                      "no tool call, other operations only",
+                                      "no tool call, an empty list",
+                                      "no tool call, no list",
+                                      "no tool call, no text",
+                                      "facts lost without a tool call",
+                                      "new facts and updates lost without a tool call"})
 
 
 class AnswersTest(unittest.TestCase):
@@ -357,7 +427,8 @@ class ComparisonTest(unittest.TestCase):
 
     def report(self, *names):
         path = os.path.join(self.folder.name, "report.csv")
-        with contextlib.redirect_stdout(io.StringIO()):
+        self.printed = io.StringIO()
+        with contextlib.redirect_stdout(self.printed):
             self.assertEqual(cr.main(["--halumem", self.folder.name, "--versions", *names,
                                       "--csv", path]), 0)
         with open(path, encoding="utf-8") as handle:
@@ -405,6 +476,32 @@ class ComparisonTest(unittest.TestCase):
 
         self.assertEqual(rows[("consolidation calls lost", "logged")]["mean"], "1.0")
         self.assertEqual(rows[("consolidation calls lost", "unlogged")]["users"], "0")
+
+    def test_the_calls_are_counted_over_the_users_next_to_their_shares(self):
+        lost = no_tool_call('[{"fact": "x", "operation": "new"}]')
+        self.write_version("first", {"u1": None, "u2": None, "u3": None},
+                           log=[tool_call([]), lost])
+        self.write_version("second", {"u1": None, "u2": None},
+                           log=[tool_call([]), tool_call([]), lost, lost])
+
+        rows = self.report("first", "second")
+
+        self.assertEqual(rows[("no tool call, a new fact or update", "first")]["mean"], "0.5")
+        counted = self.printed.getvalue().split("consolidation calls, counted over 2 users")[1]
+        counted = {line.rsplit(None, 2)[0].strip(): line.split()[-2:]
+                   for line in counted.split("\n\n")[0].splitlines()[2:]}
+        self.assertEqual(counted["calls"], ["4", "8"])
+        self.assertEqual(counted["an empty list, in the call"], ["2", "4"])
+        self.assertEqual(counted["no tool call, a new fact or update"], ["2", "4"])
+        self.assertEqual(counted["new lost without a tool call"], ["2", "4"])
+
+    def test_the_counts_need_the_log_of_every_version(self):
+        self.write_version("logged", {"u1": None}, log=[tool_call([])])
+        self.write_version("unlogged", {"u1": None})
+
+        self.report("logged", "unlogged")
+
+        self.assertNotIn("counted over", self.printed.getvalue())
 
 
 if __name__ == "__main__":

@@ -267,11 +267,14 @@ Everything lands in `PATH/eval/results/memory_service-NAME/`: `run.json` with th
 configuration and the commit, `memory_service_eval_results.jsonl` for the evaluation,
 `memory_service_eval_stat_result.json` with its scores, `logs/` with the agent's output
 for each user and `archives/` with the Chroma folders. Next to what HaluMem reads, every
-session also keeps its operations, each with the exchange and the insert it belongs to (the
-flush is an insert of its own), and how many memories were active at its end. Every user keeps in `unrated` how many new and updated
-facts came without the ratings of the mode, and in `ratings` how many times each level of
-each rating was given, counted as in the long test: the run prints both when the user
-finishes, and summed over the finished users at the end.
+session also keeps its operations, each with `exchange`, the exchange that was arriving
+when it was written, and `insert`, the insert that wrote it, and how many memories were
+active at its end. With the window of two the exchange an operation was read from is
+`insert - 1`, counting from 0: `exchange` is the one after it, except in the flush, an
+insert of its own that consolidates the last one. Every user keeps in `unrated` how many
+new and updated facts came without the ratings of the mode, and in `ratings` how many
+times each level of each rating was given, counted as in the long test: the run prints
+both when the user finishes, and summed over the finished users at the end.
 
 What the memory costs the robot is kept too. Every session has `archive_bytes`, the size
 on disk of the user's Chroma folder when it ends: Chroma writes its index in batches and
@@ -543,7 +546,10 @@ after `evaluate`, it prints:
 From the run alone, before `evaluate` too, it prints:
 - creates, updates, redundants and deletes per exchange;
 - the share of redundants that brought an archived memory back to the core;
-- the share of exchanges that wrote nothing;
+- the share of exchanges that wrote nothing, whatever the reason: an empty list,
+  operations all skipped, a call lost or a reply with no tool call;
+- the skips, the calls in which the model chose to store nothing: an empty list, in the
+  call or written as text;
 - the memories written per memory point;
 - the active memories of the archive flagged safety, which no prune can take: their share
   at the questions and at the end, and their number at the end, the slots an archive
@@ -552,11 +558,25 @@ From the run alone, before `evaluate` too, it prints:
   whose target was not found, which the service stores as new with no ratings, or
   ratings the model left out or wrote off the scale. Next to them, the share of each
   level of each rating, and the consolidation calls whose facts came as a string, which
-  the service cannot read, with the facts lost in them. Apart from them, the calls the
-  model answered with text and no tool call, which write nothing: the facts it wrote in
-  the last JSON block of that text are counted as lost. The server does not enforce the
-  required tool call, so this happens with reasoning on too. The causes and the lost
-  calls come from `logs/<uuid>.log`;
+  the service cannot read, with the facts lost in them. The causes and the calls come
+  from `logs/<uuid>.log`;
+- the calls that came back with no tool call, which write nothing, as shares of all the
+  calls, by what the last JSON block of the reply held, or the whole reply without one:
+  - a new fact or update, as an operation or inside a call written out: lost;
+  - other operations only, almost always confirmations: the fact is already stored, but
+    its date is not refreshed and it does not come back to the core;
+  - an empty list: a skip, not a loss;
+  - no list, words alone: what the model meant to store is unknown;
+  - no text, as when the client cannot parse the arguments of the call: unknown too, so
+    what is counted as lost without a tool call is a lower bound.
+
+  Next to them, the facts lost without a tool call, and the share lost of the new facts
+  and updates the model gave. A reply in text means that the server did not enforce the
+  required call, which happens with reasoning on too; a reply with no text does not tell
+  why the call is missing;
+- after the judgment section, and only on screen, the same calls counted over the users,
+  with the new, update and redundant operations lost without a tool call: save it with
+  `tee`;
 - the cost of the consolidation calls: per exchange, the seconds and tokens of a call,
   and their share of the time the dialogue took;
 - the cost of the answer: the seconds and tokens of an answer call, and per question the
@@ -703,13 +723,14 @@ A few things worth knowing, checked against the sources:
   parameter, so `backends.py` sends it as `chat_template_kwargs` inside
   `extra_body`. The gate prints which mode it ran
   in, so two runs can be compared without relying on memory.
-- **The tool calls that are always expected are forced.** With a temperature
+- **The tool calls that are always expected are requested as required.** With a temperature
   deliberately different from zero the model now and then answers in prose
   instead of emitting the call — measured by the gate: 9 times out of 10, not 10.
   Where a tool call is the only sensible outcome that tenth time is **silent data
   loss**: the node saves nothing and the messages are cut anyway. That is why
   `InsertCoreMemories` is bound with
-  `tool_choice="required"`. No flexibility is lost: the model can always return an
+  `tool_choice="required"`, which the server may not enforce: `consolidation_report.py`
+  counts the replies with no tool call. No flexibility is lost: the model can always return an
   empty list. On the retrieval branch `retrieve_memory` and `NoSearchNeeded` are
   bound together, also with `required`: not searching stays possible, but it is
   an answer that can be seen and not a silence.
