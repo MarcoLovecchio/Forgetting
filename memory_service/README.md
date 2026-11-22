@@ -571,9 +571,10 @@ From the run alone, before `evaluate` too, it prints:
     what is counted as lost without a tool call is a lower bound.
 
   Next to them, the facts lost without a tool call, and the share lost of the new facts
-  and updates the model gave. A reply in text means that the server did not enforce the
-  required call, which happens with reasoning on too; a reply with no text does not tell
-  why the call is missing;
+  and updates the model gave. An operation repeated inside one reply, as in a loop, counts
+  once, and so does one repeated in facts given as a string. A reply in text means that
+  the server did not enforce the required call, which happens with reasoning on too; a
+  reply with no text does not tell why the call is missing;
 - after the judgment section, and only on screen, the same calls counted over the users,
   with the new, update and redundant operations lost without a tool call: save it with
   `tee`. A reply of the model is one call, even with several tool calls in it, while the
@@ -707,9 +708,11 @@ A few things worth knowing, checked against the sources:
   different words in another: the server would embed noise and return it
   **without any error**. That is why `backends.py` passes
   `check_embedding_ctx_length=False`.
-- **No greedy decoding.** Qwen advises against `temperature=0`: *"can lead to
-  performance degradation and endless repetitions"*. `.config` carries the preset
-  recommended for thinking (`1.0 / 0.95 / 20`); `top_k` is not a parameter of the
+- **No greedy decoding.** The Qwen3 card advises against it (*"can lead to
+  performance degradation and endless repetitions"*); the Qwen3.5 card does not mention
+  it. `.config` carries the temperature, top_p and top_k of the preset recommended for
+  thinking (`1.0 / 0.95 / 20`), not its `presence_penalty` of 1.5, and no `max_tokens`: a
+  reply that loops runs until the server's context is full. `top_k` is not a parameter of the
   OpenAI API and travels in `extra_body`, which vLLM honours. All the values are
   tuned from `.config`, without touching the code, and whatever you omit stays at
   the server's default.

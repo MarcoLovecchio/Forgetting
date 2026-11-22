@@ -82,6 +82,8 @@ JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 FACT_KEY = re.compile(r'"fact"\s*(?::|$)')
 # The quotes are escaped when the arguments of a call are written as a string.
 OPERATION = re.compile(r'"operation\\*"\s*:\s*\\*"(\w+)\\*"')
+OPERATION_ITEM = re.compile(r"\{[^{}]*\}?")  # the last of a reply cut short never closes
+FACT_TEXT = re.compile(r'"fact\\*"\s*:\s*\\*"(.*?)\\*"\s*(?:[,}\n]|$)')
 EMPTY_LIST = re.compile(r"\[\s*\]")
 REPLY_END = 200  # characters: reasoning written as text may quote a [] before its answer
 WRITES = ("new", "update")
@@ -327,10 +329,29 @@ def facts_in(found: Any) -> int:
     return 0
 
 
+def without_repeats(text: str) -> str:
+    """The text with each operation once: a model in a loop writes the same one over and over."""
+    seen = set()
+
+    def once(found: Any) -> str:
+        item = found.group()
+        facts, done = FACT_TEXT.findall(item), operations_in(item)
+        if not facts and not done:
+            return item
+        key = (tuple(done), tuple(facts) or item)
+        if key in seen:
+            return "[]"  # still valid JSON where an operation was, and it holds no fact
+        seen.add(key)
+        return item
+
+    return OPERATION_ITEM.sub(once, text)
+
+
 def reply_part(content: str) -> str:
-    """What counts of a reply with no tool call: its last JSON block, or all of it."""
+    """What counts of a reply with no tool call: its last JSON block, or all of it, with
+    each operation once."""
     blocks = JSON_BLOCK.findall(content)
-    return blocks[-1].strip() if blocks else content
+    return without_repeats(blocks[-1].strip() if blocks else content)
 
 
 def facts_in_reply(content: str) -> int:
@@ -392,6 +413,7 @@ def consolidation_calls(lines: Sequence[str]) -> Calls:
             continue
         memories = args.get("memories") or []
         if isinstance(memories, str):
+            memories = without_repeats(memories)
             count = facts_in(memories)
             lost, facts_lost = lost + 1, facts_lost + count
             facts += count

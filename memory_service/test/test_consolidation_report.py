@@ -357,6 +357,26 @@ class JudgmentTest(unittest.TestCase):
 
         self.assertEqual((found.calls, found.facts, found.writes), (3, 2, 2))
 
+    def test_an_operation_repeated_in_a_reply_counts_once(self):
+        jazz = {"fact": "L'utente ama il jazz", "operation": "new", "utility": 4}
+        piano = {"fact": "L'utente suona il piano", "operation": "new", "utility": 4}
+        gone = [{"operation": "delete", "target_item_id": item} for item in ("a1", "b2")]
+        cut = json.dumps([jazz] * 3)[:-2]
+        for shape, printed, expected in (
+                ("a loop", no_tool_call(json.dumps([jazz] * 153)), (1, 1)),
+                ("another rating is the same operation",
+                 no_tool_call(json.dumps([jazz, {**jazz, "utility": 3}, piano])), (2, 2)),
+                ("a loop cut by the token limit", no_tool_call(cut), (1, 1)),
+                ("arguments as a string",
+                 no_tool_call(json.dumps({"arguments": json.dumps({"memories": [jazz] * 4})})),
+                 (1, 1)),
+                ("two deletions are two", no_tool_call(json.dumps(gone + gone)), (2, 0)),
+                ("the facts as a string", tool_call(cut), (1, 1))):
+            with self.subTest(shape=shape):
+                found = cr.consolidation_calls(log_lines([printed]))
+
+                self.assertEqual((found.facts, found.writes), expected)
+
     def test_the_last_block_is_the_one_that_counts(self):
         reply = ('```json\n[{"fact": "x", "operation": "new"}]\n```\n'
                  "È già in memoria:\n```json\n[]\n```")
