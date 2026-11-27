@@ -107,22 +107,6 @@ pytest memory_service
 colcon test --packages-select memory_service
 ```
 
-`test/test_tool_calling_gate.py` is the **gate to pass before everything
-else**: it checks that the configured model produces valid tool calls for the
-real schemas (`InsertCoreMemories`, `retrieve_memory` / `NoSearchNeeded`) and that it
-copies the ids exactly. They are
-two different failures and it measures them separately, because they lead to
-different remedies: the wrong structure is cured with constrained structured
-output, the wrong ids with prompt aliasing. Every check is repeated several times,
-because with an LLM a single right answer says nothing.
-
-```bash
-pytest memory_service/test/test_tool_calling_gate.py -v -s
-
-# more reliable reading before deciding
-MEMORY_GATE_ATTEMPTS=10 pytest memory_service/test/test_tool_calling_gate.py -v -s
-```
-
 `test/test_memory_llm.py` is instead the **integration** test with the real
 stack (chat model, embedding, ChromaDB): it checks that a deleted fact never
 comes out of a real Chroma archive again, which only holds if the `status` filter
@@ -260,7 +244,7 @@ python3 memory_service/test/halumem_adapter.py evaluate --halumem PATH --version
 python3 memory_service/test/halumem_adapter.py clean --halumem PATH --version pilot
 
 # what the experiments vary
-python3 memory_service/test/halumem_adapter.py run --halumem PATH --version NAME --workers 4     --utility need_gain --combination product --frequency rate --core-limit N --archive-limit N     --prune-fraction F --model MODEL
+python3 memory_service/test/halumem_adapter.py run --halumem PATH --version NAME --workers 4     --utility need_gain --combination product --frequency rate --archive-limit N     --prune-fraction F --model MODEL
 ```
 
 Everything lands in `PATH/eval/results/memory_service-NAME/`: `run.json` with the
@@ -496,8 +480,8 @@ users and the number of users above, below and at zero. Under each table every j
 gain is also set against zero, trace by trace, in the same way: whether the judgment is
 worth anything at all, beside how two traces differ in it. The roles are printed with the
 rule each stands for, so traces of different modes
-line up: it is the comparison of the models, the sampling or the core limit on what the
-judgment gives the eviction.
+line up: it is the comparison of the models or the sampling on what the judgment gives
+the eviction.
 
 With `--fractions` it compares, within each trace on its own, the prune fractions of the
 replay instead: the own score, the calibrated ones, the score without utility and the
@@ -725,11 +709,10 @@ A few things worth knowing, checked against the sources:
   override does not mention is inherited, and `None` leaves a parameter to the
   server. Qwen switches reasoning through the chat template, not with a sampling
   parameter, so `backends.py` sends it as `chat_template_kwargs` inside
-  `extra_body`. The gate prints which mode it ran
-  in, so two runs can be compared without relying on memory.
+  `extra_body`.
 - **The tool calls that are always expected are requested as required.** With a temperature
   deliberately different from zero the model now and then answers in prose
-  instead of emitting the call — measured by the gate: 9 times out of 10, not 10.
+  instead of emitting the call, about once in ten.
   Where a tool call is the only sensible outcome that tenth time is **silent data
   loss**: the node saves nothing and the messages are cut anyway. That is why
   `InsertCoreMemories` is bound with

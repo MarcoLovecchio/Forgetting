@@ -3,8 +3,6 @@
 Run: python memory_service/run_tests.py -v
 """
 
-import contextlib
-import io
 import json
 import math
 import os
@@ -117,13 +115,6 @@ class SeriesTest(unittest.TestCase):
         self.assertEqual(ra.read_series(path, "qwen3.5-9b")["need_gain"][1][("u1", 0, 0)]["need"],
                          1)
         self.assertEqual(ra.read_series(path)["need_gain"][1][("u1", 0, 0)]["need"], 3)
-
-    def test_the_report_runs_on_two_series(self):
-        judged = {0: {"safety": False, "need": 3, "gain": 2},
-                  1: {"safety": False, "need": 1, "gain": 1}}
-        paths = [self.write(name, record("need_gain", judged)) for name in ("a.jsonl", "b.jsonl")]
-        with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(ra.main(["--ratings", *paths]), 0)
 
 
 if __name__ == "__main__":

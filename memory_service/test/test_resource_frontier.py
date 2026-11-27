@@ -54,11 +54,6 @@ class LinesTest(unittest.TestCase):
         self.assertIsNone(rf.fit([(10, 1.0), (10, 2.0)]))
         self.assertIsNone(rf.fit([]))
 
-    def test_a_trace_from_before_the_measures_has_no_points(self):
-        users = [{"sessions": [{"active_archive": 10, "questions": [{"question": "?"}]}]}]
-
-        self.assertEqual((rf.space_points(users), rf.search_points(users)), ([], []))
-
     def test_the_median_by_archive_size(self):
         points = [(10, 1.0), (20, 3.0), (60, 5.0), (1500, 9.0)]
 

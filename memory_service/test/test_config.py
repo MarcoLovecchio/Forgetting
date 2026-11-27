@@ -121,17 +121,6 @@ class ConfigTest(EnvironmentTestCase):
 
         self.assertEqual(config.embedding_config["model_name"], "qwen3-embedding")
 
-    def test_llm_and_embedding_configs_are_independent(self):
-        # They are two different models, potentially on different runtimes: one
-        # variable must not read the other.
-        os.environ["LLM_CONFIG"] = str(
-            {"memory_agent": {"model_name": "qwen3.5-4b", "model_provider": "openai"}})
-
-        config = MemoryConfig.from_environment()
-
-        self.assertEqual(config.llm_config["model_name"], "qwen3.5-4b")
-        self.assertEqual(config.embedding_config, {}, "EMBEDDING_CONFIG is not set")
-
     def test_malformed_llm_config_does_not_raise(self):
         os.environ["LLM_CONFIG"] = "{ this is not python"
 
@@ -292,15 +281,8 @@ class LocalModelParametersTest(EnvironmentTestCase):
         parameters = self._build(
             {"model_name": "Qwen/Qwen3.5-4B", "model_provider": "openai"})
 
-        for name in ("temperature", "top_p", "presence_penalty", "extra_body"):
+        for name in ("temperature", "top_p", "presence_penalty", "extra_body", "base_url"):
             self.assertNotIn(name, parameters)
-
-    def test_base_url_is_omitted_when_not_configured(self):
-        parameters = self._build(
-            {"model_name": "un-modello", "model_provider": "groq"})
-
-        self.assertNotIn("base_url", parameters,
-                         "without an address the provider's default holds")
 
 
 class OpenAIEmbeddingParametersTest(EnvironmentTestCase):

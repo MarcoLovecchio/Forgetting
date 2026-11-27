@@ -26,7 +26,7 @@ interval over the users and how many users it is above, below and at zero for. U
 table every judgment gain is also set against zero, trace by trace, in the same way: whether
 the judgment is worth anything at all. It compares
 what the judgment gives the eviction across models
-(4B, 9B), sampling or core limit, where each trace has memories of its own.
+(4B, 9B) or sampling, where each trace has memories of its own.
 
 With --repeat-at-end it reads the reports of simulate --repeat-at-end instead, and adds
 the retention and the retrievable share when every question is asked again at the end of

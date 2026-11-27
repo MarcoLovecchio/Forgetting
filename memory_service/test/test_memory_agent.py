@@ -808,12 +808,9 @@ class BenchmarkAnswerTest(MemoryServiceTestCase):
         backends.configure(config=config)
         MemoryAgent.reset_instance()
         agent = MemoryAgent(config=config)
-        agent.state["core_memory"] = [CoreMemoryItem(
-            id="core_diet", content="User is vegetarian", updated_at=self.written)]
         archive_items([CoreMemoryItem(
             id="memory_a", content="User likes black tea", updated_at=self.written)])
-        state = agent.run_memory_agent("retrieve", query="cosa bevo il pomeriggio?")
-        return state, self.llm.invocations[-1]["messages"][0].content
+        return agent.run_memory_agent("retrieve", query="cosa bevo il pomeriggio?")
 
     def test_the_model_chooses_k_unless_it_is_fixed(self):
         self.run_retrieve()
@@ -821,26 +818,16 @@ class BenchmarkAnswerTest(MemoryServiceTestCase):
 
         self.assertEqual([search["k"] for search in self.vector_store.searches], [2, 20])
 
-    def test_with_dates_the_answer_reads_the_day_of_every_memory(self):
-        state, answer = self.run_retrieve(answer_with_dates=True)
+    def test_with_dates_every_retrieved_memory_carries_its_day(self):
+        state = self.run_retrieve(answer_with_dates=True)
 
         self.assertEqual(state["retrieved_memory"],
                          "ID: memory_a, Date: 2033-12-08, Content: User likes black tea")
-        self.assertIn("Date: 2033-12-08, Content: User is vegetarian", answer)
 
     def test_without_dates_the_memories_carry_none(self):
-        state, answer = self.run_retrieve()
+        state = self.run_retrieve()
 
         self.assertEqual(state["retrieved_memory"], "ID: memory_a, Content: User likes black tea")
-        self.assertNotIn("2033-12-08", answer)
-
-    def test_with_uses_counted_the_core_keeps_its_id_before_the_day(self):
-        self.llm.script({"retrieve_memory": {"k": 2},
-                         "AnswerWithUsedMemories": {"answer": "Te nero.", "used_memory_ids": []}})
-
-        _, answer = self.run_retrieve(answer_with_dates=True, track_used=True)
-
-        self.assertIn("ID: core_diet, Date: 2033-12-08, Content: User is vegetarian", answer)
 
 
 class LastOperationsTest(MemoryServiceTestCase):

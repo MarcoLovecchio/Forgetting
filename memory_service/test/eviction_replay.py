@@ -224,8 +224,7 @@ def trace_events(result: Dict[str, Any], user: Dict[str, Any]) -> List[Any]:
     """Inserts and questions of a replayed user, in the order the run met them.
 
     Every insert of the session is there, also the ones that consolidated nothing: the
-    archive limit is checked at the end of each. A run before the `insert` field merged
-    the flush into the last exchange.
+    archive limit is checked at the end of each.
     """
     events: List[Any] = []
     for index, (replayed, session) in enumerate(zip(result["sessions"], user["sessions"])):
@@ -234,7 +233,7 @@ def trace_events(result: Dict[str, Any], user: Dict[str, Any]) -> List[Any]:
         times.append(adapter.dataset_time(session["end_time"]))
         grouped = defaultdict(list)
         for operation in replayed["operations"]:
-            grouped[operation.get("insert", operation["exchange"])].append(operation)
+            grouped[operation["insert"]].append(operation)
         for insert_index, time in enumerate(times):
             events.append(Insert(index, time, grouped.get(insert_index, []), insert_index))
         for number, question in enumerate(replayed.get("questions", [])):
@@ -1459,7 +1458,7 @@ def agreement(first: Iterable[Any], second: Iterable[Any]) -> Optional[float]:
 def trace_checks(replay: Replay, result: Dict[str, Any]) -> Dict[str, Optional[float]]:
     """The replay with no limit against the trace: what its split archived at each insert,
     and what its search found."""
-    archived = [(index, operation.get("insert", operation["exchange"]), operation["item_id"])
+    archived = [(index, operation["insert"], operation["item_id"])
                 for index, session in enumerate(result["sessions"])
                 for operation in session["operations"] if operation["op_type"] == "archive"]
     overlaps = []

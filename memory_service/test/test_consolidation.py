@@ -749,11 +749,10 @@ class UnratedCountTest(unittest.TestCase):
            ("update", None), ("create", {"need": 3}), ("redundant", None),
            ("create", {"utility": 4})]
 
-    def test_a_safety_fact_needs_no_rating_and_a_partial_one_is_missing(self):
-        self.assertEqual(count_unrated(self.LOG, "need_gain"), (3, 4))
-
-    def test_each_mode_asks_its_own_ratings(self):
-        self.assertEqual(count_unrated(self.LOG, "single"), (3, 4))
+    def test_each_mode_asks_its_own_ratings_and_a_safety_fact_none(self):
+        for mode in ("need_gain", "single"):
+            with self.subTest(mode=mode):
+                self.assertEqual(count_unrated(self.LOG, mode), (3, 4))
 
     def test_a_mode_that_rates_nothing_has_nothing_to_count(self):
         self.assertIsNone(count_unrated(self.LOG, "none"))

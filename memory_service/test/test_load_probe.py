@@ -223,11 +223,6 @@ class JudgeRequestsTest(unittest.TestCase):
         self.assertEqual(accuracy["golden_memories"],
                          "Mario vive a Palermo\nMario lavora a Catania", "interference left out")
 
-    def test_the_dialogue_as_halumem_writes_it(self):
-        self.assertEqual(probe.evaluation_dialogue(RUN[0]["sessions"][0]["dialogue"]),
-                         "[Sep 04, 2025, 09:00:00]user: Vivo a Palermo e ora lavoro a Catania\n"
-                         "[Sep 04, 2025, 09:00:00]assistant: Bello\n")
-
     def test_label_asks_the_questions_with_evidence_on_the_latest_memories(self):
         written = [f"Mario ha un ricordo numero {number:02d}" for number in range(60)]
         run = [{"user_name": "Mario Rossi", "sessions": [

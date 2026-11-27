@@ -102,14 +102,6 @@ class TraceEventsTest(unittest.TestCase):
         self.assertIsInstance(events[-1], Question)
         self.assertEqual(events[-1].key, "0:0")
 
-    def test_without_the_insert_field_the_flush_joins_the_last_exchange(self):
-        operations = [dict(create("a", 0), exchange=1), dict(create("b", 0), exchange=1)]
-
-        events = replay_tool.trace_events(self.session(operations), self.USER)
-
-        self.assertEqual([len(event.operations) for event in events if isinstance(event, Insert)],
-                         [0, 2, 0])
-
 
 class AgainstTheTraceTest(unittest.TestCase):
     """With no limit the replay is the trace: its split archives what the trace archived."""

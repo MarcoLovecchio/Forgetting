@@ -68,18 +68,16 @@ def fit(points: Sequence[Point]) -> Optional[Line]:
 
 
 def space_points(users: Sequence[Dict[str, Any]]) -> List[Point]:
-    """(active memories, bytes on disk) at the end of every session that recorded them."""
+    """(active memories, bytes on disk) at the end of every session."""
     return [(session["active_archive"], session["archive_bytes"])
-            for user in users for session in user["sessions"]
-            if "archive_bytes" in session and "active_archive" in session]
+            for user in users for session in user["sessions"]]
 
 
 def search_points(users: Sequence[Dict[str, Any]]) -> List[Point]:
-    """(active memories, ms of the archive search) of every question that recorded it."""
+    """(active memories, ms of the archive search) of every question."""
     return [(session["active_archive"], question["vector_search_ms"])
-            for user in users for session in user["sessions"] if "active_archive" in session
-            for question in session.get("questions", [])
-            if question.get("vector_search_ms") is not None]
+            for user in users for session in user["sessions"]
+            for question in session.get("questions", [])]
 
 
 def by_size(points: Sequence[Point]) -> List[Tuple[str, int, float]]:
@@ -141,7 +139,7 @@ def resource_lines(users: Sequence[Dict[str, Any]], run_dir: str
     space, search = fit(space_points(users)), fit(search_points(users))
     lines = []
     if space is None:
-        lines.append("Space: no archive_bytes in the trace, or one archive size only.")
+        lines.append("Space: fewer than two archive sizes, no line.")
     else:
         lines.append(f"Space: {space.slope / 1024:.1f} KB per memory, the empty folder "
                      f"{space.intercept / MEBIBYTE:.2f} MB ({space.points} sessions)")
@@ -150,7 +148,7 @@ def resource_lines(users: Sequence[Dict[str, Any]], run_dir: str
         lines.append(f"  the vector alone: {dimensions} dimensions, "
                      f"{dimensions * FLOAT_BYTES / 1024:.1f} KB")
     if search is None:
-        lines.append("Search: no vector_search_ms in the trace, or one archive size only.")
+        lines.append("Search: fewer than two archive sizes, no line.")
     else:
         lines.append(f"Search: {search.intercept:.1f} ms + {100 * search.slope:.2f} ms per "
                      f"100 memories ({search.points} questions); median by archive size:")
